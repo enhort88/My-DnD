@@ -47,7 +47,7 @@ public class MainActivity extends Activity {
 
     private boolean streamFlushScheduled = false;
 
-    private static final long STREAM_FLUSH_DELAY_MS = 50;
+    private static final long STREAM_FLUSH_DELAY_MS = 35;
 
 
     private static final String SYSTEM_PROMPT =
@@ -72,6 +72,27 @@ public class MainActivity extends Activity {
     private static final int COLOR_MASTER = Color.rgb(232, 224, 208);
     private static final int COLOR_PLAYER = Color.rgb(150, 190, 255);
     private static final int COLOR_SYSTEM = Color.rgb(120, 120, 120);
+
+    private boolean thinkingIndicatorVisible = false;
+    private int thinkingIndicatorStart = -1;
+    private int thinkingFrameIndex = 0;
+
+    private final String[] thinkingFrames = {
+            "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
+    };
+
+    private final Runnable thinkingIndicatorRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!thinkingIndicatorVisible) {
+                return;
+            }
+
+            updateThinkingIndicatorFrame();
+            uiHandler.postDelayed(this, 120);
+        }
+    };
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -118,6 +139,8 @@ public class MainActivity extends Activity {
         sendButton.setOnClickListener(v -> sendPlayerMessage());
         sendButton.setOnLongClickListener(v -> {
             llmEngine.cancel();
+            removeThinkingIndicator();
+            flushStreamingTokens();
             sendButton.setEnabled(true);
             sendButton.setText("Отправить");
 
@@ -168,6 +191,7 @@ public class MainActivity extends Activity {
 
         masterStreamingStarted = false;
         generationInProgress = true;
+        showThinkingIndicator();
 
         llmEngine.generate(prompt, new LlmCallback() {
             @Override
@@ -178,18 +202,25 @@ public class MainActivity extends Activity {
                     }
 
                     if (token.startsWith("[Система]")) {
+                        flushStreamingTokens();
                         appendSystemMessage(token.replace("[Система]", "").trim());
                         return;
                     }
 
-                    masterStreamingStarted = true;
+                    if (!masterStreamingStarted) {
+                        removeThinkingIndicator();
+                        masterStreamingStarted = true;
+                    }
                     appendMasterStreamingToken(token);
                 });
             }
 
             @Override
             public void onComplete(String fullText) {
+
                 runOnUiThread(() -> {
+                    removeThinkingIndicator();
+                    flushStreamingTokens();
                     String visibleText = fullText;
 
                     if (!showThinkingCheckBox.isChecked()) {
@@ -217,6 +248,8 @@ public class MainActivity extends Activity {
             @Override
             public void onError(Throwable throwable) {
                 runOnUiThread(() -> {
+                    removeThinkingIndicator();
+                    flushStreamingTokens();
                     generationInProgress = false;
                     masterStreamingStarted = false;
 
@@ -301,8 +334,8 @@ public class MainActivity extends Activity {
         streamFlushScheduled = true;
 
         uiHandler.postDelayed(() -> {
-            flushStreamingTokens();
             streamFlushScheduled = false;
+            flushStreamingTokens();
         }, STREAM_FLUSH_DELAY_MS);
     }
 
@@ -428,6 +461,74 @@ public class MainActivity extends Activity {
 
         chatDisplay.setSpan(
                 new ForegroundColorSpan(COLOR_MASTER),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        updateChat();
+    }
+
+    private void showThinkingIndicator() {
+        removeThinkingIndicator();
+
+        thinkingIndicatorVisible = true;
+        thinkingFrameIndex = 0;
+
+        thinkingIndicatorStart = chatDisplay.length();
+
+        appendThinkingIndicatorText("Мастер думает " + thinkingFrames[thinkingFrameIndex]);
+
+        uiHandler.postDelayed(thinkingIndicatorRunnable, 120);
+    }
+
+    private void updateThinkingIndicatorFrame() {
+        if (!thinkingIndicatorVisible || thinkingIndicatorStart < 0) {
+            return;
+        }
+
+        int end = chatDisplay.length();
+
+        if (thinkingIndicatorStart > end) {
+            removeThinkingIndicator();
+            return;
+        }
+
+        chatDisplay.delete(thinkingIndicatorStart, end);
+
+        thinkingFrameIndex = (thinkingFrameIndex + 1) % thinkingFrames.length;
+
+        appendThinkingIndicatorText("Мастер думает " + thinkingFrames[thinkingFrameIndex]);
+    }
+
+    private void removeThinkingIndicator() {
+        if (!thinkingIndicatorVisible || thinkingIndicatorStart < 0) {
+            return;
+        }
+
+        int end = chatDisplay.length();
+
+        if (thinkingIndicatorStart <= end) {
+            chatDisplay.delete(thinkingIndicatorStart, end);
+        }
+
+        thinkingIndicatorVisible = false;
+        thinkingIndicatorStart = -1;
+
+        uiHandler.removeCallbacks(thinkingIndicatorRunnable);
+
+        updateChat();
+    }
+
+    private void appendThinkingIndicatorText(String text) {
+        int start = chatDisplay.length();
+
+        chatDisplay.append(text);
+
+        int end = chatDisplay.length();
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(COLOR_SYSTEM),
                 start,
                 end,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
