@@ -17,6 +17,18 @@ struct MyDndLlamaHandle {
     const llama_vocab * vocab = nullptr;
     std::mutex mutex;
 };
+static bool ends_with_sentence_mark(const std::string & text) {
+    if (text.empty()) {
+        return false;
+    }
+
+    char last = text.back();
+
+    return last == '.' ||
+           last == '!' ||
+           last == '?' ||
+           last == '\n';
+}
 
 static bool g_backend_initialized = false;
 static std::mutex g_backend_mutex;
@@ -25,6 +37,7 @@ static std::string jstring_to_string(JNIEnv * env, jstring value) {
     if (value == nullptr) {
         return "";
     }
+
 
     const char * chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) {
@@ -385,7 +398,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         std::string output;
         llama_token new_token_id;
 
-        for (int i = 0; i < n_predict; i++) {
+        const int soft_min_tokens = n_predict * 3 / 4;
+        const int hard_max_tokens = n_predict + 60;
+
+        for (int i = 0; i < hard_max_tokens; i++) {
             new_token_id = llama_sampler_sample(sampler, handle->ctx, -1);
 
             if (llama_vocab_is_eog(handle->vocab, new_token_id)) {
@@ -411,13 +427,16 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
                 env->CallVoidMethod(callbackObject, onTokenMethod, jToken);
                 env->DeleteLocalRef(jToken);
 
+
                 if (env->ExceptionCheck()) {
                     env->ExceptionDescribe();
                     env->ExceptionClear();
                     break;
                 }
             }
-
+            if (i >= soft_min_tokens && ends_with_sentence_mark(output)) {
+                break;
+            }
             batch = llama_batch_get_one(&new_token_id, 1);
 
             if (llama_decode(handle->ctx, batch) != 0) {
@@ -465,3 +484,4 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeRelease(
 
     delete handle;
 }
+

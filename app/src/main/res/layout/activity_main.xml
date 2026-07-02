@@ -1,87 +1,181 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/rootLayout"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/appRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="#151515"
-    android:fitsSystemWindows="true"
-    android:clipToPadding="false"
-    android:paddingStart="12dp"
-    android:paddingEnd="12dp"
-    android:paddingTop="28dp"
-    android:paddingBottom="12dp">
+    android:fitsSystemWindows="true">
 
-    <ScrollView
-        android:id="@+id/chatScrollView"
+    <!-- Приветственное меню -->
+    <LinearLayout
+        android:id="@+id/welcomeLayout"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:fillViewport="true">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="center">
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
 
         <TextView
-            android:id="@+id/chatTextView"
+            android:id="@+id/titleTextView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Мастер ждёт твоего первого действия..."
-            android:textColor="#E8E0D0"
-            android:textSize="16sp"
-            android:lineSpacingExtra="4dp" />
+            android:text="Pocket DnD"
+            android:textColor="#E8D8A8"
+            android:textSize="36sp"
+            android:textStyle="bold"
+            android:gravity="center" />
 
-    </ScrollView>
-
-    <LinearLayout
-        android:id="@+id/optionsPanel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingTop="4dp"
-        android:paddingBottom="4dp">
-
-        <CheckBox
-            android:id="@+id/useThinkingCheckBox"
+        <TextView
+            android:id="@+id/subtitleTextView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Использовать think"
+            android:text="Подземелье и драконы в кармане"
             android:textColor="#B8B0A0"
-            android:checked="false" />
-
-        <CheckBox
-            android:id="@+id/showThinkingCheckBox"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Показывать размышления модели"
-            android:textColor="#B8B0A0"
-            android:checked="false" />
-
-    </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/inputPanel"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingTop="8dp">
-
-        <EditText
-            android:id="@+id/inputEditText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:hint="Что ты делаешь?"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#777777"
-            android:backgroundTint="#777777"
-            android:minLines="1"
-            android:maxLines="4"
-            android:singleLine="false" />
+            android:textSize="18sp"
+            android:gravity="center"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="48dp" />
 
         <Button
-            android:id="@+id/sendButton"
-            android:layout_width="wrap_content"
+            android:id="@+id/startGameButton"
+            android:layout_width="240dp"
+            android:layout_height="56dp"
+            android:text="Начать игру"
+            android:textSize="18sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#7A2E2E"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/settingsButton"
+            android:layout_width="240dp"
+            android:layout_height="52dp"
+            android:text="Настройки"
+            android:textSize="16sp"
+            android:textAllCaps="false"
+            android:enabled="false"
+            android:layout_marginTop="12dp" />
+
+        <Button
+            android:id="@+id/exitButton"
+            android:layout_width="240dp"
+            android:layout_height="52dp"
+            android:text="Выход"
+            android:textSize="16sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#303030"
+            android:textColor="#E8E0D0"
+            android:layout_marginTop="12dp" />
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/authorTextView"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Отправить" />
+            android:text="Автор: Артём"
+            android:textColor="#777777"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:paddingBottom="8dp" />
 
     </LinearLayout>
 
-</LinearLayout>
+    <!-- Игровой экран -->
+    <LinearLayout
+        android:id="@+id/gameLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:background="#151515"
+        android:clipToPadding="false"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="28dp"
+        android:paddingBottom="12dp">
+
+        <ScrollView
+            android:id="@+id/chatScrollView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true">
+
+            <TextView
+                android:id="@+id/chatTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Игра ещё не началась..."
+                android:textColor="#E8E0D0"
+                android:textSize="16sp"
+                android:lineSpacingExtra="4dp" />
+
+        </ScrollView>
+
+        <LinearLayout
+            android:id="@+id/optionsPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp">
+
+            <CheckBox
+                android:id="@+id/useThinkingCheckBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Использовать think"
+                android:textColor="#B8B0A0"
+                android:checked="false" />
+
+            <CheckBox
+                android:id="@+id/showThinkingCheckBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Показывать размышления модели"
+                android:textColor="#B8B0A0"
+                android:checked="false" />
+
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/inputPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="8dp">
+
+            <EditText
+                android:id="@+id/inputEditText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="Что ты делаешь?"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#777777"
+                android:backgroundTint="#777777"
+                android:minLines="1"
+                android:maxLines="4"
+                android:singleLine="false" />
+
+            <Button
+                android:id="@+id/sendButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Отправить"
+                android:textAllCaps="false" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</FrameLayout>

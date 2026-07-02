@@ -17,6 +17,12 @@ import java.io.File;
 import android.os.Handler;
 import android.os.Looper;
 
+import android.graphics.Color;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.view.View;
+
 
 public class MainActivity extends Activity {
 
@@ -53,10 +59,31 @@ public class MainActivity extends Activity {
                     "Отвечай на русском языке. " +
                     "Пиши атмосферно, но кратко.";
 
+    private View welcomeLayout;
+    private View gameLayout;
+
+    private Button startGameButton;
+    private Button settingsButton;
+    private Button exitButton;
+
+    private final SpannableStringBuilder chatDisplay = new SpannableStringBuilder();
+    private final StringBuilder promptHistory = new StringBuilder();
+
+    private static final int COLOR_MASTER = Color.rgb(232, 224, 208);
+    private static final int COLOR_PLAYER = Color.rgb(150, 190, 255);
+    private static final int COLOR_SYSTEM = Color.rgb(120, 120, 120);
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        welcomeLayout = findViewById(R.id.welcomeLayout);
+        gameLayout = findViewById(R.id.gameLayout);
+
+        startGameButton = findViewById(R.id.startGameButton);
+        settingsButton = findViewById(R.id.settingsButton);
+        exitButton = findViewById(R.id.exitButton);
 
         chatTextView = findViewById(R.id.chatTextView);
         inputEditText = findViewById(R.id.inputEditText);
@@ -78,7 +105,15 @@ public class MainActivity extends Activity {
 
         llmEngine = new LocalLlmEngine(modelFile.getAbsolutePath());
 
-        startFirstScene();
+        showWelcomeMenu();
+
+        startGameButton.setOnClickListener(v -> {
+            showGameScreen();
+            startFirstScene();
+        });
+
+        exitButton.setOnClickListener(v -> finish());
+
 
         sendButton.setOnClickListener(v -> sendPlayerMessage());
         sendButton.setOnLongClickListener(v -> {
@@ -94,19 +129,20 @@ public class MainActivity extends Activity {
     }
 
     private void startFirstScene() {
-        chatHistory.append("Мастер: ");
-        chatHistory.append("Ты стоишь у входа в старую придорожную таверну. ");
-        chatHistory.append("За мутными окнами дрожит жёлтый свет. ");
-        chatHistory.append("Дождь стучит по крыше, а где-то рядом воет пёс. ");
-        chatHistory.append("Дверь приоткрыта, но внутри подозрительно тихо.");
-        chatHistory.append("\n\n");
+        chatDisplay.clear();
+        promptHistory.setLength(0);
 
-//        chatHistory.append("Система: UI готов. Можно писать действие.\n\n");
+        appendMasterMessage(
+                "Ты стоишь у входа в старую придорожную таверну. " +
+                        "За мутными окнами дрожит жёлтый свет. " +
+                        "Дождь стучит по крыше, а где-то рядом воет пёс. " +
+                        "Дверь приоткрыта, но внутри подозрительно тихо."
+        );
+
+        appendSystemMessage("UI готов. Можно писать действие.");
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
-
-        updateChat();
     }
 
     private void sendPlayerMessage() {
@@ -119,16 +155,14 @@ public class MainActivity extends Activity {
         inputEditText.setText("");
         hideKeyboard();
 
-        chatHistory.append("Игрок: ");
-        chatHistory.append(playerText);
-        chatHistory.append("\n\n");
+        appendPlayerMessage(playerText);
 
         updateChat();
 
         sendButton.setEnabled(true);
         sendButton.setText("Жду...");
 
-        chatHistory.append("Система: запрос ушёл в LLM, жду ответ...\n\n");
+        appendSystemMessage("Запрос ушёл в небеса, жду ответ...");
         updateChat();
 
         String prompt = buildPrompt(playerText);
@@ -145,22 +179,15 @@ public class MainActivity extends Activity {
                     }
 
                     if (token.startsWith("[Система]")) {
-                        chatHistory.append(token);
-
-                        if (!token.endsWith("\n")) {
-                            chatHistory.append("\n");
-                        }
-
-                        updateChat();
+                        appendSystemMessage(token.replace("[Система]", "").trim());
                         return;
                     }
 
                     if (!masterStreamingStarted) {
-                        chatHistory.append("Мастер: ");
                         masterStreamingStarted = true;
                     }
 
-                    appendStreamingToken(token);
+                    appendMasterStreamingToken(token);
                 });
             }
 
@@ -168,21 +195,25 @@ public class MainActivity extends Activity {
             public void onComplete(String fullText) {
                 runOnUiThread(() -> {
                     flushStreamingTokens();
-                    if (masterStreamingStarted) {
-                        chatHistory.append("\n\n");
-                    } else {
-                        String visibleText = fullText;
 
-                        if (!showThinkingCheckBox.isChecked()) {
-                            visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
-                        }
+                    String visibleText = fullText;
 
-                        chatHistory.append("Мастер: ");
-                        chatHistory.append(visibleText);
-                        chatHistory.append("\n\n");
+                    if (!showThinkingCheckBox.isChecked()) {
+                        visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
                     }
 
+                    if (masterStreamingStarted) {
+                        appendColoredText("\n\n", COLOR_MASTER);
+                    } else {
+                        appendMasterMessage(visibleText);
+                    }
+
+                    promptHistory.append("Мастер: ");
+                    promptHistory.append(visibleText);
+                    promptHistory.append("\n\n");
+
                     generationInProgress = false;
+                    masterStreamingStarted = false;
 
                     updateChat();
 
@@ -197,11 +228,7 @@ public class MainActivity extends Activity {
                     generationInProgress = false;
                     masterStreamingStarted = false;
 
-                    chatHistory.append("Ошибка LLM: ");
-                    chatHistory.append(throwable.getMessage());
-                    chatHistory.append("\n\n");
-
-                    updateChat();
+                    appendSystemMessage("Ошибка LLM: " + throwable.getMessage());
 
                     sendButton.setEnabled(true);
                     sendButton.setText("Отправить");
@@ -211,22 +238,19 @@ public class MainActivity extends Activity {
     }
 
     private String buildPrompt(String playerText) {
-        String thinkingMode;
+        String thinkingMode = useThinkingCheckBox.isChecked() ? "/think" : "/no_think";
 
-        if (useThinkingCheckBox.isChecked()) {
-            thinkingMode = "/think";
-        } else {
-            thinkingMode = "/no_think";
-        }
-
-        String recentHistory = getRecentGameHistoryForPrompt(500);
+        String recentHistory = getRecentGameHistoryForPrompt(250);
 
         return thinkingMode +
-                "\nТы мастер DnD. Русский. Мрачное фэнтези. Кратко." +
-                "\nНе решай за героя. Если риск — попроси проверку, кубик не бросай." +
-                "\nСцена: ночная таверна, дождь, внутри подозрительно тихо." +
-                "\nИстория:\n" + recentHistory +
-                "\nИгрок: " + playerText +
+                "\nТы мастер DnD. Русский язык. Мрачное фэнтези." +
+                "\nОписывай атмосферно, но без воды." +
+                "\nНе решай за героя. При риске проси проверку, кубик не бросай." +
+                "\nДай цельный ответ: сцена, последствия, детали, вопрос игроку." +
+                "\nНе обрывай фразу. Заверши ответ логично." +
+                "\n\nСцена: ночная таверна, дождь, внутри подозрительно тихо." +
+                "\n\nКраткая история:\n" + recentHistory +
+                "\n\nИгрок: " + playerText +
                 "\nМастер:";
     }
 //private String buildPrompt(String playerText) {
@@ -244,7 +268,7 @@ public class MainActivity extends Activity {
 //            "\nМастер:";
 //}
     private void updateChat() {
-        chatTextView.setText(chatHistory.toString());
+        chatTextView.setText(chatDisplay);
 
         chatScrollView.post(() ->
                 chatScrollView.fullScroll(ScrollView.FOCUS_DOWN)
@@ -260,37 +284,15 @@ public class MainActivity extends Activity {
         }
     }
     private String getRecentGameHistoryForPrompt(int maxChars) {
-        String history = chatHistory.toString();
+        String history = promptHistory.toString();
 
-        StringBuilder filtered = new StringBuilder();
-
-        String[] lines = history.split("\n");
-        for (String line : lines) {
-            String trimmed = line.trim();
-
-            if (trimmed.startsWith("Система:")) {
-                continue;
-            }
-
-            if (trimmed.startsWith("[Система]")) {
-                continue;
-            }
-
-            if (trimmed.startsWith("Ошибка LLM:")) {
-                continue;
-            }
-
-            filtered.append(line).append("\n");
+        if (history.length() <= maxChars) {
+            return history;
         }
 
-        String result = filtered.toString();
-
-        if (result.length() <= maxChars) {
-            return result;
-        }
-
-        return result.substring(result.length() - maxChars);
+        return history.substring(history.length() - maxChars);
     }
+
     private void appendStreamingToken(String token) {
         synchronized (pendingTokenBuffer) {
             pendingTokenBuffer.append(token);
@@ -324,7 +326,76 @@ public class MainActivity extends Activity {
             pendingTokenBuffer.setLength(0);
         }
 
-        chatHistory.append(chunk);
+        int start = chatDisplay.length();
+        chatDisplay.append(chunk);
+        int end = chatDisplay.length();
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(COLOR_MASTER),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        updateChat();
+    }
+
+    private void showWelcomeMenu() {
+        welcomeLayout.setVisibility(View.VISIBLE);
+        gameLayout.setVisibility(View.GONE);
+    }
+
+    private void showGameScreen() {
+        welcomeLayout.setVisibility(View.GONE);
+        gameLayout.setVisibility(View.VISIBLE);
+    }
+
+    private void appendColoredText(String text, int color) {
+        int start = chatDisplay.length();
+        chatDisplay.append(text);
+        int end = chatDisplay.length();
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(color),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        updateChat();
+    }
+
+    private void appendMasterMessage(String text) {
+        appendColoredText(text + "\n\n", COLOR_MASTER);
+
+        promptHistory.append("Мастер: ");
+        promptHistory.append(text);
+        promptHistory.append("\n\n");
+    }
+
+    private void appendPlayerMessage(String text) {
+        appendColoredText("Ты: " + text + "\n\n", COLOR_PLAYER);
+
+        promptHistory.append("Игрок: ");
+        promptHistory.append(text);
+        promptHistory.append("\n\n");
+    }
+
+    private void appendSystemMessage(String text) {
+//        appendColoredText("Система: " + text + "\n\n", COLOR_SYSTEM);
+    }
+    private void appendMasterStreamingToken(String token) {
+        int start = chatDisplay.length();
+        chatDisplay.append(token);
+        int end = chatDisplay.length();
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(COLOR_MASTER),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
         updateChat();
     }
 }

@@ -67,7 +67,7 @@ public class LocalLlmEngine implements LlmEngine {
                 String answer = bridge.nativeGenerateStream(
                         handle,
                         prompt,
-                        60,
+                        240,
                         token -> {
                             if (!cancelled) {
                                 callback.onToken(token);
