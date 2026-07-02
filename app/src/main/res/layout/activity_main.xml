@@ -24,7 +24,7 @@
             android:id="@+id/titleTextView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Pocket DnD"
+            android:text="Pocket D&amp;D"
             android:textColor="#E8D8A8"
             android:textSize="36sp"
             android:textStyle="bold"

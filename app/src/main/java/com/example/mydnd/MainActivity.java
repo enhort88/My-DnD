@@ -146,6 +146,10 @@ public class MainActivity extends Activity {
     }
 
     private void sendPlayerMessage() {
+        if (generationInProgress) {
+            return;
+        }
+
         String playerText = inputEditText.getText().toString().trim();
 
         if (playerText.isEmpty()) {
@@ -157,13 +161,8 @@ public class MainActivity extends Activity {
 
         appendPlayerMessage(playerText);
 
-        updateChat();
-
-        sendButton.setEnabled(true);
+        sendButton.setEnabled(false);
         sendButton.setText("Жду...");
-
-        appendSystemMessage("Запрос ушёл в небеса, жду ответ...");
-        updateChat();
 
         String prompt = buildPrompt(playerText);
 
@@ -183,10 +182,7 @@ public class MainActivity extends Activity {
                         return;
                     }
 
-                    if (!masterStreamingStarted) {
-                        masterStreamingStarted = true;
-                    }
-
+                    masterStreamingStarted = true;
                     appendMasterStreamingToken(token);
                 });
             }
@@ -194,8 +190,6 @@ public class MainActivity extends Activity {
             @Override
             public void onComplete(String fullText) {
                 runOnUiThread(() -> {
-                    flushStreamingTokens();
-
                     String visibleText = fullText;
 
                     if (!showThinkingCheckBox.isChecked()) {
@@ -214,8 +208,6 @@ public class MainActivity extends Activity {
 
                     generationInProgress = false;
                     masterStreamingStarted = false;
-
-                    updateChat();
 
                     sendButton.setEnabled(true);
                     sendButton.setText("Отправить");
@@ -346,9 +338,54 @@ public class MainActivity extends Activity {
     }
 
     private void showGameScreen() {
-        welcomeLayout.setVisibility(View.GONE);
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+
+        gameLayout.setAlpha(0f);
+        gameLayout.setTranslationX(screenWidth);
         gameLayout.setVisibility(View.VISIBLE);
+
+        welcomeLayout.animate()
+                .alpha(0f)
+                .translationX(-screenWidth * 0.25f)
+                .setDuration(260)
+                .withEndAction(() -> welcomeLayout.setVisibility(View.GONE))
+                .start();
+
+        gameLayout.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setDuration(300)
+                .start();
     }
+
+    @Override
+    public void onBackPressed() {
+        if (gameLayout.getVisibility() == View.VISIBLE) {
+            showWelcomeScreen();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    private void showWelcomeScreen() {
+        welcomeLayout.setAlpha(0f);
+        welcomeLayout.setTranslationX(-welcomeLayout.getWidth() * 0.25f);
+        welcomeLayout.setVisibility(View.VISIBLE);
+
+        gameLayout.animate()
+                .alpha(0f)
+                .translationX(gameLayout.getWidth())
+                .setDuration(240)
+                .withEndAction(() -> gameLayout.setVisibility(View.GONE))
+                .start();
+
+        welcomeLayout.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setDuration(260)
+                .start();
+    }
+
 
     private void appendColoredText(String text, int color) {
         int start = chatDisplay.length();
@@ -374,7 +411,7 @@ public class MainActivity extends Activity {
     }
 
     private void appendPlayerMessage(String text) {
-        appendColoredText("Ты: " + text + "\n\n", COLOR_PLAYER);
+        appendColoredText(text + "\n\n", COLOR_PLAYER);
 
         promptHistory.append("Игрок: ");
         promptHistory.append(text);
