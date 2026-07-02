@@ -60,9 +60,9 @@ public class MainActivity extends Activity {
                 "Qwen3-4B-Q4_K_M.gguf"
         );
 
-        chatHistory.append("Система: путь к модели:\n");
-        chatHistory.append(modelFile.getAbsolutePath());
-        chatHistory.append("\n\n");
+//        chatHistory.append("Система: путь к модели:\n");
+//        chatHistory.append(modelFile.getAbsolutePath());
+//        chatHistory.append("\n\n");
 
         llmEngine = new LocalLlmEngine(modelFile.getAbsolutePath());
 
@@ -89,7 +89,7 @@ public class MainActivity extends Activity {
         chatHistory.append("Дверь приоткрыта, но внутри подозрительно тихо.");
         chatHistory.append("\n\n");
 
-        chatHistory.append("Система: UI готов. Можно писать действие.\n\n");
+//        chatHistory.append("Система: UI готов. Можно писать действие.\n\n");
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
@@ -167,44 +167,39 @@ public class MainActivity extends Activity {
         });
     }
 
-//    private String buildPrompt(String playerText) {
-//        String thinkingMode;
-//
-//        if (useThinkingCheckBox.isChecked()) {
-//            thinkingMode =
-//                    "/think\n" +
-//                            "Можешь использовать рассуждения. " +
-//                            "Если рассуждаешь, помещай их строго в блок <think>...</think>. " +
-//                            "После блока дай финальный ответ мастера игроку.";
-//        } else {
-//            thinkingMode =
-//                    "/no_think\n" +
-//                            "Отвечай сразу как мастер, без рассуждений и без блока <think>.";
-//        }
-//
-//        return SYSTEM_PROMPT +
-//                "\n\nРЕЖИМ МОДЕЛИ:\n" +
-//                thinkingMode +
-//                "\n\nИстория сцены:\n" +
-//                chatHistory.toString() +
-//                "\n\nДействие игрока:\n" +
-//                playerText +
-//                "\n\nОтветь как мастер. Максимум 2 коротких предложения.";
-//    }
-private String buildPrompt(String playerText) {
-    String thinkingMode;
+    private String buildPrompt(String playerText) {
+        String thinkingMode;
 
-    if (useThinkingCheckBox.isChecked()) {
-        thinkingMode = "/think";
-    } else {
-        thinkingMode = "/no_think";
+        if (useThinkingCheckBox.isChecked()) {
+            thinkingMode = "/think";
+        } else {
+            thinkingMode = "/no_think";
+        }
+
+        String recentHistory = getRecentGameHistoryForPrompt(500);
+
+        return thinkingMode +
+                "\nТы мастер DnD. Русский. Мрачное фэнтези. Кратко." +
+                "\nНе решай за героя. Если риск — попроси проверку, кубик не бросай." +
+                "\nСцена: ночная таверна, дождь, внутри подозрительно тихо." +
+                "\nИстория:\n" + recentHistory +
+                "\nИгрок: " + playerText +
+                "\nМастер:";
     }
-
-    return thinkingMode +
-            "\nТы — мастер DnD. Отвечай на русском. Очень кратко." +
-            "\nИгрок: " + playerText +
-            "\nМастер:";
-}
+//private String buildPrompt(String playerText) {
+//    String thinkingMode;
+//
+//    if (useThinkingCheckBox.isChecked()) {
+//        thinkingMode = "/think";
+//    } else {
+//        thinkingMode = "/no_think";
+//    }
+//
+//    return thinkingMode +
+//            "\nТы — мастер DnD. Отвечай на русском. Очень кратко." +
+//            "\nИгрок: " + playerText +
+//            "\nМастер:";
+//}
     private void updateChat() {
         chatTextView.setText(chatHistory.toString());
 
@@ -220,5 +215,37 @@ private String buildPrompt(String playerText) {
         if (imm != null) {
             imm.hideSoftInputFromWindow(inputEditText.getWindowToken(), 0);
         }
+    }
+    private String getRecentGameHistoryForPrompt(int maxChars) {
+        String history = chatHistory.toString();
+
+        StringBuilder filtered = new StringBuilder();
+
+        String[] lines = history.split("\n");
+        for (String line : lines) {
+            String trimmed = line.trim();
+
+            if (trimmed.startsWith("Система:")) {
+                continue;
+            }
+
+            if (trimmed.startsWith("[Система]")) {
+                continue;
+            }
+
+            if (trimmed.startsWith("Ошибка LLM:")) {
+                continue;
+            }
+
+            filtered.append(line).append("\n");
+        }
+
+        String result = filtered.toString();
+
+        if (result.length() <= maxChars) {
+            return result;
+        }
+
+        return result.substring(result.length() - maxChars);
     }
 }

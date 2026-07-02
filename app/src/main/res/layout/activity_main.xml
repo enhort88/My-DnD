@@ -44,7 +44,7 @@
             android:layout_height="wrap_content"
             android:text="Использовать think"
             android:textColor="#B8B0A0"
-            android:checked="true" />
+            android:checked="false" />
 
         <CheckBox
             android:id="@+id/showThinkingCheckBox"

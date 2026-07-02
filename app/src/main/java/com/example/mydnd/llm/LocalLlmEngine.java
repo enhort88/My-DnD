@@ -64,7 +64,7 @@ public class LocalLlmEngine implements LlmEngine {
                     return;
                 }
 
-                String answer = bridge.nativeGenerate(handle, prompt, 40);
+                String answer = bridge.nativeGenerate(handle, prompt, 45);
 
                 Log.d(TAG, "generate(): nativeGenerate finished");
 

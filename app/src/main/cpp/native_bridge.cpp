@@ -90,8 +90,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
         llama_context_params ctx_params = llama_context_default_params();
 
         // Для телефона сначала скромный контекст.
-        ctx_params.n_ctx = 1024;
-        ctx_params.n_batch = 128;
+        ctx_params.n_ctx = 2048;
+        ctx_params.n_batch = 512;
         ctx_params.n_ubatch = 128;
         ctx_params.n_threads = 4;
         ctx_params.n_threads_batch = 4;
@@ -185,13 +185,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
                 true
         );
         MYDND_LOGI("nativeGenerate: tokenized = %d", tokenized);
-        if (tokenized > 128) {
-            MYDND_LOGE("nativeGenerate: prompt too long for current n_batch");
-            return string_to_jstring(
-                    env,
-                    "Ошибка: prompt слишком длинный для текущего n_batch. Укороти запрос."
-            );
-        }
+        if (tokenized > 512) {
+    MYDND_LOGE("nativeGenerate: prompt too long for one batch, tokenized = %d", tokenized);
+    return string_to_jstring(
+            env,
+            "Ошибка: prompt слишком длинный для одного batch. Сейчас лимит 512 токенов."
+    );
+}
 
         if (tokenized < 0) {
             return string_to_jstring(env, "Ошибка: tokenizer вернул отрицательный результат.");
