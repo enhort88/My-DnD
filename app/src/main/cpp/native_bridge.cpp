@@ -264,6 +264,180 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
 }
 
 extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
+        JNIEnv * env,
+        jobject /* this */,
+        jlong nativeHandle,
+        jstring promptText,
+        jint maxTokens,
+        jobject callbackObject) {
+
+    MYDND_LOGI("nativeGenerateStream: ENTER");
+
+    if (nativeHandle == 0) {
+        return string_to_jstring(env, "Ошибка: модель не загружена.");
+    }
+
+    if (callbackObject == nullptr) {
+        return string_to_jstring(env, "Ошибка: callbackObject == nullptr.");
+    }
+
+    jclass callbackClass = env->GetObjectClass(callbackObject);
+    if (callbackClass == nullptr) {
+        return string_to_jstring(env, "Ошибка: не найден class callbackObject.");
+    }
+
+    jmethodID onTokenMethod = env->GetMethodID(
+            callbackClass,
+            "onToken",
+            "(Ljava/lang/String;)V"
+    );
+
+    if (onTokenMethod == nullptr) {
+        return string_to_jstring(env, "Ошибка: не найден метод onToken(String).");
+    }
+
+    MyDndLlamaHandle * handle =
+            reinterpret_cast<MyDndLlamaHandle *>(nativeHandle);
+
+    std::lock_guard<std::mutex> lock(handle->mutex);
+
+    try {
+        std::string prompt = jstring_to_string(env, promptText);
+
+        if (prompt.empty()) {
+            return string_to_jstring(env, "");
+        }
+
+        const int n_predict = maxTokens > 0 ? maxTokens : 80;
+
+        llama_memory_clear(llama_get_memory(handle->ctx), true);
+
+        int n_prompt = -llama_tokenize(
+                handle->vocab,
+                prompt.c_str(),
+                static_cast<int32_t>(prompt.size()),
+                nullptr,
+                0,
+                true,
+                true
+        );
+
+        if (n_prompt <= 0) {
+            return string_to_jstring(env, "Ошибка: не удалось токенизировать prompt.");
+        }
+
+        const uint32_t n_ctx = llama_n_ctx(handle->ctx);
+
+        if (static_cast<uint32_t>(n_prompt + n_predict) >= n_ctx) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: prompt слишком длинный для текущего контекста."
+            );
+        }
+
+        std::vector<llama_token> prompt_tokens(n_prompt);
+
+        int tokenized = llama_tokenize(
+                handle->vocab,
+                prompt.c_str(),
+                static_cast<int32_t>(prompt.size()),
+                prompt_tokens.data(),
+                static_cast<int32_t>(prompt_tokens.size()),
+                true,
+                true
+        );
+
+        MYDND_LOGI("nativeGenerateStream: tokenized = %d", tokenized);
+
+        if (tokenized < 0) {
+            return string_to_jstring(env, "Ошибка: tokenizer вернул отрицательный результат.");
+        }
+
+        if (tokenized > 512) {
+            MYDND_LOGE("nativeGenerateStream: prompt too long for one batch, tokenized = %d", tokenized);
+            return string_to_jstring(
+                    env,
+                    "Ошибка: prompt слишком длинный для одного batch. Сейчас лимит 512 токенов."
+            );
+        }
+
+        llama_sampler_chain_params sampler_params =
+                llama_sampler_chain_default_params();
+
+        sampler_params.no_perf = true;
+
+        llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
+
+        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+
+        llama_batch batch = llama_batch_get_one(
+                prompt_tokens.data(),
+                static_cast<int32_t>(prompt_tokens.size())
+        );
+
+        if (llama_decode(handle->ctx, batch) != 0) {
+            llama_sampler_free(sampler);
+            return string_to_jstring(env, "Ошибка: llama_decode не смог обработать prompt.");
+        }
+
+        std::string output;
+        llama_token new_token_id;
+
+        for (int i = 0; i < n_predict; i++) {
+            new_token_id = llama_sampler_sample(sampler, handle->ctx, -1);
+
+            if (llama_vocab_is_eog(handle->vocab, new_token_id)) {
+                break;
+            }
+
+            char buffer[256];
+
+            int piece_length = llama_token_to_piece(
+                    handle->vocab,
+                    new_token_id,
+                    buffer,
+                    sizeof(buffer),
+                    0,
+                    true
+            );
+
+            if (piece_length > 0) {
+                std::string piece(buffer, piece_length);
+                output.append(piece);
+
+                jstring jToken = env->NewStringUTF(piece.c_str());
+                env->CallVoidMethod(callbackObject, onTokenMethod, jToken);
+                env->DeleteLocalRef(jToken);
+
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                    break;
+                }
+            }
+
+            batch = llama_batch_get_one(&new_token_id, 1);
+
+            if (llama_decode(handle->ctx, batch) != 0) {
+                break;
+            }
+        }
+
+        llama_sampler_free(sampler);
+
+        MYDND_LOGI("nativeGenerateStream: FINISH, output length = %zu", output.size());
+
+        return string_to_jstring(env, output);
+    } catch (const std::exception & ex) {
+        return string_to_jstring(env, std::string("Ошибка nativeGenerateStream: ") + ex.what());
+    } catch (...) {
+        return string_to_jstring(env, "Ошибка nativeGenerateStream: неизвестная ошибка.");
+    }
+}
+
+extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_mydnd_llm_NativeLlmBridge_nativeRelease(
         JNIEnv * /* env */,

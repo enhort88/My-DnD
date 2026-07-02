@@ -12,5 +12,12 @@ public class NativeLlmBridge {
 
     public native String nativeGenerate(long handle, String prompt, int maxTokens);
 
+    public native String nativeGenerateStream(
+            long handle,
+            String prompt,
+            int maxTokens,
+            NativeTokenCallback callback
+    );
+
     public native void nativeRelease(long handle);
 }

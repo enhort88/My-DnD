@@ -14,6 +14,8 @@ import com.example.mydnd.llm.LocalLlmEngine;
 import android.widget.CheckBox;
 import com.example.mydnd.llm.ThinkBlockFilter;
 import java.io.File;
+import android.os.Handler;
+import android.os.Looper;
 
 
 public class MainActivity extends Activity {
@@ -27,10 +29,20 @@ public class MainActivity extends Activity {
 
     private final StringBuilder chatHistory = new StringBuilder();
 
+    private boolean masterStreamingStarted = false;
+    private boolean generationInProgress = false;
+
     private CheckBox useThinkingCheckBox;
     private CheckBox showThinkingCheckBox;
 
     private final ThinkBlockFilter thinkBlockFilter = new ThinkBlockFilter();
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final StringBuilder pendingTokenBuffer = new StringBuilder();
+
+    private boolean streamFlushScheduled = false;
+
+    private static final long STREAM_FLUSH_DELAY_MS = 50;
+
 
     private static final String SYSTEM_PROMPT =
             "Ты — мастер настольной RPG в духе DnD. " +
@@ -121,28 +133,56 @@ public class MainActivity extends Activity {
 
         String prompt = buildPrompt(playerText);
 
+        masterStreamingStarted = false;
+        generationInProgress = true;
+
         llmEngine.generate(prompt, new LlmCallback() {
             @Override
             public void onToken(String token) {
                 runOnUiThread(() -> {
-                    chatHistory.append(token);
-                    chatHistory.append("\n");
-                    updateChat();
+                    if (token == null || token.isEmpty()) {
+                        return;
+                    }
+
+                    if (token.startsWith("[Система]")) {
+                        chatHistory.append(token);
+
+                        if (!token.endsWith("\n")) {
+                            chatHistory.append("\n");
+                        }
+
+                        updateChat();
+                        return;
+                    }
+
+                    if (!masterStreamingStarted) {
+                        chatHistory.append("Мастер: ");
+                        masterStreamingStarted = true;
+                    }
+
+                    appendStreamingToken(token);
                 });
             }
 
             @Override
             public void onComplete(String fullText) {
                 runOnUiThread(() -> {
-                    String visibleText = fullText;
+                    flushStreamingTokens();
+                    if (masterStreamingStarted) {
+                        chatHistory.append("\n\n");
+                    } else {
+                        String visibleText = fullText;
 
-                    if (!showThinkingCheckBox.isChecked()) {
-                        visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
+                        if (!showThinkingCheckBox.isChecked()) {
+                            visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
+                        }
+
+                        chatHistory.append("Мастер: ");
+                        chatHistory.append(visibleText);
+                        chatHistory.append("\n\n");
                     }
 
-                    chatHistory.append("Мастер: ");
-                    chatHistory.append(visibleText);
-                    chatHistory.append("\n\n");
+                    generationInProgress = false;
 
                     updateChat();
 
@@ -154,6 +194,9 @@ public class MainActivity extends Activity {
             @Override
             public void onError(Throwable throwable) {
                 runOnUiThread(() -> {
+                    generationInProgress = false;
+                    masterStreamingStarted = false;
+
                     chatHistory.append("Ошибка LLM: ");
                     chatHistory.append(throwable.getMessage());
                     chatHistory.append("\n\n");
@@ -247,5 +290,41 @@ public class MainActivity extends Activity {
         }
 
         return result.substring(result.length() - maxChars);
+    }
+    private void appendStreamingToken(String token) {
+        synchronized (pendingTokenBuffer) {
+            pendingTokenBuffer.append(token);
+        }
+
+        scheduleStreamFlush();
+    }
+
+    private void scheduleStreamFlush() {
+        if (streamFlushScheduled) {
+            return;
+        }
+
+        streamFlushScheduled = true;
+
+        uiHandler.postDelayed(() -> {
+            flushStreamingTokens();
+            streamFlushScheduled = false;
+        }, STREAM_FLUSH_DELAY_MS);
+    }
+
+    private void flushStreamingTokens() {
+        String chunk;
+
+        synchronized (pendingTokenBuffer) {
+            if (pendingTokenBuffer.length() == 0) {
+                return;
+            }
+
+            chunk = pendingTokenBuffer.toString();
+            pendingTokenBuffer.setLength(0);
+        }
+
+        chatHistory.append(chunk);
+        updateChat();
     }
 }
