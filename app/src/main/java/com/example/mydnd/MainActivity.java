@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
 
         File modelFile = new File(
                 getExternalFilesDir("models"),
-                "Qwen3-0.6B-Q4_K_M.gguf"
+                "Qwen3-4B-Q4_K_M.gguf"
         );
 
         chatHistory.append("Система: путь к модели:\n");

@@ -128,7 +128,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
     if (nativeHandle == 0) {
         return string_to_jstring(env, "Ошибка: модель не загружена.");
     }
-    MYDND_LOGI("nativeGenerate: handle OK");
+//    MYDND_LOGI("nativeGenerate: handle OK");
 
     MyDndLlamaHandle * handle =
             reinterpret_cast<MyDndLlamaHandle *>(nativeHandle);
@@ -137,7 +137,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
 
     try {
         std::string prompt = jstring_to_string(env, promptText);
-        MYDND_LOGI("nativeGenerate: before count tokenize");
+//        MYDND_LOGI("nativeGenerate: before count tokenize");
         if (prompt.empty()) {
             return string_to_jstring(env, "");
         }
@@ -148,7 +148,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
         llama_memory_clear(llama_get_memory(handle->ctx), true);
 
         // Считаем число токенов промпта.
-        MYDND_LOGI("nativeGenerate: before count tokenize");
+//        MYDND_LOGI("nativeGenerate: before count tokenize");
         int n_prompt = -llama_tokenize(
                 handle->vocab,
                 prompt.c_str(),
@@ -174,7 +174,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
 
         std::vector<llama_token> prompt_tokens(n_prompt);
 
-        MYDND_LOGI("nativeGenerate: before real tokenize");
+//        MYDND_LOGI("nativeGenerate: before real tokenize");
         int tokenized = llama_tokenize(
                 handle->vocab,
                 prompt.c_str(),
@@ -212,19 +212,19 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
                 static_cast<int32_t>(prompt_tokens.size())
         );
 
-        MYDND_LOGI("nativeGenerate: before prompt decode");
+//        MYDND_LOGI("nativeGenerate: before prompt decode");
         if (llama_decode(handle->ctx, batch) != 0) {
             llama_sampler_free(sampler);
             return string_to_jstring(env, "Ошибка: llama_decode не смог обработать prompt.");
         }
-        MYDND_LOGI("nativeGenerate: after prompt decode");
+//        MYDND_LOGI("nativeGenerate: after prompt decode");
 
         std::string output;
         llama_token new_token_id;
 
-        MYDND_LOGI("nativeGenerate: start token loop, n_predict = %d", n_predict);
+//        MYDND_LOGI("nativeGenerate: start token loop, n_predict = %d", n_predict);
         for (int i = 0; i < n_predict; i++) {
-            MYDND_LOGI("nativeGenerate: token loop i = %d", i);
+//            MYDND_LOGI("nativeGenerate: token loop i = %d", i);
             new_token_id = llama_sampler_sample(sampler, handle->ctx, -1);
 
             if (llama_vocab_is_eog(handle->vocab, new_token_id)) {
