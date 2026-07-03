@@ -92,7 +92,7 @@
             android:id="@+id/authorTextView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Автор: Артём"
+            android:text="Artem Ponikarov \n enhort@gmail.com"
             android:textColor="#777777"
             android:textSize="13sp"
             android:gravity="center"
