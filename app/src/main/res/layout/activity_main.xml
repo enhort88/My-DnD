@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/appRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#151515"
     android:fitsSystemWindows="true">
+
+
+    <!-- ФОН ГЛАВНОГО МЕНЮ -->
 
     <ImageView
         android:id="@+id/welcomeBackground"
@@ -13,6 +17,9 @@
         android:contentDescription="@null"
         android:scaleType="centerCrop"
         android:src="@drawable/main_menu_bg" />
+
+
+    <!-- ФОН ИГРОВОГО ЭКРАНА -->
 
     <ImageView
         android:id="@+id/gameBackground"
@@ -23,81 +30,145 @@
         android:src="@drawable/game_bg"
         android:visibility="gone" />
 
-    <!-- Приветственное меню -->
-    <!-- Приветственное меню -->
+
+    <!-- ==================== -->
+    <!--    ГЛАВНОЕ МЕНЮ      -->
+    <!-- ==================== -->
+
     <LinearLayout
         android:id="@+id/welcomeLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
         android:gravity="center_horizontal"
-        android:background="@android:color/transparent">
+        android:background="@android:color/transparent"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
+
+
+        <!-- Верхнее свободное место -->
 
         <Space
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <Button
-            android:id="@+id/startGameButton"
-            android:layout_width="239dp"
-            android:layout_height="57dp"
-            android:background="@android:color/transparent"
-            android:backgroundTint="@android:color/transparent"
-            android:elevation="0dp"
-            android:stateListAnimator="@null"
-            android:text=""
-            android:translationX="-4dp"
-            android:translationY="48dp" />
 
-        <Button
-            android:id="@+id/loadGameButton"
-            android:layout_width="236dp"
-            android:layout_height="53dp"
-            android:layout_marginTop="8dp"
-            android:background="@android:color/transparent"
-            android:backgroundTint="@android:color/transparent"
-            android:elevation="0dp"
-            android:stateListAnimator="@null"
-            android:text=""
-            android:translationX="-4dp"
-            android:translationY="50dp" />
+        <!-- Заголовок -->
 
-        <Button
-            android:id="@+id/settingsButton"
-            android:layout_width="233dp"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:background="@android:color/transparent"
-            android:backgroundTint="@android:color/transparent"
-            android:elevation="0dp"
-            android:enabled="false"
-            android:stateListAnimator="@null"
-            android:text=""
-            android:translationX="-4dp"
-            android:translationY="53dp" />
+<!--        <TextView-->
+<!--            android:id="@+id/titleTextView"-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:gravity="center"-->
+<!--            android:text="Pocket D&amp;D"-->
+<!--            android:textColor="#E8D8A8"-->
+<!--            android:textSize="36sp"-->
+<!--            android:fontFamily="@font/philosopher_bold"-->
+<!--            android:letterSpacing="0.05"-->
+<!--            android:shadowColor="#CC000000"-->
+<!--            android:shadowDx="0"-->
+<!--            android:shadowDy="3"-->
+<!--            android:shadowRadius="8" />-->
 
-        <Button
-            android:id="@+id/exitButton"
-            android:layout_width="232dp"
-            android:layout_height="54dp"
-            android:layout_marginTop="8dp"
-            android:background="@android:color/transparent"
-            android:backgroundTint="@android:color/transparent"
-            android:elevation="0dp"
-            android:stateListAnimator="@null"
-            android:text=""
-            android:translationX="-4dp"
-            android:translationY="55dp" />
+
+        <!-- Подзаголовок -->
+
+<!--        <TextView-->
+<!--            android:id="@+id/subtitleTextView"-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:layout_marginTop="8dp"-->
+<!--            android:gravity="center"-->
+<!--            android:text="Подземелье и драконы в кармане"-->
+<!--            android:textColor="#B8B0A0"-->
+<!--            android:textSize="16sp"-->
+<!--            android:fontFamily="@font/philosopher_bold" />-->
+
+
+        <!--
+            ВЕСЬ БЛОК КНОПОК.
+
+            Именно translationY сдвигает все 4 кнопки вниз.
+            Сейчас стоит 130dp — примерно высота двух кнопок.
+        -->
+
+        <LinearLayout
+            android:id="@+id/menuButtonsLayout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:translationY="130dp">
+
+
+            <Button
+                android:id="@+id/startGameButton"
+                style="@style/FantasyButton"
+                android:layout_width="300dp"
+                android:layout_height="56dp"
+                android:text="НОВАЯ ИГРА" />
+
+
+            <Button
+                android:id="@+id/loadGameButton"
+                style="@style/FantasyButton"
+                android:layout_width="300dp"
+                android:layout_height="56dp"
+                android:layout_marginTop="10dp"
+                android:text="ПРОДОЛЖИТЬ" />
+
+
+            <Button
+                android:id="@+id/settingsButton"
+                style="@style/FantasyButton"
+                android:layout_width="300dp"
+                android:layout_height="56dp"
+                android:layout_marginTop="10dp"
+                android:text="НАСТРОЙКИ"
+                android:enabled="false" />
+
+
+            <Button
+                android:id="@+id/exitButton"
+                style="@style/FantasyButton"
+                android:layout_width="300dp"
+                android:layout_height="56dp"
+                android:layout_marginTop="10dp"
+                android:text="ВЫХОД" />
+
+        </LinearLayout>
+
+
+        <!-- Нижнее свободное место -->
 
         <Space
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
+
+
+        <!-- Автор -->
+
+<!--        <TextView-->
+<!--            android:id="@+id/authorTextView"-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:gravity="center"-->
+<!--            android:paddingBottom="8dp"-->
+<!--            android:text="Artem Ponikarov&#10;enhort@gmail.com"-->
+<!--            android:textColor="#887D70"-->
+<!--            android:textSize="12sp"-->
+<!--            android:fontFamily="@font/philosopher_bold" />-->
 
     </LinearLayout>
 
-    <!-- Игровой экран -->
+
+    <!-- ==================== -->
+    <!--     ИГРОВОЙ ЭКРАН    -->
+    <!-- ==================== -->
+
     <LinearLayout
         android:id="@+id/gameLayout"
         android:layout_width="match_parent"
@@ -111,23 +182,32 @@
         android:paddingTop="28dp"
         android:paddingBottom="12dp">
 
+
+        <!-- История игры -->
+
         <ScrollView
             android:id="@+id/chatScrollView"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:fillViewport="true">
+            android:fillViewport="true"
+            android:background="@android:color/transparent">
+
 
             <TextView
                 android:id="@+id/chatTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:background="@android:color/transparent"
                 android:text="Игра ещё не началась..."
                 android:textColor="#E8E0D0"
                 android:textSize="16sp"
                 android:lineSpacingExtra="4dp" />
 
         </ScrollView>
+
+
+        <!-- Настройки thinking -->
 
         <LinearLayout
             android:id="@+id/optionsPanel"
@@ -137,6 +217,7 @@
             android:paddingTop="4dp"
             android:paddingBottom="4dp">
 
+
             <CheckBox
                 android:id="@+id/useThinkingCheckBox"
                 android:layout_width="match_parent"
@@ -144,6 +225,7 @@
                 android:text="Использовать think"
                 android:textColor="#B8B0A0"
                 android:checked="false" />
+
 
             <CheckBox
                 android:id="@+id/showThinkingCheckBox"
@@ -155,32 +237,55 @@
 
         </LinearLayout>
 
+
+        <!-- Панель ввода -->
+
         <LinearLayout
             android:id="@+id/inputPanel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
+            android:gravity="center_vertical"
             android:paddingTop="8dp">
+
+
+            <!-- Ввод действия -->
 
             <EditText
                 android:id="@+id/inputEditText"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_weight="1"
                 android:hint="Что ты делаешь?"
                 android:textColor="#FFFFFF"
                 android:textColorHint="#777777"
-                android:backgroundTint="#777777"
+                android:backgroundTint="#A98A55"
                 android:minLines="1"
                 android:maxLines="4"
                 android:singleLine="false" />
 
+
+            <!--
+                Эта одна кнопка автоматически используется как:
+
+                Отправить
+                Стоп
+                Останавливаю...
+                Обновляю память...
+            -->
+
             <Button
                 android:id="@+id/sendButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                style="@style/FantasySendButton"
+                android:layout_width="140dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="8dp"
                 android:text="Отправить"
-                android:textAllCaps="false" />
+                android:maxLines="1"
+                android:autoSizeTextType="uniform"
+                android:autoSizeMinTextSize="9sp"
+                android:autoSizeMaxTextSize="15sp"
+                android:autoSizeStepGranularity="1sp" />
 
         </LinearLayout>
 
