@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
-
+    private Button loadGameButton;
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
 
@@ -132,6 +132,7 @@ public class MainActivity extends Activity {
         gameLayout = findViewById(R.id.gameLayout);
 
         startGameButton = findViewById(R.id.startGameButton);
+        loadGameButton = findViewById(R.id.loadGameButton);
         settingsButton = findViewById(R.id.settingsButton);
         exitButton = findViewById(R.id.exitButton);
 
@@ -159,7 +160,12 @@ public class MainActivity extends Activity {
 
         startGameButton.setOnClickListener(v -> {
             showGameScreen();
-            startFirstScene();
+            createNewCampaignAndStart();
+        });
+
+        loadGameButton.setOnClickListener(v -> {
+            showGameScreen();
+            loadCampaignOrStartFirstScene();
         });
 
         exitButton.setOnClickListener(v -> finish());
@@ -195,8 +201,6 @@ public class MainActivity extends Activity {
                         "Дождь стучит по крыше, а где-то рядом воет пёс. " +
                         "Дверь приоткрыта, но внутри подозрительно тихо."
         );
-
-        appendSystemMessage("UI готов. Можно писать действие.");
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
@@ -617,6 +621,84 @@ public class MainActivity extends Activity {
             entity.createdAt = event.getCreatedAtMillis();
 
             database.gameEventDao().insert(entity);
+        });
+    }
+    private void loadCampaignOrStartFirstScene() {
+        if (currentCampaignId == 0L) {
+            uiHandler.postDelayed(this::loadCampaignOrStartFirstScene, 200);
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            List<GameEventEntity> savedEvents =
+                    database.gameEventDao().getEventsForCampaign(currentCampaignId);
+
+            runOnUiThread(() -> {
+                chatDisplay.clear();
+                gameEvents.clear();
+
+                if (savedEvents == null || savedEvents.isEmpty()) {
+                    startFirstScene();
+                    return;
+                }
+
+                for (GameEventEntity entity : savedEvents) {
+                    GameEvent event = toGameEvent(entity);
+                    gameEvents.add(event);
+                    renderLoadedEvent(event);
+                }
+
+                sendButton.setEnabled(true);
+                sendButton.setText("Отправить");
+
+                updateChat();
+            });
+        });
+    }
+
+    private GameEvent toGameEvent(GameEventEntity entity) {
+        GameEvent.Speaker speaker;
+
+        try {
+            speaker = GameEvent.Speaker.valueOf(entity.speaker);
+        } catch (Exception e) {
+            speaker = GameEvent.Speaker.SYSTEM;
+        }
+
+        return new GameEvent(
+                speaker,
+                entity.text,
+                entity.createdAt,
+                entity.includeInPrompt
+        );
+    }
+
+    private void renderLoadedEvent(GameEvent event) {
+        if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+            appendColoredText("› " + event.getText() + "\n\n", COLOR_PLAYER);
+            return;
+        }
+
+        if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
+            appendColoredText(event.getText() + "\n\n", COLOR_MASTER);
+            return;
+        }
+
+        // Системные сообщения пока не рисуем.
+    }
+    private void createNewCampaignAndStart() {
+        DbExecutor.execute(() -> {
+            CampaignEntity campaign = new CampaignEntity();
+            campaign.title = "Кампания " + System.currentTimeMillis();
+            campaign.createdAt = System.currentTimeMillis();
+            campaign.updatedAt = campaign.createdAt;
+
+            long newCampaignId = database.campaignDao().insert(campaign);
+
+            runOnUiThread(() -> {
+                currentCampaignId = newCampaignId;
+                startFirstScene();
+            });
         });
     }
 }

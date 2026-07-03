@@ -52,6 +52,17 @@
             android:textColor="#FFFFFF" />
 
         <Button
+            android:id="@+id/loadGameButton"
+            android:layout_width="240dp"
+            android:layout_height="52dp"
+            android:text="Загрузить игру"
+            android:textSize="16sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#3A3A3A"
+            android:textColor="#E8E0D0"
+            android:layout_marginTop="12dp" />
+
+        <Button
             android:id="@+id/settingsButton"
             android:layout_width="240dp"
             android:layout_height="52dp"
