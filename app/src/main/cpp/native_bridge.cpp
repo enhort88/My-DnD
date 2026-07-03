@@ -323,6 +323,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         jlong nativeHandle,
         jstring promptText,
         jint maxTokens,
+        jfloat temperature,
+        jfloat topP,
+        jint topK,
+        jfloat repeatPenalty,
         jobject callbackObject) {
 
     MYDND_LOGI("nativeGenerateStream: ENTER");
@@ -429,21 +433,73 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 // last_n — сколько последних токенов учитывать.
 // repeat_penalty > 1.0 наказывает повтор.
 // freq/present penalty дополнительно давят зацикливание.
+        const float safe_temperature =
+                temperature > 0.0f
+                ? temperature
+                : 0.75f;
+
+        const float safe_top_p =
+                topP > 0.0f && topP <= 1.0f
+                ? topP
+                : 0.90f;
+
+        const int safe_top_k =
+                topK > 0
+                ? topK
+                : 40;
+
+        const float safe_repeat_penalty =
+                repeatPenalty >= 1.0f
+                ? repeatPenalty
+                : 1.18f;
+
+        MYDND_LOGI(
+                "nativeGenerateStream: sampler temp=%.2f, topP=%.2f, topK=%d, repeat=%.2f",
+                safe_temperature,
+                safe_top_p,
+                safe_top_k,
+                safe_repeat_penalty
+        );
+
         llama_sampler_chain_add(
                 sampler,
                 llama_sampler_init_penalties(
-                        96,     // last_n
-                        1.18f,  // repeat_penalty
-                        0.20f,  // frequency_penalty
-                        0.10f   // presence_penalty
+                        96,
+                        safe_repeat_penalty,
+                        0.20f,
+                        0.10f
                 )
         );
 
-// Нормальная выборка вместо greedy.
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
-        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.90f, 1));
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.75f));
-        llama_sampler_chain_add(sampler, llama_sampler_init_dist((uint32_t) time(nullptr)));
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_top_k(
+                        safe_top_k
+                )
+        );
+
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_top_p(
+                        safe_top_p,
+                        1
+                )
+        );
+
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_temp(
+                        safe_temperature
+                )
+        );
+
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_dist(
+                        static_cast<uint32_t>(time(nullptr))
+                )
+        );
+
 
         auto prompt_decode_start =
                 std::chrono::steady_clock::now();

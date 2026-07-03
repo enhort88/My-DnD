@@ -4,11 +4,9 @@ import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.memory.MemoryContext;
 
-import java.util.List;
 
 public class PromptBuilder {
-
-    private static final int MAX_RECENT_HISTORY_CHARS = 350;
+    private static final int MAX_RECENT_HISTORY_CHARS = 500;
 
     public String buildPrompt(
             String playerText,
@@ -31,11 +29,16 @@ public class PromptBuilder {
 
         StringBuilder prompt = new StringBuilder();
 
+// Режим thinking должен быть только один раз,
+// самой первой строкой prompt.
         prompt.append(thinkingMode);
+        prompt.append("\n\nSYSTEM:");
 
-        prompt.append("\nSYSTEM:");
         prompt.append("\nТы мастер настольной RPG в духе DnD.");
         prompt.append("\nПиши только художественный ответ мастера.");
+        prompt.append("\nНе показывай рассуждения, анализ, план ответа или внутренний монолог.");
+        prompt.append("\nНачни сразу с художественного продолжения сцены.");
+        prompt.append("\nВесь видимый ответ должен быть только на русском языке.");
         prompt.append("\nНе пиши названия служебных блоков.");
         prompt.append("\nНе объясняй инструкции.");
         prompt.append("\nНе пиши 'Мастер:' или 'Игрок:'.");
@@ -131,23 +134,69 @@ public class PromptBuilder {
         return "\nПодсказка: ввод короткий, интерпретируй по сцене.";
     }
 
-    private String buildRecentEvents(MemoryContext memoryContext) {
-        StringBuilder builder = new StringBuilder();
+    private String buildRecentEvents(
+            MemoryContext memoryContext
+    ) {
+        StringBuilder builder =
+                new StringBuilder();
 
-        for (GameEvent event : memoryContext.getRecentEvents()) {
-            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+        for (GameEvent event
+                : memoryContext.getRecentEvents()) {
+
+            if (event.getSpeaker()
+                    == GameEvent.Speaker.PLAYER) {
+
                 builder.append("PLAYER: ");
-            } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
+
+            } else if (event.getSpeaker()
+                    == GameEvent.Speaker.MASTER) {
+
                 builder.append("DM: ");
+
             } else {
                 continue;
             }
 
-            builder.append(event.getText().trim());
+            builder.append(
+                    event.getText().trim()
+            );
+
             builder.append("\n");
         }
 
-        return builder.toString().trim();
+        String result =
+                builder.toString().trim();
+
+        if (result.length()
+                <= MAX_RECENT_HISTORY_CHARS) {
+
+            return result;
+        }
+
+        // Оставляем самую свежую часть истории.
+        int startIndex =
+                result.length()
+                        - MAX_RECENT_HISTORY_CHARS;
+
+        // По возможности начинаем с целого события,
+        // а не с середины предложения.
+        int nextLineBreak =
+                result.indexOf(
+                        '\n',
+                        startIndex
+                );
+
+        if (nextLineBreak >= 0
+                && nextLineBreak
+                < startIndex + 150) {
+
+            startIndex =
+                    nextLineBreak + 1;
+        }
+
+        return result
+                .substring(startIndex)
+                .trim();
     }
     private String buildRelevantFacts(MemoryContext memoryContext) {
         StringBuilder builder = new StringBuilder();

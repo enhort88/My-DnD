@@ -31,4 +31,32 @@ public interface GameEventDao {
             long campaignId,
             int limit
     );
+
+    @Query(
+            "SELECT * FROM game_events " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND include_in_prompt = 1 " +
+                    "AND id > :afterEventId " +
+                    "ORDER BY id ASC " +
+                    "LIMIT :limit"
+    )
+    List<GameEventEntity> getPromptEventsAfterIdAsc(
+            long campaignId,
+            long afterEventId,
+            int limit
+    );
+
+    @Query(
+            "SELECT * FROM game_events " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND include_in_prompt = 1 " +
+                    "AND id > :afterEventId " +
+                    "ORDER BY id DESC " +
+                    "LIMIT :limit"
+    )
+    List<GameEventEntity> getRecentPromptEventsAfterId(
+            long campaignId,
+            long afterEventId,
+            int limit
+    );
 }

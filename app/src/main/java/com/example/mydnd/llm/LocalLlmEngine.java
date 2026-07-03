@@ -5,7 +5,7 @@ import android.util.Log;
 
 public class LocalLlmEngine implements LlmEngine {
 
-    private final NativeLlmBridge bridge = new NativeLlmBridge();
+    private final NativeLlmBridge nativeBridge = new NativeLlmBridge();
     private final String modelPath;
 
     private long handle = 0L;
@@ -36,7 +36,7 @@ public class LocalLlmEngine implements LlmEngine {
             );
         }
 
-        handle = bridge.nativeLoadModel(modelPath);
+        handle = nativeBridge.nativeLoadModel(modelPath);
 
         if (handle == 0L) {
             throw new IllegalStateException(
@@ -65,19 +65,28 @@ public class LocalLlmEngine implements LlmEngine {
                     return;
                 }
 
-                String answer = bridge.nativeGenerateStream(
-                        handle,
-                        prompt,
-                        profile.getMaxTokens(),
-                        token -> {
-                            if (!cancelled) {
+                NativeTokenCallback nativeCallback =
+                        new NativeTokenCallback() {
+
+                            @Override
+                            public void onToken(String token) {
                                 callback.onToken(token);
                             }
-                        }
-                );
+                        };
+
+                String answer =
+                        nativeBridge.nativeGenerateStream(
+                                handle,
+                                prompt,
+                                profile.getMaxTokens(),
+                                profile.getTemperature(),
+                                profile.getTopP(),
+                                profile.getTopK(),
+                                profile.getRepeatPenalty(),
+                                nativeCallback
+                        );
 
                 Log.d(TAG, "generate(): nativeGenerate finished");
-
 
                 callback.onComplete(answer);
             } catch (Throwable throwable) {
@@ -92,7 +101,7 @@ public class LocalLlmEngine implements LlmEngine {
         cancelled = true;
 
         if (handle != 0L) {
-            bridge.nativeCancel(handle);
+            nativeBridge.nativeCancel(handle);
         }
     }
 
@@ -103,7 +112,7 @@ public class LocalLlmEngine implements LlmEngine {
 
     public void release() {
         if (handle != 0L) {
-            bridge.nativeRelease(handle);
+            nativeBridge.nativeRelease(handle);
             handle = 0L;
         }
     }

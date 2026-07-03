@@ -16,6 +16,10 @@ public class NativeLlmBridge {
             long handle,
             String prompt,
             int maxTokens,
+            float temperature,
+            float topP,
+            int topK,
+            float repeatPenalty,
             NativeTokenCallback callback
     );
 

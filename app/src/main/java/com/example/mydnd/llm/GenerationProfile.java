@@ -81,4 +81,15 @@ public class GenerationProfile {
     public float getRepeatPenalty() {
         return repeatPenalty;
     }
+
+    public static GenerationProfile summary() {
+        return new GenerationProfile(
+                "Summary",
+                80,
+                0.10f,
+                0.60f,
+                10,
+                1.05f
+        );
+    }
 }

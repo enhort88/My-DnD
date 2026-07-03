@@ -40,10 +40,17 @@ import com.example.mydnd.memory.CampaignMemory;
 import com.example.mydnd.memory.MemoryContext;
 import com.example.mydnd.llm.LlmModelManager;
 import com.example.mydnd.llm.ModelRole;
+import com.example.mydnd.memory.SummaryService;
+import com.example.mydnd.db.entity.SummaryEntity;
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
+import android.text.SpannableStringBuilder;
+
+public class MainActivity extends ComponentActivity {
 
 
 
-public class MainActivity extends Activity {
+    private SummaryService summaryService;
 
     private static final String TAG_MEMORY = "MyDND_MEMORY";
 
@@ -66,6 +73,7 @@ public class MainActivity extends Activity {
     private final StringBuilder chatHistory = new StringBuilder();
 
     private boolean masterStreamingStarted = false;
+    private int masterStreamingStartPosition = -1;
     private boolean generationInProgress = false;
 
     private CheckBox useThinkingCheckBox;
@@ -136,10 +144,25 @@ public class MainActivity extends Activity {
 
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
+
         initDefaultCampaign();
 
         welcomeLayout = findViewById(R.id.welcomeLayout);
         gameLayout = findViewById(R.id.gameLayout);
+        getOnBackPressedDispatcher().addCallback(
+                this,
+                new OnBackPressedCallback(true) {
+                    @Override
+                    public void handleOnBackPressed() {
+                        if (gameLayout.getVisibility() == View.VISIBLE) {
+                            showWelcomeScreen();
+                        } else {
+                            setEnabled(false);
+                            getOnBackPressedDispatcher().onBackPressed();
+                        }
+                    }
+                }
+        );
 
         startGameButton = findViewById(R.id.startGameButton);
         loadGameButton = findViewById(R.id.loadGameButton);
@@ -172,6 +195,11 @@ public class MainActivity extends Activity {
                 masterModelFile.getAbsolutePath(),
                 serviceModelFile.getAbsolutePath()
         );
+        summaryService =
+                new SummaryService(
+                        database,
+                        modelManager
+                );
 
         showWelcomeMenu();
 
@@ -250,8 +278,6 @@ public class MainActivity extends Activity {
 
 
     }
-
-
 
     private void updateChat() {
         chatTextView.setText(chatDisplay);
@@ -352,14 +378,6 @@ public class MainActivity extends Activity {
                 .start();
     }
 
-//    @Override
-//    public void onBackPressed() {
-//        if (gameLayout.getVisibility() == View.VISIBLE) {
-//            showWelcomeScreen();
-//        } else {
-//            super.onBackPressed();
-//        }
-//    }
 
     private void showWelcomeScreen() {
         welcomeLayout.setAlpha(0f);
@@ -693,6 +711,7 @@ public class MainActivity extends Activity {
     }
 
     private void startLlmGeneration(String prompt) {
+        masterStreamingStartPosition = -1;
         modelManager.generate(
                 ModelRole.MASTER,
                 prompt,
@@ -713,6 +732,12 @@ public class MainActivity extends Activity {
 
                             if (!masterStreamingStarted) {
                                 removeThinkingIndicator();
+
+                                // Запоминаем позицию, с которой начался сырой
+                                // streaming-ответ мастера.
+                                masterStreamingStartPosition =
+                                        chatTextView.getText().length();
+
                                 masterStreamingStarted = true;
                             }
 
@@ -737,6 +762,7 @@ public class MainActivity extends Activity {
                                 generationInProgress = false;
                                 generationCancelledByUser = false;
                                 masterStreamingStarted = false;
+                                masterStreamingStartPosition = -1;
 
                                 sendButton.setEnabled(true);
                                 sendButton.setText("Отправить");
@@ -758,10 +784,10 @@ public class MainActivity extends Activity {
                                     responseCleaner.clean(visibleText);
 
                             if (masterStreamingStarted) {
-                                appendColoredText(
-                                        "\n\n",
-                                        COLOR_MASTER
-                                );
+
+                                // Удаляем сырой streaming-текст
+                                // и заменяем его очищенной финальной версией.
+                                replaceStreamedMasterText(visibleText);
 
                                 GameEvent masterEvent =
                                         GameEvent.master(visibleText);
@@ -775,11 +801,13 @@ public class MainActivity extends Activity {
 
                             generationInProgress = false;
                             masterStreamingStarted = false;
+                            masterStreamingStartPosition = -1;
 
                             sendButton.setEnabled(true);
                             sendButton.setText("Отправить");
 
                             updateChat();
+                            updateSummaryIfNeeded();
                         });
                     }
 
@@ -805,5 +833,107 @@ public class MainActivity extends Activity {
                     }
                 }
         );
+    }
+    private void updateSummaryIfNeeded() {
+        summaryService.updateIfNeeded(
+                currentCampaignId,
+                new SummaryService.Listener() {
+
+                    @Override
+                    public void onStarted(int eventCount) {
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(false);
+                            sendButton.setText(
+                                    "Обновляю память..."
+                            );
+                        });
+                    }
+
+                    @Override
+                    public void onSkipped(int eventCount) {
+                        Log.d(
+                                "MyDND_SUMMARY",
+                                "Skipped, new events="
+                                        + eventCount
+                        );
+
+                        runOnUiThread(() -> {
+                            if (!generationInProgress) {
+                                sendButton.setEnabled(true);
+                                sendButton.setText("Отправить");
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onCompleted(
+                            SummaryEntity summary
+                    ) {
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+                        });
+                    }
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_SUMMARY",
+                                "Summary failed",
+                                throwable
+                        );
+
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+                        });
+                    }
+                }
+        );
+    }
+    private void replaceStreamedMasterText(
+            String cleanedText
+    ) {
+        if (masterStreamingStartPosition < 0) {
+            appendMasterMessage(cleanedText);
+            return;
+        }
+
+        CharSequence currentText =
+                chatTextView.getText();
+
+        int safeStart =
+                Math.min(
+                        masterStreamingStartPosition,
+                        currentText.length()
+                );
+
+        SpannableStringBuilder cleanedDisplay =
+                new SpannableStringBuilder(currentText);
+
+        // Удаляем весь сырой streaming:
+        // английский think, повторы и прочий хвост.
+        cleanedDisplay.delete(
+                safeStart,
+                cleanedDisplay.length()
+        );
+
+        // ВАЖНО:
+        // синхронизируем основной буфер чата,
+        // потому что updateChat() показывает именно chatDisplay.
+        chatDisplay.clear();
+        chatDisplay.clearSpans();
+        chatDisplay.append(cleanedDisplay);
+
+        // Добавляем уже очищенный финальный ответ
+        // в основной буфер.
+        appendColoredText(
+                cleanedText + "\n\n",
+                COLOR_MASTER
+        );
+
+        masterStreamingStartPosition = -1;
     }
 }

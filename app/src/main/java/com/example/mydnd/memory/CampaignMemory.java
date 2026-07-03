@@ -30,16 +30,39 @@ public class CampaignMemory {
             long campaignId,
             String playerAction
     ) {
-        String summary = loadLatestSummary(campaignId);
+        SummaryEntity latestSummary =
+                database.summaryDao()
+                        .getLatestForCampaign(campaignId);
+
+        String summaryText = "";
+
+        long summarizedToEventId = 0L;
+
+        if (latestSummary != null) {
+            if (latestSummary.text != null) {
+                summaryText =
+                        latestSummary.text.trim();
+            }
+
+            summarizedToEventId =
+                    latestSummary.toEventId;
+        }
 
         List<GameEvent> recentEvents =
-                loadRecentEvents(campaignId, playerAction);
+                loadRecentEvents(
+                        campaignId,
+                        summarizedToEventId,
+                        playerAction
+                );
 
         List<String> relevantFacts =
-                loadRelevantFacts(campaignId, playerAction);
+                loadRelevantFacts(
+                        campaignId,
+                        playerAction
+                );
 
         return new MemoryContext(
-                summary,
+                summaryText,
                 recentEvents,
                 relevantFacts
         );
@@ -58,13 +81,16 @@ public class CampaignMemory {
 
     private List<GameEvent> loadRecentEvents(
             long campaignId,
+            long afterEventId,
             String currentPlayerAction
     ) {
         List<GameEventEntity> entities =
-                database.gameEventDao().getRecentPromptEvents(
-                        campaignId,
-                        RECENT_EVENTS_LIMIT + 1
-                );
+                database.gameEventDao()
+                        .getRecentPromptEventsAfterId(
+                                campaignId,
+                                afterEventId,
+                                RECENT_EVENTS_LIMIT + 1
+                        );
 
         if (entities == null || entities.isEmpty()) {
             return new ArrayList<>();
