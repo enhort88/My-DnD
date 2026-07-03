@@ -31,9 +31,18 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.view.View;
+import com.example.mydnd.db.AppDatabase;
+import com.example.mydnd.db.DbExecutor;
+import com.example.mydnd.db.entity.CampaignEntity;
+import com.example.mydnd.db.entity.GameEventEntity;
+
 
 
 public class MainActivity extends Activity {
+
+    private AppDatabase database;
+    private long currentCampaignId = 0L;
+
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
 
@@ -115,6 +124,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        database = AppDatabase.getInstance(this);
+        initDefaultCampaign();
 
         welcomeLayout = findViewById(R.id.welcomeLayout);
         gameLayout = findViewById(R.id.gameLayout);
@@ -267,7 +279,9 @@ public class MainActivity extends Activity {
 
                     if (masterStreamingStarted) {
                         appendColoredText("\n\n", COLOR_MASTER);
-                        gameEvents.add(GameEvent.master(visibleText));
+                        GameEvent masterEvent = GameEvent.master(visibleText);
+                        gameEvents.add(masterEvent);
+                        saveEventToDb(masterEvent);
                     } else {
                         appendMasterMessage(visibleText);
                     }
@@ -462,13 +476,17 @@ public class MainActivity extends Activity {
     private void appendMasterMessage(String text) {
         appendColoredText(text + "\n\n", COLOR_MASTER);
 
-        gameEvents.add(GameEvent.master(text));
+        GameEvent event = GameEvent.master(text);
+        gameEvents.add(event);
+        saveEventToDb(event);
     }
 
     private void appendPlayerMessage(String text) {
         appendColoredText("› " + text + "\n\n", COLOR_PLAYER);
 
-        gameEvents.add(GameEvent.player(text));
+        GameEvent event = GameEvent.player(text);
+        gameEvents.add(event);
+        saveEventToDb(event);
     }
 
     private void appendSystemMessage(String text) {
@@ -567,5 +585,38 @@ public class MainActivity extends Activity {
                 return;
             }
         }
+    }
+    private void initDefaultCampaign() {
+        DbExecutor.execute(() -> {
+            CampaignEntity lastCampaign = database.campaignDao().getLastCampaign();
+
+            if (lastCampaign != null) {
+                currentCampaignId = lastCampaign.id;
+                return;
+            }
+
+            CampaignEntity campaign = new CampaignEntity();
+            campaign.title = "Первая кампания";
+            campaign.createdAt = System.currentTimeMillis();
+            campaign.updatedAt = campaign.createdAt;
+
+            currentCampaignId = database.campaignDao().insert(campaign);
+        });
+    }
+    private void saveEventToDb(GameEvent event) {
+        if (currentCampaignId == 0L) {
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            GameEventEntity entity = new GameEventEntity();
+            entity.campaignId = currentCampaignId;
+            entity.speaker = event.getSpeaker().name();
+            entity.text = event.getText();
+            entity.includeInPrompt = event.isIncludeInPrompt();
+            entity.createdAt = event.getCreatedAtMillis();
+
+            database.gameEventDao().insert(entity);
+        });
     }
 }
