@@ -38,7 +38,8 @@ import com.example.mydnd.db.entity.GameEventEntity;
 import android.util.Log;
 import com.example.mydnd.memory.CampaignMemory;
 import com.example.mydnd.memory.MemoryContext;
-
+import com.example.mydnd.llm.LlmModelManager;
+import com.example.mydnd.llm.ModelRole;
 
 
 
@@ -60,7 +61,7 @@ public class MainActivity extends Activity {
     private ScrollView chatScrollView;
     private Button sendButton;
 
-    private LlmEngine llmEngine;
+    private LlmModelManager modelManager;
 
     private final StringBuilder chatHistory = new StringBuilder();
 
@@ -154,16 +155,23 @@ public class MainActivity extends Activity {
         useThinkingCheckBox = findViewById(R.id.useThinkingCheckBox);
         showThinkingCheckBox = findViewById(R.id.showThinkingCheckBox);
 
-        File modelFile = new File(
-                getExternalFilesDir("models"),
+        File modelsDirectory =
+                getExternalFilesDir("models");
+
+        File masterModelFile = new File(
+                modelsDirectory,
                 "Qwen3-4B-Q4_K_M.gguf"
         );
 
-//        chatHistory.append("Система: путь к модели:\n");
-//        chatHistory.append(modelFile.getAbsolutePath());
-//        chatHistory.append("\n\n");
+        File serviceModelFile = new File(
+                modelsDirectory,
+                "Qwen3-0.6B-Q4_K_M.gguf"
+        );
 
-        llmEngine = new LocalLlmEngine(modelFile.getAbsolutePath());
+        modelManager = new LlmModelManager(
+                masterModelFile.getAbsolutePath(),
+                serviceModelFile.getAbsolutePath()
+        );
 
         showWelcomeMenu();
 
@@ -185,7 +193,7 @@ public class MainActivity extends Activity {
                 generationCancelledByUser = true;
                 removeThinkingIndicator();
                 flushStreamingTokens();
-                llmEngine.cancel();
+                modelManager.cancelCurrent();
 
                 sendButton.setEnabled(false);
                 sendButton.setText("Останавливаю...");
@@ -344,14 +352,14 @@ public class MainActivity extends Activity {
                 .start();
     }
 
-    @Override
-    public void onBackPressed() {
-        if (gameLayout.getVisibility() == View.VISIBLE) {
-            showWelcomeScreen();
-        } else {
-            super.onBackPressed();
-        }
-    }
+//    @Override
+//    public void onBackPressed() {
+//        if (gameLayout.getVisibility() == View.VISIBLE) {
+//            showWelcomeScreen();
+//        } else {
+//            super.onBackPressed();
+//        }
+//    }
 
     private void showWelcomeScreen() {
         welcomeLayout.setAlpha(0f);
@@ -685,7 +693,8 @@ public class MainActivity extends Activity {
     }
 
     private void startLlmGeneration(String prompt) {
-        llmEngine.generate(
+        modelManager.generate(
+                ModelRole.MASTER,
                 prompt,
                 generationProfile,
                 new LlmCallback() {
