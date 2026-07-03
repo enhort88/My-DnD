@@ -8,6 +8,7 @@
 #include <android/log.h>
 #include <atomic>
 #include <ctime>
+#include <chrono>
 
 #define MYDND_LOG_TAG "MyDND_NATIVE"
 #define MYDND_LOGI(...) __android_log_print(ANDROID_LOG_INFO, MYDND_LOG_TAG, __VA_ARGS__)
@@ -221,13 +222,6 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
                 true
         );
         MYDND_LOGI("nativeGenerate: tokenized = %d", tokenized);
-        if (tokenized > 512) {
-    MYDND_LOGE("nativeGenerate: prompt too long for one batch, tokenized = %d", tokenized);
-    return string_to_jstring(
-            env,
-            "Ошибка: prompt слишком длинный для одного batch. Сейчас лимит 512 токенов."
-    );
-}
 
         if (tokenized < 0) {
             return string_to_jstring(env, "Ошибка: tokenizer вернул отрицательный результат.");
@@ -372,6 +366,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         const int n_predict = maxTokens > 0 ? maxTokens : 80;
 
+        const int hard_max_tokens = n_predict + 60;
+
         llama_memory_clear(llama_get_memory(handle->ctx), true);
 
         int n_prompt = -llama_tokenize(
@@ -390,10 +386,17 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         const uint32_t n_ctx = llama_n_ctx(handle->ctx);
 
-        if (static_cast<uint32_t>(n_prompt + n_predict) >= n_ctx) {
+        if (static_cast<uint32_t>(n_prompt + hard_max_tokens) >= n_ctx) {
+            MYDND_LOGE(
+                    "nativeGenerateStream: context overflow, prompt=%d, output=%d, ctx=%u",
+                    n_prompt,
+                    hard_max_tokens,
+                    n_ctx
+            );
+
             return string_to_jstring(
                     env,
-                    "Ошибка: prompt слишком длинный для текущего контекста."
+                    "Ошибка: prompt и ответ не помещаются в текущий контекст модели."
             );
         }
 
@@ -413,14 +416,6 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         if (tokenized < 0) {
             return string_to_jstring(env, "Ошибка: tokenizer вернул отрицательный результат.");
-        }
-
-        if (tokenized > 512) {
-            MYDND_LOGE("nativeGenerateStream: prompt too long for one batch, tokenized = %d", tokenized);
-            return string_to_jstring(
-                    env,
-                    "Ошибка: prompt слишком длинный для одного batch. Сейчас лимит 512 токенов."
-            );
         }
 
         llama_sampler_chain_params sampler_params =
@@ -450,7 +445,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.75f));
         llama_sampler_chain_add(sampler, llama_sampler_init_dist((uint32_t) time(nullptr)));
 
-        const int prompt_chunk_size = 32;
+        auto prompt_decode_start =
+                std::chrono::steady_clock::now();
+
+        const int prompt_chunk_size = 16;
 
         for (int pos = 0; pos < tokenized; pos += prompt_chunk_size) {
             if (handle->cancel_requested.load()) {
@@ -477,6 +475,17 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
                 return string_to_jstring(env, "Ошибка: llama_decode не смог обработать часть prompt.");
             }
         }
+        auto prompt_decode_end =
+                std::chrono::steady_clock::now();
+
+        auto prompt_decode_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                        prompt_decode_end - prompt_decode_start
+                ).count();
+        MYDND_LOGI(
+                "nativeGenerateStream: prompt decode = %lld ms",
+                static_cast<long long>(prompt_decode_ms)
+        );
 
         if (handle->cancel_requested.load()) {
             llama_sampler_free(sampler);
@@ -488,38 +497,69 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         llama_token new_token_id;
 
         const int soft_min_tokens = n_predict * 3 / 4;
-        const int hard_max_tokens = n_predict + 60;
+
+// Начинаем замер именно генерации ответа.
+        auto generation_start =
+                std::chrono::steady_clock::now();
+
+        int generated_tokens = 0;
 
         for (int i = 0; i < hard_max_tokens; i++) {
             if (handle->cancel_requested.load()) {
-                MYDND_LOGI("nativeGenerateStream: cancelled in token loop, i = %d", i);
+                MYDND_LOGI(
+                        "nativeGenerateStream: cancelled in token loop, i = %d",
+                        i
+                );
                 break;
             }
-            new_token_id = llama_sampler_sample(sampler, handle->ctx, -1);
 
-            if (llama_vocab_is_eog(handle->vocab, new_token_id)) {
+            new_token_id =
+                    llama_sampler_sample(
+                            sampler,
+                            handle->ctx,
+                            -1
+                    );
+
+            if (llama_vocab_is_eog(
+                    handle->vocab,
+                    new_token_id
+            )) {
                 break;
             }
+
+            // Токен реально сгенерирован.
+            generated_tokens++;
 
             char buffer[256];
 
-            int piece_length = llama_token_to_piece(
-                    handle->vocab,
-                    new_token_id,
-                    buffer,
-                    sizeof(buffer),
-                    0,
-                    true
-            );
+            int piece_length =
+                    llama_token_to_piece(
+                            handle->vocab,
+                            new_token_id,
+                            buffer,
+                            sizeof(buffer),
+                            0,
+                            true
+                    );
 
             if (piece_length > 0) {
-                std::string piece(buffer, piece_length);
+                std::string piece(
+                        buffer,
+                        piece_length
+                );
+
                 output.append(piece);
 
-                jstring jToken = env->NewStringUTF(piece.c_str());
-                env->CallVoidMethod(callbackObject, onTokenMethod, jToken);
-                env->DeleteLocalRef(jToken);
+                jstring jToken =
+                        env->NewStringUTF(piece.c_str());
 
+                env->CallVoidMethod(
+                        callbackObject,
+                        onTokenMethod,
+                        jToken
+                );
+
+                env->DeleteLocalRef(jToken);
 
                 if (env->ExceptionCheck()) {
                     env->ExceptionDescribe();
@@ -527,15 +567,46 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
                     break;
                 }
             }
-            if (i >= soft_min_tokens && ends_with_sentence_mark(output)) {
+
+            if (i >= soft_min_tokens
+                && ends_with_sentence_mark(output)) {
                 break;
             }
-            llama_batch batch = llama_batch_get_one(&new_token_id, 1);
+
+            llama_batch batch =
+                    llama_batch_get_one(
+                            &new_token_id,
+                            1
+                    );
 
             if (llama_decode(handle->ctx, batch) != 0) {
                 break;
             }
         }
+
+// Закончили замер генерации.
+        auto generation_end =
+                std::chrono::steady_clock::now();
+
+        auto generation_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                        generation_end - generation_start
+                ).count();
+
+        double tokens_per_second = 0.0;
+
+        if (generation_ms > 0) {
+            tokens_per_second =
+                    generated_tokens * 1000.0
+                    / static_cast<double>(generation_ms);
+        }
+
+        MYDND_LOGI(
+                "nativeGenerateStream: generation = %lld ms, tokens = %d, speed = %.2f tok/s",
+                static_cast<long long>(generation_ms),
+                generated_tokens,
+                tokens_per_second
+        );
 
         llama_sampler_free(sampler);
 

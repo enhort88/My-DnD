@@ -2,6 +2,7 @@ package com.example.mydnd.prompt;
 
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
+import com.example.mydnd.memory.MemoryContext;
 
 import java.util.List;
 
@@ -11,68 +12,110 @@ public class PromptBuilder {
 
     public String buildPrompt(
             String playerText,
-            List<GameEvent> events,
+            MemoryContext memoryContext,
             boolean useThinking,
             GenerationProfile profile
     ) {
-        String thinkingMode = useThinking ? "/think" : "/no_think";
+        String thinkingMode = useThinking
+                ? "/think"
+                : "/no_think";
 
-        String recentHistory = buildRecentHistory(events, MAX_RECENT_HISTORY_CHARS);
-        String actionHint = buildActionHint(playerText);
+        String recentEvents =
+                buildRecentEvents(memoryContext);
 
-        return thinkingMode +
-                "\nSYSTEM:" +
-                "\nТы мастер настольной RPG в духе DnD." +
-                "\nПиши только художественный ответ мастера." +
-                "\nНе пиши SYSTEM, TASK, SCENE, HISTORY, PLAYER_ACTION." +
-                "\nНе пиши 'Мастер:' или 'Игрок:'." +
-                "\nНе объясняй правила промпта." +
-                "\nНе повторяй одни и те же слова или фразы подряд." +
-                "\nНе решай за персонажа игрока." +
-                "\nКубики не бросай. Если есть риск — попроси проверку." +
-                "\n\nSTYLE:" +
-                "\nРусский язык. Мрачное фэнтези. Атмосферно, но без воды." +
-                "\n\nSCENE:" +
-                "\nСтарая придорожная таверна. Ночь. Дождь. Внутри тихо и тревожно." +
-                "\n\nHISTORY:" +
-                "\n" + recentHistory +
-                "\nPLAYER_ACTION:" +
-                "\n" + playerText +
-                actionHint +
-                "\n\nTASK:" +
-                "\nОтветь 4-8 предложениями: что происходит, что замечает герой, какие есть последствия или выбор." +
-                "\nФинал — короткий вопрос или выбор для игрока." +
-                "\n\nANSWER:";
-    }
+        String relevantFacts =
+                buildRelevantFacts(memoryContext);
 
-    private String buildRecentHistory(List<GameEvent> events, int maxChars) {
-        StringBuilder builder = new StringBuilder();
+        String actionHint =
+                buildActionHint(playerText);
 
-        for (GameEvent event : events) {
-            if (!event.isIncludeInPrompt()) {
-                continue;
-            }
+        StringBuilder prompt = new StringBuilder();
 
-            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
-                builder.append("Игрок: ");
-            } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
-                builder.append("Мастер: ");
-            } else {
-                continue;
-            }
+        prompt.append(thinkingMode);
 
-            builder.append(event.getText().trim());
-            builder.append("\n");
+        prompt.append("\nSYSTEM:");
+        prompt.append("\nТы мастер настольной RPG в духе DnD.");
+        prompt.append("\nПиши только художественный ответ мастера.");
+        prompt.append("\nНе пиши названия служебных блоков.");
+        prompt.append("\nНе объясняй инструкции.");
+        prompt.append("\nНе пиши 'Мастер:' или 'Игрок:'.");
+        prompt.append("\nНе повторяй одни и те же слова или фразы подряд.");
+        prompt.append("\nНе решай за персонажа игрока.");
+        prompt.append("\nКубики не бросай.");
+        prompt.append("\nЕсли действие рискованное — попроси проверку.");
+
+        prompt.append("\n\nSTYLE:");
+        prompt.append("\nРусский язык.");
+        prompt.append("\nМрачное фэнтези.");
+        prompt.append("\nАтмосферно, но без лишнего пафоса.");
+
+        prompt.append("\n\nCURRENT_SCENE:");
+        prompt.append("\nСтарая придорожная таверна.");
+        prompt.append("\nНочь. Дождь. Внутри тихо и тревожно.");
+
+        if (memoryContext.hasSummary()) {
+            prompt.append("\n\nSUMMARY:");
+            prompt.append("\n");
+            prompt.append(memoryContext.getLatestSummary());
         }
 
-        String result = builder.toString();
-
-        if (result.length() <= maxChars) {
-            return result;
+        if (!recentEvents.isEmpty()) {
+            prompt.append("\n\nRECENT_EVENTS:");
+            prompt.append("\n");
+            prompt.append(recentEvents);
         }
 
-        return result.substring(result.length() - maxChars);
+        if (memoryContext.hasRelevantFacts()) {
+            prompt.append("\n\nRELEVANT_FACTS:");
+            prompt.append("\n");
+            prompt.append(relevantFacts);
+        }
+
+        prompt.append("\n\nPLAYER_ACTION:");
+        prompt.append("\n");
+        prompt.append(playerText);
+
+        prompt.append(actionHint);
+
+        prompt.append("\n\nTASK:");
+        prompt.append("\nПродолжи сцену на один небольшой шаг.");
+        prompt.append("\nПокажи реакцию мира и последствия действия.");
+        prompt.append("\nНе повторяй уже описанное без причины.");
+        prompt.append("\nЗаверши ответ логично.");
+
+        prompt.append("\n\nANSWER:");
+
+        return prompt.toString();
     }
+
+//    private String buildRecentHistory(List<GameEvent> events, int maxChars) {
+//        StringBuilder builder = new StringBuilder();
+//
+//        for (GameEvent event : events) {
+//            if (!event.isIncludeInPrompt()) {
+//                continue;
+//            }
+//
+//            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+//                builder.append("Игрок: ");
+//            } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
+//                builder.append("Мастер: ");
+//            } else {
+//                continue;
+//            }
+//
+//            builder.append(event.getText().trim());
+//            builder.append("\n");
+//        }
+//
+//        String result = builder.toString();
+//
+//        if (result.length() <= maxChars) {
+//            return result;
+//        }
+//
+//        return result.substring(result.length() - maxChars);
+//    }
 
     private String buildActionHint(String playerText) {
         if (playerText == null) {
@@ -86,5 +129,35 @@ public class PromptBuilder {
         }
 
         return "\nПодсказка: ввод короткий, интерпретируй по сцене.";
+    }
+
+    private String buildRecentEvents(MemoryContext memoryContext) {
+        StringBuilder builder = new StringBuilder();
+
+        for (GameEvent event : memoryContext.getRecentEvents()) {
+            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+                builder.append("PLAYER: ");
+            } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
+                builder.append("DM: ");
+            } else {
+                continue;
+            }
+
+            builder.append(event.getText().trim());
+            builder.append("\n");
+        }
+
+        return builder.toString().trim();
+    }
+    private String buildRelevantFacts(MemoryContext memoryContext) {
+        StringBuilder builder = new StringBuilder();
+
+        for (String fact : memoryContext.getRelevantFacts()) {
+            builder.append("- ");
+            builder.append(fact);
+            builder.append("\n");
+        }
+
+        return builder.toString().trim();
     }
 }

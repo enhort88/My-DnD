@@ -35,10 +35,18 @@ import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.GameEventEntity;
+import android.util.Log;
+import com.example.mydnd.memory.CampaignMemory;
+import com.example.mydnd.memory.MemoryContext;
+
 
 
 
 public class MainActivity extends Activity {
+
+    private static final String TAG_MEMORY = "MyDND_MEMORY";
+
+    private CampaignMemory campaignMemory;
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
@@ -126,6 +134,7 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         database = AppDatabase.getInstance(this);
+        campaignMemory = new CampaignMemory(database);
         initDefaultCampaign();
 
         welcomeLayout = findViewById(R.id.welcomeLayout);
@@ -225,114 +234,16 @@ public class MainActivity extends Activity {
         sendButton.setEnabled(true);
         sendButton.setText("Стоп");
 
-        String prompt = buildPrompt(playerText);
-
         showThinkingIndicator();
 
-        llmEngine.generate(prompt, generationProfile, new LlmCallback() {
-            @Override
-            public void onToken(String token) {
-                runOnUiThread(() -> {
-                    if (token == null || token.isEmpty()) {
-                        return;
-                    }
+        buildMemoryAndGenerate(playerText);
 
-                    if (token.startsWith("[Система]")) {
-                        flushStreamingTokens();
-                        appendSystemMessage(token.replace("[Система]", "").trim());
-                        return;
-                    }
 
-                    if (!masterStreamingStarted) {
-                        removeThinkingIndicator();
-                        masterStreamingStarted = true;
-                    }
 
-                    appendStreamingToken(token);
-                });
-            }
 
-            @Override
-            public void onComplete(String fullText) {
-                runOnUiThread(() -> {
-                    removeThinkingIndicator();
-                    flushStreamingTokens();
-
-                    if (generationCancelledByUser) {
-                        removeLastPlayerEvent();
-                        appendColoredText("\n\n", COLOR_MASTER);
-                        //appendSystemMessage("Генерация остановлена.");
-
-                        generationInProgress = false;
-                        generationCancelledByUser = false;
-                        masterStreamingStarted = false;
-
-                        sendButton.setEnabled(true);
-                        sendButton.setText("Отправить");
-
-                        updateChat();
-                        return;
-                    }
-
-                    String visibleText = fullText;
-
-                    if (!showThinkingCheckBox.isChecked()) {
-                        visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
-                    }
-                    visibleText = responseCleaner.clean(visibleText);
-
-                    if (masterStreamingStarted) {
-                        appendColoredText("\n\n", COLOR_MASTER);
-                        GameEvent masterEvent = GameEvent.master(visibleText);
-                        gameEvents.add(masterEvent);
-                        saveEventToDb(masterEvent);
-                    } else {
-                        appendMasterMessage(visibleText);
-                    }
-
-                    promptHistory.append("Мастер: ");
-                    promptHistory.append(visibleText);
-                    promptHistory.append("\n\n");
-
-                    generationInProgress = false;
-                    masterStreamingStarted = false;
-
-                    sendButton.setEnabled(true);
-                    sendButton.setText("Отправить");
-
-                    updateChat();
-                });
-            }
-
-            @Override
-            public void onError(Throwable throwable) {
-                runOnUiThread(() -> {
-                    removeThinkingIndicator();
-                    flushStreamingTokens();
-
-                    generationInProgress = false;
-                    generationCancelledByUser = false;
-                    masterStreamingStarted = false;
-
-                    appendSystemMessage("Ошибка LLM: " + throwable.getMessage());
-
-                    sendButton.setEnabled(true);
-                    sendButton.setText("Отправить");
-
-                    updateChat();
-                });
-            }
-        });
     }
 
-    private String buildPrompt(String playerText) {
-        return promptBuilder.buildPrompt(
-                playerText,
-                gameEvents,
-                useThinkingCheckBox.isChecked(),
-                generationProfile
-        );
-    }
+
 
     private void updateChat() {
         chatTextView.setText(chatDisplay);
@@ -633,6 +544,29 @@ public class MainActivity extends Activity {
             List<GameEventEntity> savedEvents =
                     database.gameEventDao().getEventsForCampaign(currentCampaignId);
 
+            MemoryContext memoryContext =
+                    campaignMemory.buildContext(
+                            currentCampaignId,
+                            ""
+                    );
+
+            Log.d(
+                    TAG_MEMORY,
+                    "Summary: " + memoryContext.getLatestSummary()
+            );
+
+            Log.d(
+                    TAG_MEMORY,
+                    "Recent events: "
+                            + memoryContext.getRecentEvents().size()
+            );
+
+            Log.d(
+                    TAG_MEMORY,
+                    "Relevant facts: "
+                            + memoryContext.getRelevantFacts().size()
+            );
+
             runOnUiThread(() -> {
                 chatDisplay.clear();
                 gameEvents.clear();
@@ -700,5 +634,167 @@ public class MainActivity extends Activity {
                 startFirstScene();
             });
         });
+    }
+
+    private void buildMemoryAndGenerate(String playerText) {
+        DbExecutor.execute(() -> {
+            try {
+                MemoryContext memoryContext =
+                        campaignMemory.buildContext(
+                                currentCampaignId,
+                                playerText
+                        );
+
+                String prompt =
+                        promptBuilder.buildPrompt(
+                                playerText,
+                                memoryContext,
+                                useThinkingCheckBox.isChecked(),
+                                generationProfile
+                        );
+
+                Log.d(
+                        TAG_MEMORY,
+                        "Prompt memory: summary="
+                                + memoryContext.hasSummary()
+                                + ", recentEvents="
+                                + memoryContext.getRecentEvents().size()
+                                + ", relevantFacts="
+                                + memoryContext.getRelevantFacts().size()
+                );
+
+                startLlmGeneration(prompt);
+
+            } catch (Throwable throwable) {
+                runOnUiThread(() -> {
+                    removeThinkingIndicator();
+
+                    generationInProgress = false;
+
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
+
+                    Log.e(
+                            TAG_MEMORY,
+                            "Failed to build memory context",
+                            throwable
+                    );
+                });
+            }
+        });
+    }
+
+    private void startLlmGeneration(String prompt) {
+        llmEngine.generate(
+                prompt,
+                generationProfile,
+                new LlmCallback() {
+
+                    @Override
+                    public void onToken(String token) {
+                        runOnUiThread(() -> {
+                            if (token == null || token.isEmpty()) {
+                                return;
+                            }
+
+                            if (token.startsWith("[Система]")) {
+                                flushStreamingTokens();
+                                return;
+                            }
+
+                            if (!masterStreamingStarted) {
+                                removeThinkingIndicator();
+                                masterStreamingStarted = true;
+                            }
+
+                            appendStreamingToken(token);
+                        });
+                    }
+
+                    @Override
+                    public void onComplete(String fullText) {
+                        runOnUiThread(() -> {
+                            removeThinkingIndicator();
+                            flushStreamingTokens();
+
+                            if (generationCancelledByUser) {
+                                removeLastPlayerEvent();
+
+                                appendColoredText(
+                                        "\n\n",
+                                        COLOR_MASTER
+                                );
+
+                                generationInProgress = false;
+                                generationCancelledByUser = false;
+                                masterStreamingStarted = false;
+
+                                sendButton.setEnabled(true);
+                                sendButton.setText("Отправить");
+
+                                updateChat();
+                                return;
+                            }
+
+                            String visibleText = fullText;
+
+                            if (!showThinkingCheckBox.isChecked()) {
+                                visibleText =
+                                        thinkBlockFilter.removeThinkBlocks(
+                                                fullText
+                                        );
+                            }
+
+                            visibleText =
+                                    responseCleaner.clean(visibleText);
+
+                            if (masterStreamingStarted) {
+                                appendColoredText(
+                                        "\n\n",
+                                        COLOR_MASTER
+                                );
+
+                                GameEvent masterEvent =
+                                        GameEvent.master(visibleText);
+
+                                gameEvents.add(masterEvent);
+                                saveEventToDb(masterEvent);
+
+                            } else {
+                                appendMasterMessage(visibleText);
+                            }
+
+                            generationInProgress = false;
+                            masterStreamingStarted = false;
+
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+
+                            updateChat();
+                        });
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        runOnUiThread(() -> {
+                            removeThinkingIndicator();
+                            flushStreamingTokens();
+
+                            generationInProgress = false;
+                            generationCancelledByUser = false;
+                            masterStreamingStarted = false;
+
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+
+                            Log.e(
+                                    "MyDND_LLM",
+                                    "Generation failed",
+                                    throwable
+                            );
+                        });
+                    }
+                }
+        );
     }
 }

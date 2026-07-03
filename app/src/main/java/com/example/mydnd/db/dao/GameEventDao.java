@@ -19,4 +19,16 @@ public interface GameEventDao {
 
     @Query("DELETE FROM game_events WHERE id = :eventId")
     void deleteById(long eventId);
+
+    @Query(
+            "SELECT * FROM game_events " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND include_in_prompt = 1 " +
+                    "ORDER BY id DESC " +
+                    "LIMIT :limit"
+    )
+    List<GameEventEntity> getRecentPromptEvents(
+            long campaignId,
+            int limit
+    );
 }
