@@ -20,4 +20,6 @@ public class NativeLlmBridge {
     );
 
     public native void nativeRelease(long handle);
+
+    public native void nativeCancel(long handle);
 }

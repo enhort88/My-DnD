@@ -6,6 +6,8 @@
 
 #include "llama.h"
 #include <android/log.h>
+#include <atomic>
+#include <ctime>
 
 #define MYDND_LOG_TAG "MyDND_NATIVE"
 #define MYDND_LOGI(...) __android_log_print(ANDROID_LOG_INFO, MYDND_LOG_TAG, __VA_ARGS__)
@@ -16,7 +18,9 @@ struct MyDndLlamaHandle {
     llama_context * ctx = nullptr;
     const llama_vocab * vocab = nullptr;
     std::mutex mutex;
+    std::atomic_bool cancel_requested{false};
 };
+
 static bool ends_with_sentence_mark(const std::string & text) {
     if (text.empty()) {
         return false;
@@ -129,6 +133,25 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_mydnd_llm_NativeLlmBridge_nativeCancel(
+        JNIEnv * /* env */,
+        jobject /* this */,
+        jlong nativeHandle) {
+
+    if (nativeHandle == 0) {
+        return;
+    }
+
+    MyDndLlamaHandle * handle =
+            reinterpret_cast<MyDndLlamaHandle *>(nativeHandle);
+
+    handle->cancel_requested.store(true);
+
+    MYDND_LOGI("nativeCancel: cancel requested");
+}
+
+extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
         JNIEnv * env,
@@ -217,8 +240,25 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
 
         llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
 
-        // Для первого запуска — greedy. Потом добавим temperature/top_p.
-        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+// Антиповторы.
+// last_n — сколько последних токенов учитывать.
+// repeat_penalty > 1.0 наказывает повтор.
+// freq/present penalty дополнительно давят зацикливание.
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_penalties(
+                        96,     // last_n
+                        1.18f,  // repeat_penalty
+                        0.20f,  // frequency_penalty
+                        0.10f   // presence_penalty
+                )
+        );
+
+// Нормальная выборка вместо greedy.
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.90f, 1));
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.75f));
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist((uint32_t) time(nullptr)));
 
         llama_batch batch = llama_batch_get_one(
                 prompt_tokens.data(),
@@ -229,6 +269,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
         if (llama_decode(handle->ctx, batch) != 0) {
             llama_sampler_free(sampler);
             return string_to_jstring(env, "Ошибка: llama_decode не смог обработать prompt.");
+        }
+        if (handle->cancel_requested.load()) {
+            llama_sampler_free(sampler);
+            MYDND_LOGI("nativeGenerateStream: cancelled after prompt decode");
+            return string_to_jstring(env, "");
         }
 //        MYDND_LOGI("nativeGenerate: after prompt decode");
 
@@ -316,6 +361,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
     std::lock_guard<std::mutex> lock(handle->mutex);
 
+    handle->cancel_requested.store(false);
+
     try {
         std::string prompt = jstring_to_string(env, promptText);
 
@@ -383,16 +430,58 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
 
-        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
-
-        llama_batch batch = llama_batch_get_one(
-                prompt_tokens.data(),
-                static_cast<int32_t>(prompt_tokens.size())
+// Антиповторы.
+// last_n — сколько последних токенов учитывать.
+// repeat_penalty > 1.0 наказывает повтор.
+// freq/present penalty дополнительно давят зацикливание.
+        llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_penalties(
+                        96,     // last_n
+                        1.18f,  // repeat_penalty
+                        0.20f,  // frequency_penalty
+                        0.10f   // presence_penalty
+                )
         );
 
-        if (llama_decode(handle->ctx, batch) != 0) {
+// Нормальная выборка вместо greedy.
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.90f, 1));
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.75f));
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist((uint32_t) time(nullptr)));
+
+        const int prompt_chunk_size = 32;
+
+        for (int pos = 0; pos < tokenized; pos += prompt_chunk_size) {
+            if (handle->cancel_requested.load()) {
+                llama_sampler_free(sampler);
+                MYDND_LOGI("nativeGenerateStream: cancelled during prompt decode, pos = %d", pos);
+                return string_to_jstring(env, "");
+            }
+
+            int chunk_size = prompt_chunk_size;
+
+            if (pos + chunk_size > tokenized) {
+                chunk_size = tokenized - pos;
+            }
+
+            llama_batch batch = llama_batch_get_one(
+                    prompt_tokens.data() + pos,
+                    chunk_size
+            );
+
+            if (llama_decode(handle->ctx, batch) != 0) {
+                llama_sampler_free(sampler);
+                MYDND_LOGE("nativeGenerateStream: prompt decode failed, pos = %d, chunk_size = %d", pos, chunk_size);
+
+                return string_to_jstring(env, "Ошибка: llama_decode не смог обработать часть prompt.");
+            }
+        }
+
+        if (handle->cancel_requested.load()) {
             llama_sampler_free(sampler);
-            return string_to_jstring(env, "Ошибка: llama_decode не смог обработать prompt.");
+            MYDND_LOGI("nativeGenerateStream: cancelled after prompt decode");
+            return string_to_jstring(env, "");
         }
 
         std::string output;
@@ -402,6 +491,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         const int hard_max_tokens = n_predict + 60;
 
         for (int i = 0; i < hard_max_tokens; i++) {
+            if (handle->cancel_requested.load()) {
+                MYDND_LOGI("nativeGenerateStream: cancelled in token loop, i = %d", i);
+                break;
+            }
             new_token_id = llama_sampler_sample(sampler, handle->ctx, -1);
 
             if (llama_vocab_is_eog(handle->vocab, new_token_id)) {
@@ -437,7 +530,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
             if (i >= soft_min_tokens && ends_with_sentence_mark(output)) {
                 break;
             }
-            batch = llama_batch_get_one(&new_token_id, 1);
+            llama_batch batch = llama_batch_get_one(&new_token_id, 1);
 
             if (llama_decode(handle->ctx, batch) != 0) {
                 break;

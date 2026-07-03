@@ -9,15 +9,13 @@ public class StubLlmEngine implements LlmEngine {
     private boolean cancelled = false;
 
     @Override
-    public void generate(String prompt, LlmCallback callback) {
+    public void generate(String prompt, GenerationProfile profile, LlmCallback callback) {
         cancelled = false;
 
         String answer =
-                "<think>\n" +
-                        "Игрок входит в опасное место. Нужно создать напряжение, но не решать за него.\n" +
-                        "</think>\n\n" +
-                        "Дверь поддаётся с тяжёлым скрипом. Изнутри тянет холодом, " +
-                        "а на полу видны мокрые следы, ведущие в темноту.\n\n" +
+                "Дверь поддаётся с тяжёлым скрипом. " +
+                        "Изнутри тянет холодом, а на полу видны мокрые следы, ведущие в темноту. " +
+                        "Где-то за стойкой что-то тихо скребётся. " +
                         "Что ты будешь делать?";
 
         handler.postDelayed(() -> {

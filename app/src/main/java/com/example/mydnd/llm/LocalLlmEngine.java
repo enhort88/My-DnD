@@ -46,7 +46,7 @@ public class LocalLlmEngine implements LlmEngine {
     }
 
     @Override
-    public void generate(String prompt, LlmCallback callback) {
+    public void generate(String prompt, GenerationProfile profile, LlmCallback callback) {
         cancelled = false;
 
         new Thread(() -> {
@@ -61,13 +61,14 @@ public class LocalLlmEngine implements LlmEngine {
 
                 if (cancelled) {
                     Log.d(TAG, "generate(): cancelled after load");
+                    callback.onComplete("");
                     return;
                 }
 
                 String answer = bridge.nativeGenerateStream(
                         handle,
                         prompt,
-                        240,
+                        profile.getMaxTokens(),
                         token -> {
                             if (!cancelled) {
                                 callback.onToken(token);
@@ -77,10 +78,6 @@ public class LocalLlmEngine implements LlmEngine {
 
                 Log.d(TAG, "generate(): nativeGenerate finished");
 
-                if (cancelled) {
-                    Log.d(TAG, "generate(): cancelled after generation");
-                    return;
-                }
 
                 callback.onComplete(answer);
             } catch (Throwable throwable) {
@@ -93,6 +90,10 @@ public class LocalLlmEngine implements LlmEngine {
     @Override
     public void cancel() {
         cancelled = true;
+
+        if (handle != 0L) {
+            bridge.nativeCancel(handle);
+        }
     }
 
     @Override

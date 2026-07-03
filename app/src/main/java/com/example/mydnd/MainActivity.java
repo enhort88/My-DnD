@@ -8,12 +8,21 @@ import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.example.mydnd.game.GameEvent;
+import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.LlmEngine;
 import com.example.mydnd.llm.LocalLlmEngine;
 import android.widget.CheckBox;
+
+import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.llm.ThinkBlockFilter;
+import com.example.mydnd.prompt.PromptBuilder;
+
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+
 import android.os.Handler;
 import android.os.Looper;
 
@@ -26,6 +35,9 @@ import android.view.View;
 
 public class MainActivity extends Activity {
 
+    private final ResponseCleaner responseCleaner = new ResponseCleaner();
+
+    private boolean generationCancelledByUser = false;
     private TextView chatTextView;
     private EditText inputEditText;
     private ScrollView chatScrollView;
@@ -47,7 +59,7 @@ public class MainActivity extends Activity {
 
     private boolean streamFlushScheduled = false;
 
-    private static final long STREAM_FLUSH_DELAY_MS = 35;
+    private static final long STREAM_FLUSH_DELAY_MS = 80;
 
 
     private static final String SYSTEM_PROMPT =
@@ -93,6 +105,11 @@ public class MainActivity extends Activity {
         }
     };
 
+    private final List<GameEvent> gameEvents = new ArrayList<>();
+    private final PromptBuilder promptBuilder = new PromptBuilder();
+
+    private GenerationProfile generationProfile = GenerationProfile.normal();
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -136,23 +153,28 @@ public class MainActivity extends Activity {
         exitButton.setOnClickListener(v -> finish());
 
 
-        sendButton.setOnClickListener(v -> sendPlayerMessage());
-        sendButton.setOnLongClickListener(v -> {
-            llmEngine.cancel();
-            removeThinkingIndicator();
-            flushStreamingTokens();
-            sendButton.setEnabled(true);
-            sendButton.setText("Отправить");
+        sendButton.setOnClickListener(v -> {
+            if (generationInProgress) {
+                generationCancelledByUser = true;
+                removeThinkingIndicator();
+                flushStreamingTokens();
+                llmEngine.cancel();
 
-            chatHistory.append("Система: генерация отменена вручную.\n\n");
-            updateChat();
+                sendButton.setEnabled(false);
+                sendButton.setText("Останавливаю...");
 
-            return true;
+                appendSystemMessage("Останавливаю генерацию...");
+                return;
+            }
+
+            sendPlayerMessage();
         });
     }
 
     private void startFirstScene() {
+
         chatDisplay.clear();
+        gameEvents.clear();
         promptHistory.setLength(0);
 
         appendMasterMessage(
@@ -169,31 +191,29 @@ public class MainActivity extends Activity {
     }
 
     private void sendPlayerMessage() {
-        if (generationInProgress) {
-            return;
-        }
-
         String playerText = inputEditText.getText().toString().trim();
 
         if (playerText.isEmpty()) {
             return;
         }
 
+        generationCancelledByUser = false;
+        generationInProgress = true;
+        masterStreamingStarted = false;
+
         inputEditText.setText("");
         hideKeyboard();
 
         appendPlayerMessage(playerText);
 
-        sendButton.setEnabled(false);
-        sendButton.setText("Жду...");
+        sendButton.setEnabled(true);
+        sendButton.setText("Стоп");
 
         String prompt = buildPrompt(playerText);
 
-        masterStreamingStarted = false;
-        generationInProgress = true;
         showThinkingIndicator();
 
-        llmEngine.generate(prompt, new LlmCallback() {
+        llmEngine.generate(prompt, generationProfile, new LlmCallback() {
             @Override
             public void onToken(String token) {
                 runOnUiThread(() -> {
@@ -211,24 +231,43 @@ public class MainActivity extends Activity {
                         removeThinkingIndicator();
                         masterStreamingStarted = true;
                     }
-                    appendMasterStreamingToken(token);
+
+                    appendStreamingToken(token);
                 });
             }
 
             @Override
             public void onComplete(String fullText) {
-
                 runOnUiThread(() -> {
                     removeThinkingIndicator();
                     flushStreamingTokens();
+
+                    if (generationCancelledByUser) {
+                        removeLastPlayerEvent();
+                        appendColoredText("\n\n", COLOR_MASTER);
+                        //appendSystemMessage("Генерация остановлена.");
+
+                        generationInProgress = false;
+                        generationCancelledByUser = false;
+                        masterStreamingStarted = false;
+
+                        sendButton.setEnabled(true);
+                        sendButton.setText("Отправить");
+
+                        updateChat();
+                        return;
+                    }
+
                     String visibleText = fullText;
 
                     if (!showThinkingCheckBox.isChecked()) {
                         visibleText = thinkBlockFilter.removeThinkBlocks(fullText);
                     }
+                    visibleText = responseCleaner.clean(visibleText);
 
                     if (masterStreamingStarted) {
                         appendColoredText("\n\n", COLOR_MASTER);
+                        gameEvents.add(GameEvent.master(visibleText));
                     } else {
                         appendMasterMessage(visibleText);
                     }
@@ -242,6 +281,8 @@ public class MainActivity extends Activity {
 
                     sendButton.setEnabled(true);
                     sendButton.setText("Отправить");
+
+                    updateChat();
                 });
             }
 
@@ -250,48 +291,31 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     removeThinkingIndicator();
                     flushStreamingTokens();
+
                     generationInProgress = false;
+                    generationCancelledByUser = false;
                     masterStreamingStarted = false;
 
                     appendSystemMessage("Ошибка LLM: " + throwable.getMessage());
 
                     sendButton.setEnabled(true);
                     sendButton.setText("Отправить");
+
+                    updateChat();
                 });
             }
         });
     }
 
     private String buildPrompt(String playerText) {
-        String thinkingMode = useThinkingCheckBox.isChecked() ? "/think" : "/no_think";
-
-        String recentHistory = getRecentGameHistoryForPrompt(250);
-
-        return thinkingMode +
-                "\nТы мастер DnD. Русский язык. Мрачное фэнтези." +
-                "\nОписывай атмосферно, но без воды." +
-                "\nНе решай за героя. При риске проси проверку, кубик не бросай." +
-                "\nДай цельный ответ: сцена, последствия, детали, вопрос игроку." +
-                "\nНе обрывай фразу. Заверши ответ логично." +
-                "\n\nСцена: ночная таверна, дождь, внутри подозрительно тихо." +
-                "\n\nКраткая история:\n" + recentHistory +
-                "\n\nИгрок: " + playerText +
-                "\nМастер:";
+        return promptBuilder.buildPrompt(
+                playerText,
+                gameEvents,
+                useThinkingCheckBox.isChecked(),
+                generationProfile
+        );
     }
-//private String buildPrompt(String playerText) {
-//    String thinkingMode;
-//
-//    if (useThinkingCheckBox.isChecked()) {
-//        thinkingMode = "/think";
-//    } else {
-//        thinkingMode = "/no_think";
-//    }
-//
-//    return thinkingMode +
-//            "\nТы — мастер DnD. Отвечай на русском. Очень кратко." +
-//            "\nИгрок: " + playerText +
-//            "\nМастер:";
-//}
+
     private void updateChat() {
         chatTextView.setText(chatDisplay);
 
@@ -438,21 +462,18 @@ public class MainActivity extends Activity {
     private void appendMasterMessage(String text) {
         appendColoredText(text + "\n\n", COLOR_MASTER);
 
-        promptHistory.append("Мастер: ");
-        promptHistory.append(text);
-        promptHistory.append("\n\n");
+        gameEvents.add(GameEvent.master(text));
     }
 
     private void appendPlayerMessage(String text) {
-        appendColoredText(text + "\n\n", COLOR_PLAYER);
+        appendColoredText("› " + text + "\n\n", COLOR_PLAYER);
 
-        promptHistory.append("Игрок: ");
-        promptHistory.append(text);
-        promptHistory.append("\n\n");
+        gameEvents.add(GameEvent.player(text));
     }
 
     private void appendSystemMessage(String text) {
 //        appendColoredText("Система: " + text + "\n\n", COLOR_SYSTEM);
+        gameEvents.add(GameEvent.system(text));
     }
     private void appendMasterStreamingToken(String token) {
         int start = chatDisplay.length();
@@ -535,5 +556,16 @@ public class MainActivity extends Activity {
         );
 
         updateChat();
+    }
+
+    private void removeLastPlayerEvent() {
+        for (int i = gameEvents.size() - 1; i >= 0; i--) {
+            GameEvent event = gameEvents.get(i);
+
+            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+                gameEvents.remove(i);
+                return;
+            }
+        }
     }
 }
