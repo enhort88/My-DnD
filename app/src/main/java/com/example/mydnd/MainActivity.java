@@ -45,10 +45,9 @@ import com.example.mydnd.db.entity.SummaryEntity;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import android.text.SpannableStringBuilder;
+import android.widget.ImageView;
 
 public class MainActivity extends ComponentActivity {
-
-
 
     private SummaryService summaryService;
 
@@ -119,6 +118,9 @@ public class MainActivity extends ComponentActivity {
             "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
     };
 
+    private ImageView welcomeBackground;
+    private ImageView gameBackground;
+
     private final Runnable thinkingIndicatorRunnable = new Runnable() {
         @Override
         public void run() {
@@ -141,14 +143,18 @@ public class MainActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        welcomeBackground =
+                findViewById(R.id.welcomeBackground);
+
+        gameBackground =
+                findViewById(R.id.gameBackground);
 
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
 
         initDefaultCampaign();
 
-        welcomeLayout = findViewById(R.id.welcomeLayout);
-        gameLayout = findViewById(R.id.gameLayout);
+
         getOnBackPressedDispatcher().addCallback(
                 this,
                 new OnBackPressedCallback(true) {
@@ -200,6 +206,11 @@ public class MainActivity extends ComponentActivity {
                         database,
                         modelManager
                 );
+        welcomeLayout =
+                findViewById(R.id.welcomeLayout);
+
+        gameLayout =
+                findViewById(R.id.gameLayout);
 
         showWelcomeMenu();
 
@@ -353,11 +364,15 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void showWelcomeMenu() {
+        welcomeBackground.setVisibility(View.VISIBLE);
+        gameBackground.setVisibility(View.GONE);
+
         welcomeLayout.setVisibility(View.VISIBLE);
         gameLayout.setVisibility(View.GONE);
     }
 
     private void showGameScreen() {
+
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
 
         gameLayout.setAlpha(0f);
@@ -376,10 +391,14 @@ public class MainActivity extends ComponentActivity {
                 .translationX(0f)
                 .setDuration(300)
                 .start();
+        welcomeBackground.setVisibility(View.GONE);
+        gameBackground.setVisibility(View.VISIBLE);
     }
 
 
     private void showWelcomeScreen() {
+        welcomeBackground.setVisibility(View.VISIBLE);
+        gameBackground.setVisibility(View.GONE);
         welcomeLayout.setAlpha(0f);
         welcomeLayout.setTranslationX(-welcomeLayout.getWidth() * 0.25f);
         welcomeLayout.setVisibility(View.VISIBLE);
@@ -396,6 +415,8 @@ public class MainActivity extends ComponentActivity {
                 .translationX(0f)
                 .setDuration(260)
                 .start();
+
+
     }
 
 

@@ -6,97 +6,94 @@
     android:background="#151515"
     android:fitsSystemWindows="true">
 
+    <ImageView
+        android:id="@+id/welcomeBackground"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop"
+        android:src="@drawable/main_menu_bg" />
+
+    <ImageView
+        android:id="@+id/gameBackground"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop"
+        android:src="@drawable/game_bg"
+        android:visibility="gone" />
+
+    <!-- Приветственное меню -->
     <!-- Приветственное меню -->
     <LinearLayout
         android:id="@+id/welcomeLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:padding="24dp"
-        android:gravity="center">
+        android:gravity="center_horizontal"
+        android:background="@android:color/transparent">
 
         <Space
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
-
-        <TextView
-            android:id="@+id/titleTextView"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Pocket D&amp;D"
-            android:textColor="#E8D8A8"
-            android:textSize="36sp"
-            android:textStyle="bold"
-            android:gravity="center" />
-
-        <TextView
-            android:id="@+id/subtitleTextView"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Подземелье и драконы в кармане"
-            android:textColor="#B8B0A0"
-            android:textSize="18sp"
-            android:gravity="center"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="48dp" />
 
         <Button
             android:id="@+id/startGameButton"
-            android:layout_width="240dp"
-            android:layout_height="56dp"
-            android:text="Начать игру"
-            android:textSize="18sp"
-            android:textAllCaps="false"
-            android:backgroundTint="#7A2E2E"
-            android:textColor="#FFFFFF" />
+            android:layout_width="239dp"
+            android:layout_height="57dp"
+            android:background="@android:color/transparent"
+            android:backgroundTint="@android:color/transparent"
+            android:elevation="0dp"
+            android:stateListAnimator="@null"
+            android:text=""
+            android:translationX="-4dp"
+            android:translationY="48dp" />
 
         <Button
             android:id="@+id/loadGameButton"
-            android:layout_width="240dp"
-            android:layout_height="52dp"
-            android:text="Загрузить игру"
-            android:textSize="16sp"
-            android:textAllCaps="false"
-            android:backgroundTint="#3A3A3A"
-            android:textColor="#E8E0D0"
-            android:layout_marginTop="12dp" />
+            android:layout_width="236dp"
+            android:layout_height="53dp"
+            android:layout_marginTop="8dp"
+            android:background="@android:color/transparent"
+            android:backgroundTint="@android:color/transparent"
+            android:elevation="0dp"
+            android:stateListAnimator="@null"
+            android:text=""
+            android:translationX="-4dp"
+            android:translationY="50dp" />
 
         <Button
             android:id="@+id/settingsButton"
-            android:layout_width="240dp"
+            android:layout_width="233dp"
             android:layout_height="52dp"
-            android:text="Настройки"
-            android:textSize="16sp"
-            android:textAllCaps="false"
+            android:layout_marginTop="8dp"
+            android:background="@android:color/transparent"
+            android:backgroundTint="@android:color/transparent"
+            android:elevation="0dp"
             android:enabled="false"
-            android:layout_marginTop="12dp" />
+            android:stateListAnimator="@null"
+            android:text=""
+            android:translationX="-4dp"
+            android:translationY="53dp" />
 
         <Button
             android:id="@+id/exitButton"
-            android:layout_width="240dp"
-            android:layout_height="52dp"
-            android:text="Выход"
-            android:textSize="16sp"
-            android:textAllCaps="false"
-            android:backgroundTint="#303030"
-            android:textColor="#E8E0D0"
-            android:layout_marginTop="12dp" />
+            android:layout_width="232dp"
+            android:layout_height="54dp"
+            android:layout_marginTop="8dp"
+            android:background="@android:color/transparent"
+            android:backgroundTint="@android:color/transparent"
+            android:elevation="0dp"
+            android:stateListAnimator="@null"
+            android:text=""
+            android:translationX="-4dp"
+            android:translationY="55dp" />
 
         <Space
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
-
-        <TextView
-            android:id="@+id/authorTextView"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Artem Ponikarov \n enhort@gmail.com"
-            android:textColor="#777777"
-            android:textSize="13sp"
-            android:gravity="center"
-            android:paddingBottom="8dp" />
 
     </LinearLayout>
 
@@ -107,7 +104,7 @@
         android:layout_height="match_parent"
         android:orientation="vertical"
         android:visibility="gone"
-        android:background="#151515"
+        android:background="@android:color/transparent"
         android:clipToPadding="false"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
