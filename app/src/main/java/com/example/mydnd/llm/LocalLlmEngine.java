@@ -9,7 +9,6 @@ public class LocalLlmEngine implements LlmEngine {
     private static final String TAG =
             "MyDND_LLM";
 
-
     private final NativeLlmBridge nativeBridge =
             new NativeLlmBridge();
 
@@ -17,23 +16,17 @@ public class LocalLlmEngine implements LlmEngine {
 
     private final boolean useMetadataPhase;
 
+    private long handle = 0L;
 
-    private long handle =
-            0L;
-
-    private boolean cancelled =
-            false;
+    private boolean cancelled = false;
 
 
     public LocalLlmEngine(
             String modelPath,
             boolean useMetadataPhase
     ) {
-        this.modelPath =
-                modelPath;
-
-        this.useMetadataPhase =
-                useMetadataPhase;
+        this.modelPath = modelPath;
+        this.useMetadataPhase = useMetadataPhase;
     }
 
 
@@ -42,12 +35,8 @@ public class LocalLlmEngine implements LlmEngine {
             return;
         }
 
-
         File modelFile =
-                new File(
-                        modelPath
-                );
-
+                new File(modelPath);
 
         if (!modelFile.exists()) {
             throw new IllegalStateException(
@@ -56,7 +45,6 @@ public class LocalLlmEngine implements LlmEngine {
             );
         }
 
-
         if (!modelFile.canRead()) {
             throw new IllegalStateException(
                     "Нет доступа на чтение модели: "
@@ -64,12 +52,10 @@ public class LocalLlmEngine implements LlmEngine {
             );
         }
 
-
         handle =
                 nativeBridge.nativeLoadModel(
                         modelPath
                 );
-
 
         if (handle == 0L) {
             throw new IllegalStateException(
@@ -86,23 +72,32 @@ public class LocalLlmEngine implements LlmEngine {
             GenerationProfile profile,
             LlmCallback callback
     ) {
-        cancelled =
-                false;
+        generate(
+                prompt,
+                "",
+                profile,
+                callback
+        );
+    }
 
+
+    public void generate(
+            String prompt,
+            String metadataPrompt,
+            GenerationProfile profile,
+            LlmCallback callback
+    ) {
+        cancelled = false;
 
         new Thread(
                 () -> {
-
                     try {
-
                         Log.d(
                                 TAG,
                                 "generate(): started"
                         );
 
-
                         load();
-
 
                         Log.d(
                                 TAG,
@@ -111,21 +106,15 @@ public class LocalLlmEngine implements LlmEngine {
                                         + useMetadataPhase
                         );
 
-
                         if (cancelled) {
-
                             Log.d(
                                     TAG,
                                     "generate(): cancelled after load"
                             );
 
-                            callback.onComplete(
-                                    ""
-                            );
-
+                            callback.onComplete("");
                             return;
                         }
-
 
                         NativeTokenCallback nativeCallback =
                                 new NativeTokenCallback() {
@@ -134,17 +123,20 @@ public class LocalLlmEngine implements LlmEngine {
                                     public void onToken(
                                             String token
                                     ) {
-                                        callback.onToken(
-                                                token
-                                        );
+                                        callback.onToken(token);
                                     }
                                 };
 
+                        String safeMetadataPrompt =
+                                metadataPrompt == null
+                                        ? ""
+                                        : metadataPrompt;
 
                         String answer =
                                 nativeBridge.nativeGenerateStream(
                                         handle,
                                         prompt,
+                                        safeMetadataPrompt,
                                         profile.getMaxTokens(),
                                         profile.getTemperature(),
                                         profile.getTopP(),
@@ -154,31 +146,22 @@ public class LocalLlmEngine implements LlmEngine {
                                         nativeCallback
                                 );
 
-
                         Log.d(
                                 TAG,
                                 "generate(): nativeGenerate finished"
                         );
 
-
-                        callback.onComplete(
-                                answer
-                        );
+                        callback.onComplete(answer);
 
                     } catch (Throwable throwable) {
-
                         Log.e(
                                 TAG,
                                 "generate(): error",
                                 throwable
                         );
 
-
-                        callback.onError(
-                                throwable
-                        );
+                        callback.onError(throwable);
                     }
-
                 },
                 "LocalLlmEngineThread"
         ).start();
@@ -187,14 +170,10 @@ public class LocalLlmEngine implements LlmEngine {
 
     @Override
     public void cancel() {
-        cancelled =
-                true;
-
+        cancelled = true;
 
         if (handle != 0L) {
-            nativeBridge.nativeCancel(
-                    handle
-            );
+            nativeBridge.nativeCancel(handle);
         }
     }
 
@@ -210,13 +189,7 @@ public class LocalLlmEngine implements LlmEngine {
             return;
         }
 
-
-        nativeBridge.nativeRelease(
-                handle
-        );
-
-
-        handle =
-                0L;
+        nativeBridge.nativeRelease(handle);
+        handle = 0L;
     }
 }

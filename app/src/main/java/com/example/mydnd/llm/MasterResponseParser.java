@@ -20,7 +20,6 @@ public class MasterResponseParser {
             );
         }
 
-
         String normalized =
                 fullText
                         .replace(
@@ -29,7 +28,6 @@ public class MasterResponseParser {
                         )
                         .trim();
 
-
         if (normalized.isEmpty()) {
             return new Result(
                     null,
@@ -37,38 +35,22 @@ public class MasterResponseParser {
             );
         }
 
-
-        /*
-         * Native-часть возвращает:
-         *
-         * {"type":"ITEM","name":"старый фонарь"}
-         *
-         * Художественный ответ...
-         */
         int separatorIndex =
                 normalized.indexOf(
                         "\n\n"
                 );
 
-
         if (separatorIndex < 0) {
-
             Log.w(
                     TAG,
                     "Metadata separator not found"
             );
 
-            /*
-             * Не ломаем игру.
-             * Если формат вдруг нарушился,
-             * считаем весь текст обычным ответом.
-             */
             return new Result(
                     null,
                     normalized
             );
         }
-
 
         String metadataJson =
                 normalized
@@ -78,7 +60,6 @@ public class MasterResponseParser {
                         )
                         .trim();
 
-
         String narrative =
                 normalized
                         .substring(
@@ -86,9 +67,7 @@ public class MasterResponseParser {
                         )
                         .trim();
 
-
         if (!metadataJson.startsWith("{")) {
-
             Log.w(
                     TAG,
                     "Response does not start with metadata JSON"
@@ -100,14 +79,11 @@ public class MasterResponseParser {
             );
         }
 
-
         try {
-
             JSONObject json =
                     new JSONObject(
                             metadataJson
                     );
-
 
             String type =
                     json.optString(
@@ -115,10 +91,14 @@ public class MasterResponseParser {
                             "NONE"
                     ).trim();
 
+            String holder =
+                    json.optString(
+                            "holder",
+                            "NONE"
+                    ).trim();
 
             String name =
                     null;
-
 
             if (json.has("name")
                     && !json.isNull("name")) {
@@ -128,21 +108,19 @@ public class MasterResponseParser {
                                 "name"
                         ).trim();
 
-
                 if (name.isEmpty()) {
                     name =
                             null;
                 }
             }
 
-
             Metadata metadata =
                     new Metadata(
                             type,
+                            holder,
                             name,
                             metadataJson
                     );
-
 
             return new Result(
                     metadata,
@@ -150,7 +128,6 @@ public class MasterResponseParser {
             );
 
         } catch (Throwable throwable) {
-
             Log.e(
                     TAG,
                     "Failed to parse metadata: "
@@ -158,10 +135,6 @@ public class MasterResponseParser {
                     throwable
             );
 
-
-            /*
-             * Ошибка metadata не должна ломать игру.
-             */
             return new Result(
                     null,
                     narrative.isEmpty()
@@ -211,6 +184,8 @@ public class MasterResponseParser {
 
         private final String type;
 
+        private final String holder;
+
         private final String name;
 
         private final String rawJson;
@@ -218,11 +193,15 @@ public class MasterResponseParser {
 
         public Metadata(
                 String type,
+                String holder,
                 String name,
                 String rawJson
         ) {
             this.type =
                     type;
+
+            this.holder =
+                    holder;
 
             this.name =
                     name;
@@ -234,6 +213,28 @@ public class MasterResponseParser {
 
         public String getType() {
             return type;
+        }
+
+
+        public String getHolder() {
+            return holder;
+        }
+
+
+        /*
+         * Временно оставлено для совместимости со старым MainActivity.
+         * Реальную операцию позже должна вычислять Java по старому и новому состоянию.
+         */
+        public String getOperation() {
+            if ("PLAYER".equals(holder)) {
+                return "ADD";
+            }
+
+            if ("WORLD".equals(holder)) {
+                return "REMOVE";
+            }
+
+            return "NONE";
         }
 
 

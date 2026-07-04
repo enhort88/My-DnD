@@ -21,6 +21,7 @@ public class NativeLlmBridge {
     public native String nativeGenerateStream(
             long handle,
             String prompt,
+            String metadataPrompt,
             int maxTokens,
             float temperature,
             float topP,

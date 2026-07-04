@@ -42,6 +42,7 @@ import com.example.mydnd.memory.ImportanceFilter;
 import com.example.mydnd.memory.ChangeClassifier;
 import com.example.mydnd.memory.ChangeOperationClassifier;
 import com.example.mydnd.memory.EntityExtractor;
+import com.example.mydnd.prompt.MetadataPromptBuilder;
 
 public class MainActivity extends ComponentActivity {
 
@@ -131,6 +132,8 @@ public class MainActivity extends ComponentActivity {
 
     private final List<GameEvent> gameEvents = new ArrayList<>();
     private final PromptBuilder promptBuilder = new PromptBuilder();
+    private final MetadataPromptBuilder metadataPromptBuilder =
+            new MetadataPromptBuilder();
 
     private GenerationProfile generationProfile = GenerationProfile.normal();
 
@@ -799,7 +802,10 @@ public class MainActivity extends ComponentActivity {
                     );
                 }
 
-                startLlmGeneration(prompt);
+                startLlmGeneration(
+                        prompt,
+                        playerText
+                );
 
             } catch (Throwable throwable) {
                 runOnUiThread(() -> {
@@ -820,12 +826,29 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
-    private void startLlmGeneration(String prompt) {
+    private void startLlmGeneration(
+            String prompt,
+            String playerText
+    ) {
         masterStreamingStartPosition = -1;
 
         String preparedPrompt =
                 prepareMasterPrompt(
                         prompt
+                );
+        String metadataPrompt =
+                metadataPromptBuilder.buildPrompt(
+                        playerText
+                );
+        Log.d(
+                "MyDND_METADATA_PROMPT",
+                "\n" + metadataPrompt
+        );
+
+
+        String preparedMetadataPrompt =
+                prepareMasterPrompt(
+                        metadataPrompt
                 );
 
         Log.d(
@@ -839,6 +862,7 @@ public class MainActivity extends ComponentActivity {
         modelManager.generate(
                 ModelRole.MASTER,
                 preparedPrompt,
+                preparedMetadataPrompt,
                 generationProfile,
                 new LlmCallback() {
 
@@ -896,6 +920,8 @@ public class MainActivity extends ComponentActivity {
                                     "MyDND_METADATA",
                                     "type="
                                             + metadata.getType()
+                                            + ", holder="
+                                            + metadata.getHolder()
                                             + ", name="
                                             + metadata.getName()
                             );

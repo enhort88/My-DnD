@@ -79,14 +79,6 @@ public class PromptBuilder {
             prompt.append("\n");
             prompt.append(playerText);
 
-            prompt.append("\n\nHIDDEN_STATE_TASK:");
-            prompt.append(
-                    "\nBefore the story, classify only PLAYER_ACTION. "
-                            + "Use ITEM only if the action changes possession or state of a concrete item; "
-                            + "otherwise use NONE. "
-                            + "For ITEM copy the item name exactly from PLAYER_ACTION without translating it."
-            );
-
             prompt.append("\n\nTASK:");
             prompt.append("\nПродолжи сцену на один небольшой шаг.");
             prompt.append("\nПокажи реакцию мира и последствия действия.");

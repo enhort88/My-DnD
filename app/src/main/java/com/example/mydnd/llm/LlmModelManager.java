@@ -7,45 +7,30 @@ public class LlmModelManager {
     private static final String TAG =
             "MyDND_MODEL";
 
-
     private final Object lock =
             new Object();
-
 
     private final LocalLlmEngine masterEngine;
 
     private final LocalLlmEngine serviceEngine;
 
-
     private LocalLlmEngine activeEngine;
 
     private ModelRole activeRole;
 
-
-    private boolean busy =
-            false;
+    private boolean busy = false;
 
 
     public LlmModelManager(
             String masterModelPath,
             String serviceModelPath
     ) {
-        /*
-         * MASTER:
-         * сначала скрытая metadata phase,
-         * затем обычный художественный ответ.
-         */
         masterEngine =
                 new LocalLlmEngine(
                         masterModelPath,
                         true
                 );
 
-
-        /*
-         * SERVICE:
-         * обычная генерация без grammar metadata.
-         */
         serviceEngine =
                 new LocalLlmEngine(
                         serviceModelPath,
@@ -60,43 +45,47 @@ public class LlmModelManager {
             GenerationProfile profile,
             LlmCallback callback
     ) {
+        generate(
+                role,
+                prompt,
+                "",
+                profile,
+                callback
+        );
+    }
+
+
+    public void generate(
+            ModelRole role,
+            String prompt,
+            String metadataPrompt,
+            GenerationProfile profile,
+            LlmCallback callback
+    ) {
         final LocalLlmEngine engine;
 
-
         synchronized (lock) {
-
             if (busy) {
-
                 callback.onError(
                         new IllegalStateException(
                                 "Другая генерация уже выполняется"
                         )
                 );
-
                 return;
             }
 
-
-            engine =
-                    switchToLocked(
-                            role
-                    );
-
-
-            busy =
-                    true;
+            engine = switchToLocked(role);
+            busy = true;
         }
-
 
         Log.d(
                 TAG,
-                "generate(): role="
-                        + role
+                "generate(): role=" + role
         );
-
 
         engine.generate(
                 prompt,
+                metadataPrompt,
                 profile,
                 new LlmCallback() {
 
@@ -104,9 +93,7 @@ public class LlmModelManager {
                     public void onToken(
                             String token
                     ) {
-                        callback.onToken(
-                                token
-                        );
+                        callback.onToken(token);
                     }
 
 
@@ -116,17 +103,13 @@ public class LlmModelManager {
                     ) {
                         finishGeneration();
 
-
                         Log.d(
                                 TAG,
                                 "generate(): completed, role="
                                         + role
                         );
 
-
-                        callback.onComplete(
-                                fullText
-                        );
+                        callback.onComplete(fullText);
                     }
 
 
@@ -136,7 +119,6 @@ public class LlmModelManager {
                     ) {
                         finishGeneration();
 
-
                         Log.e(
                                 TAG,
                                 "generate(): failed, role="
@@ -144,10 +126,7 @@ public class LlmModelManager {
                                 throwable
                         );
 
-
-                        callback.onError(
-                                throwable
-                        );
+                        callback.onError(throwable);
                     }
                 }
         );
@@ -157,24 +136,19 @@ public class LlmModelManager {
     public void cancelCurrent() {
         LocalLlmEngine engine;
 
-
         synchronized (lock) {
-            engine =
-                    activeEngine;
+            engine = activeEngine;
         }
-
 
         if (engine == null) {
             return;
         }
-
 
         Log.d(
                 TAG,
                 "cancelCurrent(): role="
                         + activeRole
         );
-
 
         engine.cancel();
     }
@@ -206,39 +180,26 @@ public class LlmModelManager {
                             + role
             );
 
-
             return activeEngine;
         }
 
-
         if (activeEngine != null) {
-
             Log.d(
                     TAG,
                     "switchToLocked(): release "
                             + activeRole
             );
 
-
             activeEngine.release();
         }
 
-
         if (role == ModelRole.MASTER) {
-
-            activeEngine =
-                    masterEngine;
-
+            activeEngine = masterEngine;
         } else {
-
-            activeEngine =
-                    serviceEngine;
+            activeEngine = serviceEngine;
         }
 
-
-        activeRole =
-                role;
-
+        activeRole = role;
 
         Log.d(
                 TAG,
@@ -246,15 +207,13 @@ public class LlmModelManager {
                         + activeRole
         );
 
-
         return activeEngine;
     }
 
 
     private void finishGeneration() {
         synchronized (lock) {
-            busy =
-                    false;
+            busy = false;
         }
     }
 }
