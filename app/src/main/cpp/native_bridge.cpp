@@ -34,6 +34,93 @@ static bool ends_with_sentence_mark(const std::string & text) {
            last == '?';
 }
 
+static bool ends_with_text(
+        const std::string & text,
+        const std::string & suffix
+) {
+    if (text.size() < suffix.size()) {
+        return false;
+    }
+
+    return text.compare(
+            text.size() - suffix.size(),
+            suffix.size(),
+            suffix
+    ) == 0;
+}
+
+
+static const char * MYDND_METADATA_GRAMMAR =
+        R"GBNF(
+root ::= no-change | item-change
+
+no-change ::= "{\"type\":\"NONE\"}\n\n"
+
+item-change ::= "{\"type\":\"ITEM\",\"name\":\"" item-name "\"}\n\n"
+
+item-name ::= [^"\r\n]{1,80}
+)GBNF";
+
+static bool decode_text_into_context(
+        MyDndLlamaHandle * handle,
+        const std::string & text
+) {
+    if (text.empty()) {
+        return true;
+    }
+
+    int n_tokens = -llama_tokenize(
+            handle->vocab,
+            text.c_str(),
+            static_cast<int32_t>(text.size()),
+            nullptr,
+            0,
+            false,
+            true
+    );
+
+    if (n_tokens <= 0) {
+        return false;
+    }
+
+    std::vector<llama_token> tokens(n_tokens);
+
+    int tokenized = llama_tokenize(
+            handle->vocab,
+            text.c_str(),
+            static_cast<int32_t>(text.size()),
+            tokens.data(),
+            static_cast<int32_t>(tokens.size()),
+            false,
+            true
+    );
+
+    if (tokenized <= 0) {
+        return false;
+    }
+
+    const int chunk_size = 16;
+
+    for (int pos = 0; pos < tokenized; pos += chunk_size) {
+        int current_size = chunk_size;
+
+        if (pos + current_size > tokenized) {
+            current_size = tokenized - pos;
+        }
+
+        llama_batch batch = llama_batch_get_one(
+                tokens.data() + pos,
+                current_size
+        );
+
+        if (llama_decode(handle->ctx, batch) != 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool g_backend_initialized = false;
 static std::mutex g_backend_mutex;
 
@@ -431,10 +518,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
         }
         if (handle->cancel_requested.load()) {
             llama_sampler_free(sampler);
-            MYDND_LOGI("nativeGenerateStream: cancelled after prompt decode");
+            MYDND_LOGI(
+                    "nativeGenerate: cancelled after prompt decode"
+            );
             return string_to_jstring(env, "");
         }
 //        MYDND_LOGI("nativeGenerate: after prompt decode");
+
 
         std::string output;
         llama_token new_token_id;
@@ -492,6 +582,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         jfloat topP,
         jint topK,
         jfloat repeatPenalty,
+        jboolean useMetadataPhase,
         jobject callbackObject) {
 
     MYDND_LOGI("nativeGenerateStream: ENTER");
@@ -555,7 +646,17 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         const uint32_t n_ctx = llama_n_ctx(handle->ctx);
 
-        if (static_cast<uint32_t>(n_prompt + hard_max_tokens) >= n_ctx) {
+        const int metadata_max_tokens =
+                useMetadataPhase == JNI_TRUE
+                ? 48
+                : 0;
+
+
+        if (static_cast<uint32_t>(
+                    n_prompt
+                    + metadata_max_tokens
+                    + hard_max_tokens
+            ) >= n_ctx) {
             MYDND_LOGE(
                     "nativeGenerateStream: context overflow, prompt=%d, output=%d, ctx=%u",
                     n_prompt,
@@ -710,8 +811,196 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         if (handle->cancel_requested.load()) {
             llama_sampler_free(sampler);
-            MYDND_LOGI("nativeGenerateStream: cancelled after prompt decode");
+            MYDND_LOGI(
+                    "nativeGenerateStream: cancelled after prompt decode"
+            );
             return string_to_jstring(env, "");
+        }
+
+        /*
+         * Служебная фаза.
+         *
+         * Metadata не отправляется в streaming callback.
+         * Она попадёт только в итоговый fullText.
+         */
+        std::string metadata_output;
+
+        if (useMetadataPhase == JNI_TRUE) {
+
+            MYDND_LOGI(
+                    "nativeGenerateStream: metadata phase START"
+            );
+
+            llama_sampler_chain_params metadata_params =
+                    llama_sampler_chain_default_params();
+
+            metadata_params.no_perf = true;
+
+            llama_sampler * metadata_sampler =
+                    llama_sampler_chain_init(
+                            metadata_params
+                    );
+
+            llama_sampler * grammar_sampler =
+                    llama_sampler_init_grammar(
+                            handle->vocab,
+                            MYDND_METADATA_GRAMMAR,
+                            "root"
+                    );
+
+            if (grammar_sampler == nullptr) {
+                llama_sampler_free(metadata_sampler);
+                llama_sampler_free(sampler);
+
+                MYDND_LOGE(
+                        "nativeGenerateStream: grammar init failed"
+                );
+
+                return string_to_jstring(
+                        env,
+                        "Ошибка: не удалось создать grammar sampler."
+                );
+            }
+
+            /*
+             * Grammar ставим первой в sampler chain.
+             */
+            llama_sampler_chain_add(
+                    metadata_sampler,
+                    grammar_sampler
+            );
+
+            llama_sampler_chain_add(
+                    metadata_sampler,
+                    llama_sampler_init_top_k(20)
+            );
+
+            llama_sampler_chain_add(
+                    metadata_sampler,
+                    llama_sampler_init_top_p(
+                            0.90f,
+                            1
+                    )
+            );
+
+            llama_sampler_chain_add(
+                    metadata_sampler,
+                    llama_sampler_init_temp(0.20f)
+            );
+
+            llama_sampler_chain_add(
+                    metadata_sampler,
+                    llama_sampler_init_dist(
+                            static_cast<uint32_t>(
+                                    time(nullptr)
+                            )
+                    )
+            );
+
+            bool metadata_complete = false;
+            int metadata_tokens = 0;
+
+            for (
+                    int i = 0;
+                    i < metadata_max_tokens;
+                    i++
+                    ) {
+                if (handle->cancel_requested.load()) {
+                    break;
+                }
+
+                llama_token metadata_token =
+                        llama_sampler_sample(
+                                metadata_sampler,
+                                handle->ctx,
+                                -1
+                        );
+
+                if (llama_vocab_is_eog(
+                        handle->vocab,
+                        metadata_token
+                )) {
+                    break;
+                }
+
+                metadata_tokens++;
+
+                char buffer[256];
+
+                int piece_length =
+                        llama_token_to_piece(
+                                handle->vocab,
+                                metadata_token,
+                                buffer,
+                                sizeof(buffer),
+                                0,
+                                true
+                        );
+
+                if (piece_length > 0) {
+                    metadata_output.append(
+                            buffer,
+                            piece_length
+                    );
+                }
+
+                /*
+                 * Декодируем metadata token обратно в ТОТ ЖЕ context.
+                 * Поэтому рассказ продолжится без второго prompt decode.
+                 */
+                llama_batch metadata_batch =
+                        llama_batch_get_one(
+                                &metadata_token,
+                                1
+                        );
+
+                if (llama_decode(
+                        handle->ctx,
+                        metadata_batch
+                ) != 0) {
+                    MYDND_LOGE(
+                            "nativeGenerateStream: metadata decode failed"
+                    );
+                    break;
+                }
+
+                if (ends_with_text(
+                        metadata_output,
+                        "\n\n"
+                )) {
+                    metadata_complete = true;
+                    break;
+                }
+            }
+
+            llama_sampler_free(metadata_sampler);
+
+            MYDND_LOGI(
+                    "nativeGenerateStream: metadata tokens = %d",
+                    metadata_tokens
+            );
+
+            MYDND_LOGI(
+                    "nativeGenerateStream: metadata RAW = %s",
+                    metadata_output.c_str()
+            );
+
+            if (!metadata_complete) {
+                MYDND_LOGE(
+                        "nativeGenerateStream: metadata incomplete"
+                );
+            }
+
+            MYDND_LOGI(
+                    "nativeGenerateStream: metadata phase FINISH"
+            );
+
+            /*
+             * Короткий скрытый переход к художественной фазе.
+             * Он декодируется в тот же context, но не попадает
+             * ни в streaming, ни в fullText.
+             */
+
         }
 
         std::string output;
@@ -874,9 +1163,24 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         llama_sampler_free(sampler);
 
-        MYDND_LOGI("nativeGenerateStream: FINISH, output length = %zu", output.size());
+        std::string full_output =
+                metadata_output
+                + output;
 
-        return string_to_jstring(env, output);
+
+        MYDND_LOGI(
+                "nativeGenerateStream: FINISH"
+                ", metadata length = %zu"
+                ", narrative length = %zu",
+                metadata_output.size(),
+                output.size()
+        );
+
+
+        return string_to_jstring(
+                env,
+                full_output
+        );
     } catch (const std::exception & ex) {
         return string_to_jstring(env, std::string("Ошибка nativeGenerateStream: ") + ex.what());
     } catch (...) {

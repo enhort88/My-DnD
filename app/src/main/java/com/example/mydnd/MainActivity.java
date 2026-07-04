@@ -9,6 +9,7 @@ import android.widget.TextView;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
+import com.example.mydnd.llm.MasterResponseParser;
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.prompt.PromptBuilder;
 import java.io.File;
@@ -37,8 +38,18 @@ import androidx.activity.OnBackPressedCallback;
 import android.text.SpannableStringBuilder;
 import android.widget.ImageView;
 import com.example.mydnd.memory.MemoryFactExtractor;
+import com.example.mydnd.memory.ImportanceFilter;
+import com.example.mydnd.memory.ChangeClassifier;
+import com.example.mydnd.memory.ChangeOperationClassifier;
+import com.example.mydnd.memory.EntityExtractor;
 
 public class MainActivity extends ComponentActivity {
+
+    private ImportanceFilter importanceFilter;
+    private ChangeClassifier changeClassifier;
+    private EntityExtractor entityExtractor;
+
+    private ChangeOperationClassifier changeOperationClassifier;
 
     private MemoryFactExtractor memoryFactExtractor;
     private SummaryService summaryService;
@@ -52,6 +63,9 @@ public class MainActivity extends ComponentActivity {
     private Button loadGameButton;
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
+
+    private final MasterResponseParser masterResponseParser =
+            new MasterResponseParser();
 
     private boolean generationCancelledByUser = false;
     private TextView chatTextView;
@@ -195,6 +209,23 @@ public class MainActivity extends ComponentActivity {
         memoryFactExtractor =
                 new MemoryFactExtractor(
                         database,
+                        modelManager
+                );
+        importanceFilter =
+                new ImportanceFilter(
+                        database,
+                        modelManager
+                );
+        changeClassifier =
+                new ChangeClassifier(
+                        modelManager
+                );
+        entityExtractor =
+                new EntityExtractor(
+                        modelManager
+                );
+        changeOperationClassifier =
+                new ChangeOperationClassifier(
                         modelManager
                 );
         welcomeLayout =
@@ -556,22 +587,85 @@ public class MainActivity extends ComponentActivity {
             currentCampaignId = database.campaignDao().insert(campaign);
         });
     }
-    private void saveEventToDb(GameEvent event) {
+    private void saveEventToDb(
+            GameEvent event
+    ) {
+        saveEventToDb(
+                event,
+                null
+        );
+    }
+
+
+    private void saveEventToDb(
+            GameEvent event,
+            Runnable onSaved
+    ) {
         if (currentCampaignId == 0L) {
+
+            Log.w(
+                    "MyDND_DB",
+                    "Event not saved: campaignId=0"
+            );
+
             return;
         }
 
         DbExecutor.execute(() -> {
-            GameEventEntity entity = new GameEventEntity();
-            entity.campaignId = currentCampaignId;
-            entity.speaker = event.getSpeaker().name();
-            entity.text = event.getText();
-            entity.includeInPrompt = event.isIncludeInPrompt();
-            entity.createdAt = event.getCreatedAtMillis();
 
-            database.gameEventDao().insert(entity);
+            try {
+                GameEventEntity entity =
+                        new GameEventEntity();
+
+                entity.campaignId =
+                        currentCampaignId;
+
+                entity.speaker =
+                        event.getSpeaker().name();
+
+                entity.text =
+                        event.getText();
+
+                entity.includeInPrompt =
+                        event.isIncludeInPrompt();
+
+                entity.createdAt =
+                        event.getCreatedAtMillis();
+
+                database.gameEventDao()
+                        .insert(entity);
+
+                Log.d(
+                        "MyDND_DB",
+                        "Event saved: speaker="
+                                + entity.speaker
+                );
+
+                if (onSaved != null) {
+
+                    runOnUiThread(
+                            onSaved
+                    );
+                }
+
+            } catch (Throwable throwable) {
+
+                Log.e(
+                        "MyDND_DB",
+                        "Failed to save event",
+                        throwable
+                );
+
+                runOnUiThread(() -> {
+                    sendButton.setEnabled(true);
+                    sendButton.setText(
+                            "Отправить"
+                    );
+                });
+            }
         });
     }
+
     private void loadCampaignOrStartFirstScene() {
         if (currentCampaignId == 0L) {
             uiHandler.postDelayed(this::loadCampaignOrStartFirstScene, 200);
@@ -776,62 +870,182 @@ public class MainActivity extends ComponentActivity {
                     }
 
                     @Override
-                    public void onComplete(String fullText) {
+                    public void onComplete(
+                            String fullText
+                    ) {
+                        Log.d(
+                                "MyDND_MASTER_MARKUP",
+                                "RAW:\n"
+                                        + fullText
+                        );
+
+
+                        MasterResponseParser.Result parsedResponse =
+                                masterResponseParser.parse(
+                                        fullText
+                                );
+
+
+                        MasterResponseParser.Metadata metadata =
+                                parsedResponse.getMetadata();
+
+
+                        if (metadata != null) {
+
+                            Log.d(
+                                    "MyDND_METADATA",
+                                    "type="
+                                            + metadata.getType()
+                                            + ", name="
+                                            + metadata.getName()
+                            );
+
+                        } else {
+
+                            Log.w(
+                                    "MyDND_METADATA",
+                                    "No metadata parsed"
+                            );
+                        }
+
+
+                        final String narrative =
+                                parsedResponse.getNarrative();
+
+
                         runOnUiThread(() -> {
+
                             removeThinkingIndicator();
+
                             flushStreamingTokens();
 
+
                             if (generationCancelledByUser) {
+
                                 removeLastPlayerEvent();
+
 
                                 appendColoredText(
                                         "\n\n",
                                         COLOR_MASTER
                                 );
 
-                                generationInProgress = false;
-                                generationCancelledByUser = false;
-                                masterStreamingStarted = false;
-                                masterStreamingStartPosition = -1;
 
-                                sendButton.setEnabled(true);
-                                sendButton.setText("Отправить");
+                                generationInProgress =
+                                        false;
+
+                                generationCancelledByUser =
+                                        false;
+
+                                masterStreamingStarted =
+                                        false;
+
+                                masterStreamingStartPosition =
+                                        -1;
+
+
+                                sendButton.setEnabled(
+                                        true
+                                );
+
+                                sendButton.setText(
+                                        "Отправить"
+                                );
+
 
                                 updateChat();
+
                                 return;
                             }
 
-                            String visibleText = fullText;
 
+                            /*
+                             * ВАЖНО:
+                             *
+                             * Чистим только художественный ответ.
+                             * JSON сюда больше не попадает.
+                             */
+                            String visibleText =
+                                    responseCleaner.clean(
+                                            narrative
+                                    );
 
-                            visibleText =
-                                    responseCleaner.clean(visibleText);
 
                             if (masterStreamingStarted) {
 
-                                // Удаляем сырой streaming-текст
-                                // и заменяем его очищенной финальной версией.
-                                replaceStreamedMasterText(visibleText);
-
-                                GameEvent masterEvent =
-                                        GameEvent.master(visibleText);
-
-                                gameEvents.add(masterEvent);
-                                saveEventToDb(masterEvent);
+                                /*
+                                 * Streaming уже показал пользователю
+                                 * художественный ответ.
+                                 *
+                                 * Заменяем его финальной очищенной
+                                 * версией.
+                                 */
+                                replaceStreamedMasterText(
+                                        visibleText
+                                );
 
                             } else {
-                                appendMasterMessage(visibleText);
+
+                                appendColoredText(
+                                        visibleText
+                                                + "\n\n",
+                                        COLOR_MASTER
+                                );
                             }
 
-                            generationInProgress = false;
-                            masterStreamingStarted = false;
-                            masterStreamingStartPosition = -1;
 
-                            sendButton.setEnabled(true);
-                            sendButton.setText("Отправить");
+                            /*
+                             * В game_events сохраняется только
+                             * художественный текст.
+                             *
+                             * Metadata отдельно.
+                             */
+                            GameEvent masterEvent =
+                                    GameEvent.master(
+                                            visibleText
+                                    );
+
+
+                            gameEvents.add(
+                                    masterEvent
+                            );
+
+
+                            generationInProgress =
+                                    false;
+
+                            masterStreamingStarted =
+                                    false;
+
+                            masterStreamingStartPosition =
+                                    -1;
+
+
+                            sendButton.setEnabled(
+                                    false
+                            );
+
+                            sendButton.setText(
+                                    "Сохраняю ход..."
+                            );
+
 
                             updateChat();
-                            updateSummaryIfNeeded();
+
+
+                            saveEventToDb(
+                                    masterEvent,
+                                    () -> {
+
+                                        sendButton.setEnabled(
+                                                true
+                                        );
+
+                                        sendButton.setText(
+                                                "Отправить"
+                                        );
+                                    }
+                            );
                         });
                     }
 
@@ -893,7 +1107,19 @@ public class MainActivity extends ComponentActivity {
                     public void onCompleted(
                             SummaryEntity summary
                     ) {
-                        runMemoryFactExtractorV1();
+                        Log.d(
+                                "MyDND_SUMMARY",
+                                "Summary completed"
+                        );
+
+                        runOnUiThread(() -> {
+
+                            sendButton.setEnabled(true);
+
+                            sendButton.setText(
+                                    "Отправить"
+                            );
+                        });
                     }
 
                     @Override
@@ -957,7 +1183,9 @@ public class MainActivity extends ComponentActivity {
 
         masterStreamingStartPosition = -1;
     }
-    private void runMemoryFactExtractorV1() {
+    private void runMemoryFactExtractorV1(
+            Runnable onFinished
+    ) {
         Log.d(
                 "MyDND_FACTS",
                 "Extractor campaignId="
@@ -973,7 +1201,11 @@ public class MainActivity extends ComponentActivity {
                             int eventCount
                     ) {
                         runOnUiThread(() -> {
-                            sendButton.setEnabled(false);
+
+                            sendButton.setEnabled(
+                                    false
+                            );
+
                             sendButton.setText(
                                     "Ищу факты..."
                             );
@@ -991,12 +1223,9 @@ public class MainActivity extends ComponentActivity {
                                         + rawCandidates
                         );
 
-                        runOnUiThread(() -> {
-                            sendButton.setEnabled(true);
-                            sendButton.setText(
-                                    "Отправить"
-                            );
-                        });
+                        runOnUiThread(
+                                onFinished
+                        );
                     }
 
 
@@ -1006,15 +1235,13 @@ public class MainActivity extends ComponentActivity {
                     ) {
                         Log.d(
                                 "MyDND_FACTS",
-                                "Skipped: " + reason
+                                "Skipped: "
+                                        + reason
                         );
 
-                        runOnUiThread(() -> {
-                            sendButton.setEnabled(true);
-                            sendButton.setText(
-                                    "Отправить"
-                            );
-                        });
+                        runOnUiThread(
+                                onFinished
+                        );
                     }
 
 
@@ -1028,12 +1255,12 @@ public class MainActivity extends ComponentActivity {
                                 throwable
                         );
 
-                        runOnUiThread(() -> {
-                            sendButton.setEnabled(true);
-                            sendButton.setText(
-                                    "Отправить"
-                            );
-                        });
+                        // Ошибка extractor не должна
+                        // ломать всю игру.
+                        // Всё равно проверяем summary.
+                        runOnUiThread(
+                                onFinished
+                        );
                     }
                 }
         );
@@ -1046,5 +1273,360 @@ public class MainActivity extends ComponentActivity {
                 + prompt.trim()
                 + "\n<end_of_turn>\n"
                 + "<start_of_turn>model\n";
+    }
+
+    private void runImportanceFilterV1(
+            Runnable onFinished
+    ) {
+        importanceFilter.filterLatestTurn(
+                currentCampaignId,
+                new ImportanceFilter.Listener() {
+
+                    @Override
+                    public void onStarted(
+                            int sentenceCount
+                    ) {
+                        runOnUiThread(() -> {
+
+                            sendButton.setEnabled(false);
+
+                            sendButton.setText(
+                                    "Фильтрую память..."
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onCompleted(
+                            List<ImportanceFilter.ImportantSentence> sentences
+                    ) {
+                        Log.d(
+                                "MyDND_IMPORTANCE",
+                                "Filter completed, important="
+                                        + sentences.size()
+                        );
+
+
+                        for (ImportanceFilter.ImportantSentence sentence
+                                : sentences) {
+
+                            Log.d(
+                                    "MyDND_IMPORTANCE",
+                                    "RESULT ["
+                                            + sentence.getId()
+                                            + "] "
+                                            + sentence.getSpeaker()
+                                            + ": "
+                                            + sentence.getText()
+                            );
+                        }
+
+
+                        runOnUiThread(() ->
+                                runChangeClassifierV1(
+                                        sentences,
+                                        onFinished
+                                )
+                        );
+                    }
+
+
+                    @Override
+                    public void onSkipped(
+                            String reason
+                    ) {
+                        Log.d(
+                                "MyDND_IMPORTANCE",
+                                "Skipped: "
+                                        + reason
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_IMPORTANCE",
+                                "Filter failed",
+                                throwable
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+                }
+        );
+    }
+    private void runChangeClassifierV1(
+            List<ImportanceFilter.ImportantSentence> sentences,
+            Runnable onFinished
+    ) {
+        if (sentences == null
+                || sentences.isEmpty()) {
+
+            Log.d(
+                    "MyDND_CLASSIFIER",
+                    "No candidates from ImportanceFilter"
+            );
+
+            onFinished.run();
+
+            return;
+        }
+
+
+        changeClassifier.classify(
+                sentences,
+                new ChangeClassifier.Listener() {
+
+                    @Override
+                    public void onStarted(
+                            int candidateCount
+                    ) {
+                        runOnUiThread(() -> {
+
+                            sendButton.setEnabled(false);
+
+                            sendButton.setText(
+                                    "Анализирую память..."
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onCompleted(
+                            List<ChangeClassifier.ClassifiedSentence> result
+                    ) {
+                        for (ChangeClassifier.ClassifiedSentence item
+                                : result) {
+
+                            Log.d(
+                                    "MyDND_CLASSIFIER",
+                                    "FINAL ["
+                                            + item.getId()
+                                            + "] "
+                                            + item.getType()
+                                            + ": "
+                                            + item.getText()
+                            );
+                        }
+
+
+                        runOnUiThread(() ->
+                                runEntityExtractorV1(
+                                        result,
+                                        onFinished
+                                )
+                        );
+                    }
+
+
+                    @Override
+                    public void onSkipped(
+                            String reason
+                    ) {
+                        Log.d(
+                                "MyDND_CLASSIFIER",
+                                "Skipped: "
+                                        + reason
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_CLASSIFIER",
+                                "Classifier failed",
+                                throwable
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+                }
+        );
+    }
+    private void runChangeOperationClassifierV1(
+            List<ChangeClassifier.ClassifiedSentence> result,
+            Runnable onFinished
+    ) {
+        changeOperationClassifier.classify(
+                result,
+                new ChangeOperationClassifier.Listener() {
+
+                    @Override
+                    public void onStarted(
+                            int candidateCount
+                    ) {
+                        runOnUiThread(() -> {
+
+                            sendButton.setEnabled(false);
+
+                            sendButton.setText(
+                                    "Определяю изменения..."
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onCompleted(
+                            List<ChangeOperationClassifier.OperationResult> result
+                    ) {
+                        for (ChangeOperationClassifier.OperationResult item
+                                : result) {
+
+                            Log.d(
+                                    "MyDND_OPERATION",
+                                    "FINAL ["
+                                            + item.getId()
+                                            + "] "
+                                            + item.getType()
+                                            + " / "
+                                            + item.getOperation()
+                                            + ": "
+                                            + item.getText()
+                            );
+                        }
+
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onSkipped(
+                            String reason
+                    ) {
+                        Log.d(
+                                "MyDND_OPERATION",
+                                "Skipped: "
+                                        + reason
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_OPERATION",
+                                "Operation classifier failed",
+                                throwable
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+                }
+        );
+    }
+    private void runEntityExtractorV1(
+            List<ChangeClassifier.ClassifiedSentence> result,
+            Runnable onFinished
+    ) {
+        entityExtractor.extract(
+                result,
+                new EntityExtractor.Listener() {
+
+                    @Override
+                    public void onStarted(
+                            int candidateCount
+                    ) {
+                        runOnUiThread(() -> {
+
+                            sendButton.setEnabled(false);
+
+                            sendButton.setText(
+                                    "Ищу объекты..."
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onCompleted(
+                            List<EntityExtractor.EntityResult> result
+                    ) {
+                        for (EntityExtractor.EntityResult item
+                                : result) {
+
+                            Log.d(
+                                    "MyDND_ENTITY",
+                                    "FINAL ["
+                                            + item.getId()
+                                            + "] "
+                                            + item.getType()
+                                            + " | entity="
+                                            + item.getEntityName()
+                                            + " | source="
+                                            + item.getSourceText()
+                            );
+                        }
+
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onSkipped(
+                            String reason
+                    ) {
+                        Log.d(
+                                "MyDND_ENTITY",
+                                "Skipped: "
+                                        + reason
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_ENTITY",
+                                "Entity extraction failed",
+                                throwable
+                        );
+
+                        runOnUiThread(
+                                onFinished
+                        );
+                    }
+                }
+        );
     }
 }

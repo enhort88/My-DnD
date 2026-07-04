@@ -10,7 +10,6 @@ import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.LlmModelManager;
 import com.example.mydnd.llm.ModelRole;
-import com.example.mydnd.llm.ThinkBlockFilter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,7 +28,7 @@ public class MemoryFactExtractor {
     private static final String TAG =
             "MyDND_FACTS";
 
-    private static final int MAX_EVENTS = 1;
+    private static final int MAX_EVENTS = 2;
 
     private static final int MAX_SUBJECT_CHARS = 80;
 
@@ -79,9 +78,6 @@ public class MemoryFactExtractor {
 
     private final LlmModelManager modelManager;
 
-    private final ThinkBlockFilter thinkBlockFilter =
-            new ThinkBlockFilter();
-
     private final AtomicBoolean working =
             new AtomicBoolean(false);
 
@@ -119,38 +115,64 @@ public class MemoryFactExtractor {
                                 );
 
                 if (events == null
-                        || events.isEmpty()) {
+                        || events.size() < 2) {
 
                     finishSkipped(
                             listener,
-                            "Нет событий для анализа"
+                            "Недостаточно событий для анализа хода"
                     );
 
                     return;
                 }
 
-                // DAO возвращает DESC.
+                // DAO возвращает события в DESC.
+                // После reverse получаем:
+                // PLAYER -> MASTER.
                 Collections.reverse(events);
 
-                GameEventEntity sourceEvent =
-                        events.get(
-                                events.size() - 1
-                        );
+                GameEventEntity playerEvent =
+                        events.get(0);
 
-                if (!"MASTER".equals(
-                        sourceEvent.speaker
+                GameEventEntity masterEvent =
+                        events.get(1);
+
+                if (!"PLAYER".equals(
+                        playerEvent.speaker
                 )) {
 
                     finishSkipped(
                             listener,
-                            "Последнее событие не является ответом мастера"
+                            "Первое событие хода не PLAYER"
                     );
 
                     return;
                 }
 
-                if (sourceEvent.text == null
-                        || sourceEvent.text.trim().isEmpty()) {
+                if (!"MASTER".equals(
+                        masterEvent.speaker
+                )) {
+
+                    finishSkipped(
+                            listener,
+                            "Второе событие хода не MASTER"
+                    );
+
+                    return;
+                }
+
+                if (playerEvent.text == null
+                        || playerEvent.text.trim().isEmpty()) {
+
+                    finishSkipped(
+                            listener,
+                            "Действие игрока пустое"
+                    );
+
+                    return;
+                }
+
+                if (masterEvent.text == null
+                        || masterEvent.text.trim().isEmpty()) {
 
                     finishSkipped(
                             listener,
@@ -162,32 +184,35 @@ public class MemoryFactExtractor {
 
                 Log.d(
                         TAG,
-                        "SOURCE EVENT:"
-                                + "\nid="
-                                + sourceEvent.id
-                                + "\ncampaignId="
-                                + sourceEvent.campaignId
-                                + "\nspeaker="
-                                + sourceEvent.speaker
-                                + "\ntext="
-                                + sourceEvent.text
+                        "SOURCE TURN:"
+                                + "\nPLAYER id="
+                                + playerEvent.id
+                                + "\n"
+                                + playerEvent.text
+                                + "\n\nMASTER id="
+                                + masterEvent.id
+                                + "\n"
+                                + masterEvent.text
                 );
 
                 String prompt =
                         buildPrompt(
-                                sourceEvent
+                                playerEvent,
+                                masterEvent
                         );
 
                 Log.d(
                         TAG,
                         "Starting extraction"
-                                + ", eventId="
-                                + sourceEvent.id
+                                + ", playerEventId="
+                                + playerEvent.id
+                                + ", masterEventId="
+                                + masterEvent.id
                                 + ", promptChars="
                                 + prompt.length()
                 );
 
-                listener.onStarted(1);
+                listener.onStarted(2);
 
                 modelManager.generate(
                         ModelRole.SERVICE,
@@ -218,7 +243,8 @@ public class MemoryFactExtractor {
                                     String result =
                                             processAndSave(
                                                     campaignId,
-                                                    sourceEvent,
+                                                    playerEvent,
+                                                    masterEvent,
                                                     fullText
                                             );
 
@@ -284,7 +310,8 @@ public class MemoryFactExtractor {
 
     private String processAndSave(
             long campaignId,
-            GameEventEntity sourceEvent,
+            GameEventEntity playerEvent,
+            GameEventEntity masterEvent,
             String modelOutput
     ) {
         String cleaned =
@@ -324,8 +351,9 @@ public class MemoryFactExtractor {
         }
 
         String[] sentences =
-                splitSentences(
-                        sourceEvent.text
+                buildSourceSentences(
+                        playerEvent,
+                        masterEvent
                 );
 
         List<Integer> sentenceIds =
@@ -779,8 +807,7 @@ public class MemoryFactExtractor {
             return "";
         }
 
-        return thinkBlockFilter
-                .removeThinkBlocks(text)
+        return text
                 .replaceAll(
                         "(?i)```json",
                         ""
@@ -794,22 +821,53 @@ public class MemoryFactExtractor {
 
 
     private String buildPrompt(
-            GameEventEntity event
+            GameEventEntity playerEvent,
+            GameEventEntity masterEvent
     ) {
-        String[] sentences =
+        String[] playerSentences =
                 splitSentences(
-                        event.text
+                        playerEvent.text
+                );
+
+        String[] masterSentences =
+                splitSentences(
+                        masterEvent.text
                 );
 
         StringBuilder prompt =
                 new StringBuilder();
 
+
         prompt.append(
-                "Find the single most important long-term RPG memory fact.\n"
+                "Find at most one important long-term RPG memory fact from this completed turn.\n"
         );
 
         prompt.append(
-                "Ignore weather, atmosphere, sounds and temporary descriptions.\n"
+                "Use PLAYER and DM together.\n"
+        );
+
+        prompt.append(
+                "A PLAYER action is not automatically successful.\n"
+        );
+
+        prompt.append(
+                "Store a player action only if the DM confirms that it happened.\n"
+        );
+
+        prompt.append(
+                "If the DM confirms a completed player action, prefer the PLAYER sentence number as the supporting sentence.\n"
+        );
+
+        prompt.append(
+                "DM narration may contain metaphors and poetic imagery.\n"
+        );
+
+        prompt.append(
+                "Ignore atmosphere, weather, smells, sounds, mood, metaphors, comparisons, symbolism and foreshadowing.\n"
+        );
+
+        prompt.append(
+                "Do not treat phrases like ancient artifact, magical object, dark power or unknown force as facts unless the DM explicitly confirms a literal property or change.\n"
         );
 
         prompt.append(
@@ -826,7 +884,7 @@ public class MemoryFactExtractor {
         );
 
         prompt.append(
-                "After the type, write | and the supporting sentence numbers separated by commas.\n"
+                "After the type, write | and the minimum supporting sentence numbers separated by commas.\n"
         );
 
         prompt.append(
@@ -838,25 +896,45 @@ public class MemoryFactExtractor {
         );
 
         prompt.append(
-                "If there is no important long-term fact, output only NONE.\n"
+                "If there is no important confirmed long-term fact, output only NONE.\n"
         );
 
-        prompt.append("\nSOURCE:\n");
 
-        for (int i = 0;
-             i < sentences.length;
-             i++) {
+        prompt.append(
+                "\nSOURCE:\n"
+        );
+
+        int sentenceNumber =
+                1;
+
+
+        for (String sentence : playerSentences) {
 
             prompt.append("[")
-                    .append(i + 1)
-                    .append("] ")
-                    .append(
-                            sentences[i].trim()
-                    )
+                    .append(sentenceNumber)
+                    .append("] PLAYER: ")
+                    .append(sentence.trim())
                     .append("\n");
+
+            sentenceNumber++;
         }
 
-        prompt.append("\nANSWER:\n");
+
+        for (String sentence : masterSentences) {
+
+            prompt.append("[")
+                    .append(sentenceNumber)
+                    .append("] DM: ")
+                    .append(sentence.trim())
+                    .append("\n");
+
+            sentenceNumber++;
+        }
+
+
+        prompt.append(
+                "\nANSWER:\n"
+        );
 
         return wrapGemmaPrompt(
                 prompt.toString()
@@ -950,5 +1028,36 @@ public class MemoryFactExtractor {
                     true
             );
         }
+    }
+    private String[] buildSourceSentences(
+            GameEventEntity playerEvent,
+            GameEventEntity masterEvent
+    ) {
+        List<String> result =
+                new ArrayList<>();
+
+        String[] playerSentences =
+                splitSentences(
+                        playerEvent.text
+                );
+
+        String[] masterSentences =
+                splitSentences(
+                        masterEvent.text
+                );
+
+        Collections.addAll(
+                result,
+                playerSentences
+        );
+
+        Collections.addAll(
+                result,
+                masterSentences
+        );
+
+        return result.toArray(
+                new String[0]
+        );
     }
 }

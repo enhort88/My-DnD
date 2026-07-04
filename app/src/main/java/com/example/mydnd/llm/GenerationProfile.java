@@ -39,7 +39,7 @@ public class GenerationProfile {
     public static GenerationProfile normal() {
         return new GenerationProfile(
                 "Нормально",
-                240,
+                140,
                 0.75f,
                 0.90f,
                 40,
@@ -102,4 +102,46 @@ public class GenerationProfile {
                 1.00f
         );
     }
+
+    public static GenerationProfile importanceFilter() {
+        return new GenerationProfile(
+                "Importance filter",
+                12,
+                0.01f,
+                0.20f,
+                5,
+                1.00f
+        );
+    }
+    public static GenerationProfile changeClassification() {
+        return new GenerationProfile(
+                "Change classification",
+                32,
+                0.01f,
+                0.20f,
+                5,
+                1.00f
+        );
+    }
+    public static GenerationProfile changeOperation() {
+        return new GenerationProfile(
+                "Change operation",
+                16,
+                0.01f,
+                0.20f,
+                5,
+                1.00f
+        );
+    }
+    public static GenerationProfile entityExtraction() {
+        return new GenerationProfile(
+                "Entity extraction",
+                24,
+                0.01f,
+                0.20f,
+                5,
+                1.00f
+        );
+    }
+
 }

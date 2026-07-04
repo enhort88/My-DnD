@@ -10,7 +10,6 @@ import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.LlmModelManager;
 import com.example.mydnd.llm.ModelRole;
-import com.example.mydnd.llm.ThinkBlockFilter;
 import java.util.Locale;
 
 import java.util.List;
@@ -27,16 +26,13 @@ public class SummaryService {
     // За один раз не даём маленькой модели слишком много текста.
     private static final int MAX_EVENTS_PER_SUMMARY = 8;
 
-    private static final int MAX_EVENT_CHARS_FOR_SUMMARY = 180;
+    private static final int MAX_EVENT_CHARS_FOR_SUMMARY = 420;
 
     // Чтобы сама summary тоже не росла бесконечно.
     private static final int MAX_STORED_SUMMARY_CHARS = 1000;
 
     private final AppDatabase database;
     private final LlmModelManager modelManager;
-
-    private final ThinkBlockFilter thinkBlockFilter =
-            new ThinkBlockFilter();
 
     private final AtomicBoolean working =
             new AtomicBoolean(false);
@@ -182,28 +178,57 @@ public class SummaryService {
         StringBuilder prompt =
                 new StringBuilder();
 
-
         prompt.append(
-                "Перескажи только события ниже.\n"
+                "You compress RPG events into factual campaign memory.\n"
         );
 
         prompt.append(
-                "Сохрани важные факты, имена, места, предметы, решения, угрозы и изменения.\n"
+                "Write only facts explicitly supported by EVENTS.\n"
         );
 
         prompt.append(
-                "Ничего не придумывай.\n"
+                "Write the result in Russian.\n"
         );
 
         prompt.append(
-                "Ответ: 2-4 коротких предложения.\n"
+                "Keep concrete events that may matter later: "
+                        + "completed player actions, NPC actions, "
+                        + "items gained or lost, location changes, "
+                        + "quest changes, relationship changes, injuries, "
+                        + "state changes and explicit discoveries.\n"
         );
 
         prompt.append(
-                "Без заголовка, нумерации и пояснений.\n"
+                "PLAYER lines may describe attempts or intentions. "
+                        + "Do not record uncertain outcomes as successful "
+                        + "unless the DM confirms them.\n"
         );
 
-        prompt.append("\nСОБЫТИЯ:\n");
+        prompt.append(
+                "DM text may contain artistic narration. "
+                        + "Ignore metaphors, comparisons, poetic imagery, "
+                        + "mood, smells, decorative weather, symbolism, "
+                        + "guesses and foreshadowing.\n"
+        );
+
+        prompt.append(
+                "A poetic description is not a literal property of the world.\n"
+        );
+
+        prompt.append(
+                "Do not invent information.\n"
+        );
+
+        prompt.append(
+                "Do not add headings, bullet points, labels, ratings, "
+                        + "time periods, metadata, markdown or code fences.\n"
+        );
+
+        prompt.append(
+                "Return only one short factual paragraph in Russian.\n"
+        );
+
+        prompt.append("\nEVENTS:\n");
 
         for (GameEventEntity event : events) {
 
@@ -214,11 +239,11 @@ public class SummaryService {
 
             if ("PLAYER".equals(event.speaker)) {
 
-                prompt.append("\nИгрок: ");
+                prompt.append("\n[PLAYER] ");
 
             } else if ("MASTER".equals(event.speaker)) {
 
-                prompt.append("\nМир: ");
+                prompt.append("\n[DM] ");
 
             } else {
                 continue;
@@ -231,11 +256,9 @@ public class SummaryService {
             );
         }
 
-        prompt.append(
-                "\n\nКратко что нового произошло:\n"
+        return wrapGemmaPrompt(
+                prompt.toString()
         );
-
-        return prompt.toString();
     }
 
     private void saveSummary(
@@ -358,26 +381,103 @@ public class SummaryService {
         });
     }
 
-    private String cleanSummary(String text) {
+    private String cleanSummary(
+            String text
+    ) {
         if (text == null) {
             return "";
         }
 
         String result =
-                thinkBlockFilter
-                        .removeThinkBlocks(text)
+                text
+                        .replaceAll(
+                                "(?i)```(?:json)?",
+                                ""
+                        )
                         .trim();
 
-        result = result.replaceFirst(
-                "(?i)^\\s*(SUMMARY|СВОДКА|ИТОГ)\\s*:\\s*",
-                ""
-        );
-        result = result.replaceAll(
-                "(?im)^\\s*Ответ\\s*:\\s*\\d+\\s*[-–—]\\s*\\d+\\s+коротких\\s+предложения\\.?\\s*$",
-                ""
-        );
+        StringBuilder cleaned =
+                new StringBuilder();
 
-        return result.trim();
+        String[] lines =
+                result.split("\\R");
+
+        for (String rawLine : lines) {
+
+            String line =
+                    rawLine.trim();
+
+            if (line.isEmpty()) {
+                continue;
+            }
+
+            // Убираем маркеры списков.
+            line =
+                    line.replaceFirst(
+                            "^[*•\\-]+\\s*",
+                            ""
+                    );
+
+            // Убираем заголовок, если модель всё-таки его написала.
+            line =
+                    line.replaceFirst(
+                            "(?i)^\\s*(SUMMARY|СВОДКА|ИТОГ|ОТВЕТ)\\s*:\\s*",
+                            ""
+                    );
+
+            line =
+                    line.trim();
+
+            if (line.isEmpty()
+                    || isServiceGarbageLine(line)) {
+
+                continue;
+            }
+
+            if (cleaned.length() > 0) {
+                cleaned.append(' ');
+            }
+
+            cleaned.append(line);
+        }
+
+        return cleaned
+                .toString()
+                .replaceAll(
+                        "\\s+",
+                        " "
+                )
+                .trim();
+    }
+    private boolean isServiceGarbageLine(
+            String line
+    ) {
+        String lower =
+                line
+                        .toLowerCase(
+                                Locale.ROOT
+                        )
+                        .trim();
+
+        return lower.startsWith("оценка:")
+                || lower.startsWith("временной период:")
+                || lower.startsWith("период:")
+                || lower.startsWith("место:")
+                || lower.startsWith("действия:")
+                || lower.startsWith("time period:")
+                || lower.startsWith("location:")
+                || lower.startsWith("actions:")
+                || lower.equals("события:")
+                || lower.equals("events:")
+                || lower.equals("summary:")
+                || lower.equals("task:")
+                || lower.equals("system:")
+                || lower.contains(
+                "коротких предложений"
+        )
+                || lower.contains(
+                "кратко что нового произошло"
+        );
     }
 
     public boolean isWorking() {
@@ -436,7 +536,11 @@ public class SummaryService {
                 "new_events",
                 "new events",
                 "after the dm",
-                "краткий пересказ:"
+                "краткий пересказ:",
+                "оценка:",
+                "временной период:",
+                "time period:",
+                "```"
         };
 
         for (String forbidden : forbiddenFragments) {
@@ -462,7 +566,12 @@ public class SummaryService {
         }
 
         String trimmed =
-                text.trim();
+                text
+                        .replaceAll(
+                                "\\s+",
+                                " "
+                        )
+                        .trim();
 
         if (trimmed.length()
                 <= MAX_EVENT_CHARS_FOR_SUMMARY) {
@@ -470,25 +579,74 @@ public class SummaryService {
             return trimmed;
         }
 
-        int startLength = 110;
-        int endLength = 60;
+        String[] sentences =
+                trimmed.split(
+                        "(?<=[.!?])\\s+"
+                );
 
-        String start =
+        StringBuilder result =
+                new StringBuilder();
+
+        for (String sentence : sentences) {
+
+            String cleanSentence =
+                    sentence.trim();
+
+            if (cleanSentence.isEmpty()) {
+                continue;
+            }
+
+            int extraLength =
+                    result.length() == 0
+                            ? cleanSentence.length()
+                            : cleanSentence.length() + 1;
+
+            if (result.length()
+                    + extraLength
+                    > MAX_EVENT_CHARS_FOR_SUMMARY) {
+
+                break;
+            }
+
+            if (result.length() > 0) {
+                result.append(' ');
+            }
+
+            result.append(
+                    cleanSentence
+            );
+        }
+
+        if (result.length() > 0) {
+
+            return result
+                    .toString()
+                    .trim();
+        }
+
+        // На случай одного гигантского предложения.
+        String cut =
                 trimmed.substring(
                         0,
-                        startLength
-                ).trim();
+                        MAX_EVENT_CHARS_FOR_SUMMARY
+                );
 
-        String end =
-                trimmed.substring(
-                        trimmed.length()
-                                - endLength
-                ).trim();
+        int lastSpace =
+                cut.lastIndexOf(' ');
 
-        return start
-                + " … "
-                + end;
+        if (lastSpace > 100) {
+
+            cut =
+                    cut.substring(
+                            0,
+                            lastSpace
+                    );
+        }
+
+        return cut.trim()
+                + "…";
     }
+
     private String mergeSummary(
             SummaryEntity latest,
             String deltaSummary
@@ -568,5 +726,14 @@ public class SummaryService {
         return trimmed
                 .substring(startIndex)
                 .trim();
+    }
+
+    private String wrapGemmaPrompt(
+            String userPrompt
+    ) {
+        return "<start_of_turn>user\n"
+                + userPrompt.trim()
+                + "\n<end_of_turn>\n"
+                + "<start_of_turn>model\n";
     }
 }
