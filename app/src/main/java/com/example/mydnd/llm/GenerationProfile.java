@@ -92,4 +92,14 @@ public class GenerationProfile {
                 1.05f
         );
     }
+    public static GenerationProfile factExtraction() {
+        return new GenerationProfile(
+                "Fact extraction",
+                20,
+                0.01f,
+                0.20f,
+                5,
+                1.00f
+        );
+    }
 }

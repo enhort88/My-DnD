@@ -1,5 +1,4 @@
 package com.example.mydnd;
-import android.app.Activity;
 import android.content.Context;
 import android.os.Bundle;
 import android.view.inputmethod.InputMethodManager;
@@ -7,25 +6,18 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
-
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
-import com.example.mydnd.llm.LlmEngine;
-import com.example.mydnd.llm.LocalLlmEngine;
 import android.widget.CheckBox;
-
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.llm.ThinkBlockFilter;
 import com.example.mydnd.prompt.PromptBuilder;
-
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-
 import android.os.Handler;
 import android.os.Looper;
-
 import android.graphics.Color;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -46,9 +38,11 @@ import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import android.text.SpannableStringBuilder;
 import android.widget.ImageView;
+import com.example.mydnd.memory.MemoryFactExtractor;
 
 public class MainActivity extends ComponentActivity {
 
+    private MemoryFactExtractor memoryFactExtractor;
     private SummaryService summaryService;
 
     private static final String TAG_MEMORY = "MyDND_MEMORY";
@@ -173,6 +167,12 @@ public class MainActivity extends ComponentActivity {
         startGameButton = findViewById(R.id.startGameButton);
         loadGameButton = findViewById(R.id.loadGameButton);
         settingsButton = findViewById(R.id.settingsButton);
+//        settingsButton.setEnabled(true);
+//        settingsButton.setText("ТЕСТ ФАКТОВ");
+//
+//        settingsButton.setOnClickListener(v -> {
+//            runMemoryFactExtractorV1();
+//        });
         exitButton = findViewById(R.id.exitButton);
 
         chatTextView = findViewById(R.id.chatTextView);
@@ -194,7 +194,7 @@ public class MainActivity extends ComponentActivity {
 
         File serviceModelFile = new File(
                 modelsDirectory,
-                "Qwen3-0.6B-Q4_K_M.gguf"
+                "gemma-3-1b-it-q4_0.gguf"
         );
 
         modelManager = new LlmModelManager(
@@ -203,6 +203,11 @@ public class MainActivity extends ComponentActivity {
         );
         summaryService =
                 new SummaryService(
+                        database,
+                        modelManager
+                );
+        memoryFactExtractor =
+                new MemoryFactExtractor(
                         database,
                         modelManager
                 );
@@ -709,6 +714,12 @@ public class MainActivity extends ComponentActivity {
                                 + ", relevantFacts="
                                 + memoryContext.getRelevantFacts().size()
                 );
+                for (String fact : memoryContext.getRelevantFacts()) {
+                    Log.d(
+                            TAG_MEMORY,
+                            "Retrieved fact: " + fact
+                    );
+                }
 
                 startLlmGeneration(prompt);
 
@@ -890,10 +901,7 @@ public class MainActivity extends ComponentActivity {
                     public void onCompleted(
                             SummaryEntity summary
                     ) {
-                        runOnUiThread(() -> {
-                            sendButton.setEnabled(true);
-                            sendButton.setText("Отправить");
-                        });
+                        runMemoryFactExtractorV1();
                     }
 
                     @Override
@@ -956,5 +964,86 @@ public class MainActivity extends ComponentActivity {
         );
 
         masterStreamingStartPosition = -1;
+    }
+    private void runMemoryFactExtractorV1() {
+        Log.d(
+                "MyDND_FACTS",
+                "Extractor campaignId="
+                        + currentCampaignId
+        );
+
+        memoryFactExtractor.extractLatest(
+                currentCampaignId,
+                new MemoryFactExtractor.Listener() {
+
+                    @Override
+                    public void onStarted(
+                            int eventCount
+                    ) {
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(false);
+                            sendButton.setText(
+                                    "Ищу факты..."
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onCompleted(
+                            String rawCandidates
+                    ) {
+                        Log.d(
+                                "MyDND_FACTS",
+                                "Extractor result:\n"
+                                        + rawCandidates
+                        );
+
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(true);
+                            sendButton.setText(
+                                    "Отправить"
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onSkipped(
+                            String reason
+                    ) {
+                        Log.d(
+                                "MyDND_FACTS",
+                                "Skipped: " + reason
+                        );
+
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(true);
+                            sendButton.setText(
+                                    "Отправить"
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_FACTS",
+                                "Extractor failed",
+                                throwable
+                        );
+
+                        runOnUiThread(() -> {
+                            sendButton.setEnabled(true);
+                            sendButton.setText(
+                                    "Отправить"
+                            );
+                        });
+                    }
+                }
+        );
     }
 }

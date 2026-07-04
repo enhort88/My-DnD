@@ -31,8 +31,7 @@ static bool ends_with_sentence_mark(const std::string & text) {
 
     return last == '.' ||
            last == '!' ||
-           last == '?' ||
-           last == '\n';
+           last == '?';
 }
 
 static bool g_backend_initialized = false;
@@ -53,9 +52,175 @@ static std::string jstring_to_string(JNIEnv * env, jstring value) {
     env->ReleaseStringUTFChars(value, chars);
     return result;
 }
+static size_t complete_utf8_prefix_length(
+        const std::string & text
+) {
+    if (text.empty()) {
+        return 0;
+    }
 
-static jstring string_to_jstring(JNIEnv * env, const std::string & value) {
-    return env->NewStringUTF(value.c_str());
+    size_t position =
+            text.size();
+
+    size_t continuation_count =
+            0;
+
+    // Идём с конца и считаем байты вида 10xxxxxx.
+    while (position > 0) {
+
+        unsigned char byte =
+                static_cast<unsigned char>(
+                        text[position - 1]
+                );
+
+        if ((byte & 0xC0) == 0x80) {
+
+            continuation_count++;
+
+            position--;
+
+            continue;
+        }
+
+        size_t expected_length;
+
+        if ((byte & 0x80) == 0x00) {
+
+            expected_length = 1;
+
+        } else if (
+                (byte & 0xE0) == 0xC0
+                ) {
+
+            expected_length = 2;
+
+        } else if (
+                (byte & 0xF0) == 0xE0
+                ) {
+
+            expected_length = 3;
+
+        } else if (
+                (byte & 0xF8) == 0xF0
+                ) {
+
+            expected_length = 4;
+
+        } else {
+
+            // Неожиданный байт.
+            // Отдаём Java всё как есть:
+            // UTF-8 decoder обработает его безопаснее,
+            // чем NewStringUTF.
+            return text.size();
+        }
+
+        size_t actual_length =
+                1 + continuation_count;
+
+        if (actual_length
+            < expected_length) {
+
+            // Последний символ ещё не закончен.
+            // Возвращаем всё ДО его первого байта.
+            return position - 1;
+        }
+
+        return text.size();
+    }
+
+    // В буфере только continuation bytes.
+    // Ждём следующий кусок.
+    return 0;
+}
+
+static jstring string_to_jstring(
+        JNIEnv * env,
+        const std::string & value
+) {
+    jbyteArray bytes =
+            env->NewByteArray(
+                    static_cast<jsize>(
+                            value.size()
+                    )
+            );
+
+    if (bytes == nullptr) {
+        return nullptr;
+    }
+
+    if (!value.empty()) {
+        env->SetByteArrayRegion(
+                bytes,
+                0,
+                static_cast<jsize>(
+                        value.size()
+                ),
+                reinterpret_cast<
+                        const jbyte *
+                        >(
+                        value.data()
+                )
+        );
+    }
+
+    jclass stringClass =
+            env->FindClass(
+                    "java/lang/String"
+            );
+
+    if (stringClass == nullptr) {
+        env->DeleteLocalRef(bytes);
+        return nullptr;
+    }
+
+    jmethodID constructor =
+            env->GetMethodID(
+                    stringClass,
+                    "<init>",
+                    "([BLjava/lang/String;)V"
+            );
+
+    if (constructor == nullptr) {
+        env->DeleteLocalRef(
+                stringClass
+        );
+
+        env->DeleteLocalRef(
+                bytes
+        );
+
+        return nullptr;
+    }
+
+    jstring charsetName =
+            env->NewStringUTF(
+                    "UTF-8"
+            );
+
+    jobject result =
+            env->NewObject(
+                    stringClass,
+                    constructor,
+                    bytes,
+                    charsetName
+            );
+
+    env->DeleteLocalRef(
+            charsetName
+    );
+
+    env->DeleteLocalRef(
+            stringClass
+    );
+
+    env->DeleteLocalRef(
+            bytes
+    );
+
+    return static_cast<jstring>(
+            result
+    );
 }
 
 static void ensure_backend_initialized() {
@@ -550,6 +715,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         }
 
         std::string output;
+
+        // Буфер для байтов незаконченного UTF-8 символа между токенами.
+        std::string streaming_pending;
+
         llama_token new_token_id;
 
         const int soft_min_tokens = n_predict * 3 / 4;
@@ -599,28 +768,67 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
                     );
 
             if (piece_length > 0) {
+
                 std::string piece(
                         buffer,
                         piece_length
                 );
 
-                output.append(piece);
-
-                jstring jToken =
-                        env->NewStringUTF(piece.c_str());
-
-                env->CallVoidMethod(
-                        callbackObject,
-                        onTokenMethod,
-                        jToken
+                // Полный ответ сохраняем как раньше.
+                output.append(
+                        piece
                 );
 
-                env->DeleteLocalRef(jToken);
+                // Для streaming сначала накапливаем байты.
+                streaming_pending.append(
+                        piece
+                );
 
-                if (env->ExceptionCheck()) {
-                    env->ExceptionDescribe();
-                    env->ExceptionClear();
-                    break;
+                size_t ready_length =
+                        complete_utf8_prefix_length(
+                                streaming_pending
+                        );
+
+                if (ready_length > 0) {
+
+                    std::string ready_text =
+                            streaming_pending.substr(
+                                    0,
+                                    ready_length
+                            );
+
+                    streaming_pending.erase(
+                            0,
+                            ready_length
+                    );
+
+                    jstring jToken =
+                            string_to_jstring(
+                                    env,
+                                    ready_text
+                            );
+
+                    if (jToken != nullptr) {
+
+                        env->CallVoidMethod(
+                                callbackObject,
+                                onTokenMethod,
+                                jToken
+                        );
+
+                        env->DeleteLocalRef(
+                                jToken
+                        );
+                    }
+
+                    if (env->ExceptionCheck()) {
+
+                        env->ExceptionDescribe();
+
+                        env->ExceptionClear();
+
+                        break;
+                    }
                 }
             }
 
@@ -704,4 +912,3 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeRelease(
 
     delete handle;
 }
-

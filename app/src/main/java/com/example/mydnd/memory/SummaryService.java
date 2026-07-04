@@ -182,7 +182,6 @@ public class SummaryService {
         StringBuilder prompt =
                 new StringBuilder();
 
-        prompt.append("/no_think\n");
 
         prompt.append(
                 "Перескажи только события ниже.\n"

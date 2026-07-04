@@ -36,4 +36,15 @@ public interface MemoryFactDao {
 
     @Query("UPDATE memory_facts SET active = 0, updated_at = :updatedAt WHERE id = :factId")
     void deactivate(long factId, long updatedAt);
+
+    @Query(
+            "SELECT COUNT(*) FROM memory_facts " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND active = 1 " +
+                    "AND fact_text = :factText"
+    )
+    int countActiveExactFact(
+            long campaignId,
+            String factText
+    );
 }
