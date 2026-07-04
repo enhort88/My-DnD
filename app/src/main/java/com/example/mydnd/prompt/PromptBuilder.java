@@ -11,12 +11,8 @@ public class PromptBuilder {
     public String buildPrompt(
             String playerText,
             MemoryContext memoryContext,
-            boolean useThinking,
             GenerationProfile profile
     ) {
-        String thinkingMode = useThinking
-                ? "/think"
-                : "/no_think";
 
         String recentEvents =
                 buildRecentEvents(memoryContext);
@@ -31,7 +27,7 @@ public class PromptBuilder {
 
 // Режим thinking должен быть только один раз,
 // самой первой строкой prompt.
-        prompt.append(thinkingMode);
+
         prompt.append("\n\nSYSTEM:");
 
         prompt.append("\nТы мастер настольной RPG в духе DnD.");

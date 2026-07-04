@@ -9,9 +9,7 @@ import android.widget.TextView;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
-import android.widget.CheckBox;
 import com.example.mydnd.llm.ResponseCleaner;
-import com.example.mydnd.llm.ThinkBlockFilter;
 import com.example.mydnd.prompt.PromptBuilder;
 import java.io.File;
 import java.util.ArrayList;
@@ -69,10 +67,6 @@ public class MainActivity extends ComponentActivity {
     private int masterStreamingStartPosition = -1;
     private boolean generationInProgress = false;
 
-    private CheckBox useThinkingCheckBox;
-    private CheckBox showThinkingCheckBox;
-
-    private final ThinkBlockFilter thinkBlockFilter = new ThinkBlockFilter();
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final StringBuilder pendingTokenBuffer = new StringBuilder();
 
@@ -89,6 +83,10 @@ public class MainActivity extends ComponentActivity {
                     "Не бросай кубики сам. " +
                     "Отвечай на русском языке. " +
                     "Пиши атмосферно, но кратко.";
+
+    private static final String MASTER_MODEL_FILE =
+            "gemma-4-E2B_q4_0-it.gguf";
+
 
     private View welcomeLayout;
     private View gameLayout;
@@ -181,15 +179,13 @@ public class MainActivity extends ComponentActivity {
         sendButton = findViewById(R.id.sendButton);
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
-        useThinkingCheckBox = findViewById(R.id.useThinkingCheckBox);
-        showThinkingCheckBox = findViewById(R.id.showThinkingCheckBox);
 
         File modelsDirectory =
                 getExternalFilesDir("models");
 
         File masterModelFile = new File(
                 modelsDirectory,
-                "Qwen3-4B-Q4_K_M.gguf"
+                MASTER_MODEL_FILE
         );
 
         File serviceModelFile = new File(
@@ -701,7 +697,6 @@ public class MainActivity extends ComponentActivity {
                         promptBuilder.buildPrompt(
                                 playerText,
                                 memoryContext,
-                                useThinkingCheckBox.isChecked(),
                                 generationProfile
                         );
 
@@ -744,9 +739,23 @@ public class MainActivity extends ComponentActivity {
 
     private void startLlmGeneration(String prompt) {
         masterStreamingStartPosition = -1;
+
+        String preparedPrompt =
+                prepareMasterPrompt(
+                        prompt
+                );
+
+        Log.d(
+                "MyDND_MODEL",
+                "MASTER model="
+                        + MASTER_MODEL_FILE
+                        + ", promptChars="
+                        + preparedPrompt.length()
+        );
+
         modelManager.generate(
                 ModelRole.MASTER,
-                prompt,
+                preparedPrompt,
                 generationProfile,
                 new LlmCallback() {
 
@@ -805,12 +814,6 @@ public class MainActivity extends ComponentActivity {
 
                             String visibleText = fullText;
 
-                            if (!showThinkingCheckBox.isChecked()) {
-                                visibleText =
-                                        thinkBlockFilter.removeThinkBlocks(
-                                                fullText
-                                        );
-                            }
 
                             visibleText =
                                     responseCleaner.clean(visibleText);
@@ -1045,5 +1048,14 @@ public class MainActivity extends ComponentActivity {
                     }
                 }
         );
+    }
+
+    private String prepareMasterPrompt(
+            String prompt
+    ) {
+        return "<start_of_turn>user\n"
+                + prompt.trim()
+                + "\n<end_of_turn>\n"
+                + "<start_of_turn>model\n";
     }
 }

@@ -217,24 +217,6 @@
             android:paddingTop="4dp"
             android:paddingBottom="4dp">
 
-
-            <CheckBox
-                android:id="@+id/useThinkingCheckBox"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Использовать think"
-                android:textColor="#B8B0A0"
-                android:checked="false" />
-
-
-            <CheckBox
-                android:id="@+id/showThinkingCheckBox"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Показывать размышления модели"
-                android:textColor="#B8B0A0"
-                android:checked="false" />
-
         </LinearLayout>
 
 
