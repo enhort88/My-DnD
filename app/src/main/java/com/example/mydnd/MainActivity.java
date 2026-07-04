@@ -74,16 +74,6 @@ public class MainActivity extends ComponentActivity {
 
     private static final long STREAM_FLUSH_DELAY_MS = 80;
 
-
-    private static final String SYSTEM_PROMPT =
-            "Ты — мастер настольной RPG в духе DnD. " +
-                    "Веди сцену, описывай мир, играй NPC и реагируй на действия игрока. " +
-                    "Не решай за персонажа игрока. " +
-                    "Если нужна проверка, попроси бросок кубика. " +
-                    "Не бросай кубики сам. " +
-                    "Отвечай на русском языке. " +
-                    "Пиши атмосферно, но кратко.";
-
     private static final String MASTER_MODEL_FILE =
             "gemma-4-E2B_q4_0-it.gguf";
 
@@ -696,8 +686,7 @@ public class MainActivity extends ComponentActivity {
                 String prompt =
                         promptBuilder.buildPrompt(
                                 playerText,
-                                memoryContext,
-                                generationProfile
+                                memoryContext
                         );
 
                 Log.d(
