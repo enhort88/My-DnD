@@ -31,6 +31,18 @@ public class NativeLlmBridge {
             NativeTokenCallback callback
     );
 
+    public native String nativeGenerateInventoryToolAwareStream(
+            long handle,
+            String prompt,
+            int maxTokens,
+            float temperature,
+            float topP,
+            int topK,
+            float repeatPenalty,
+            NativeTokenCallback tokenCallback,
+            NativeToolCallback toolCallback
+    );
+
     public native void nativeRelease(
             long handle
     );

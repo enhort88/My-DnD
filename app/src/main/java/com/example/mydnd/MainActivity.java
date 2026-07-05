@@ -12,6 +12,7 @@ import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
+import com.example.mydnd.llm.NativeToolCallback;
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.prompt.PromptBuilder;
 import com.example.mydnd.prompt.GemmaToolPromptBuilder;
@@ -303,6 +304,37 @@ public class MainActivity extends ComponentActivity {
         String playerText = inputEditText.getText().toString().trim();
 
         if (playerText.isEmpty()) {
+            return;
+        }
+
+        if (playerText.startsWith("/cont ")) {
+            String action =
+                    playerText
+                            .substring("/cont ".length())
+                            .trim();
+
+            if (action.isEmpty()) {
+                return;
+            }
+
+            generationCancelledByUser = false;
+            generationInProgress = true;
+            masterStreamingStarted = false;
+
+            inputEditText.setText("");
+            hideKeyboard();
+
+            appendPlayerMessage(action);
+
+            sendButton.setEnabled(true);
+            sendButton.setText("Стоп");
+
+            showThinkingIndicator();
+
+            processOnePassInventoryAndGenerate(
+                    action
+            );
+
             return;
         }
 
@@ -796,6 +828,346 @@ public class MainActivity extends ComponentActivity {
                 currentCampaignId = newCampaignId;
                 startFirstScene();
             });
+        });
+    }
+
+
+
+    /**
+     * Эксперимент /cont:
+     * один prompt decode, затем tool call -> Java/Room -> tool response
+     * и художественное продолжение в том же native context.
+     */
+    private void processOnePassInventoryAndGenerate(
+            String playerText
+    ) {
+        if (currentCampaignId <= 0L) {
+            finishOnePassPreparationError(
+                    new IllegalStateException(
+                            "campaignId <= 0"
+                    )
+            );
+
+            return;
+        }
+
+        final long campaignId =
+                currentCampaignId;
+
+        DbExecutor.execute(() -> {
+            try {
+                List<String> inventoryBefore =
+                        inventoryRepository.getItemNames(
+                                campaignId
+                        );
+
+                MemoryContext memoryContext =
+                        campaignMemory.buildContext(
+                                campaignId,
+                                playerText
+                        );
+
+                String rawPrompt =
+                        promptBuilder.buildInventoryToolAwarePrompt(
+                                playerText,
+                                memoryContext,
+                                inventoryBefore
+                        );
+
+                String preparedPrompt =
+                        prepareMasterPrompt(
+                                rawPrompt
+                        );
+
+                Log.d(
+                        "MyDND_ONEPASS",
+                        "START campaignId="
+                                + campaignId
+                                + " | inventoryBefore="
+                                + inventoryBefore
+                                + " | promptChars="
+                                + preparedPrompt.length()
+                );
+
+                Log.d(
+                        "MyDND_ONEPASS_PROMPT",
+                        "\n" + preparedPrompt
+                );
+
+                startOnePassInventoryGeneration(
+                        preparedPrompt,
+                        campaignId
+                );
+
+            } catch (Throwable throwable) {
+                finishOnePassPreparationError(
+                        throwable
+                );
+            }
+        });
+    }
+
+
+    private void startOnePassInventoryGeneration(
+            String preparedPrompt,
+            long campaignId
+    ) {
+        masterStreamingStartPosition =
+                -1;
+
+        modelManager.generateInventoryToolAware(
+                ModelRole.MASTER,
+                preparedPrompt,
+                generationProfile,
+                new NativeToolCallback() {
+
+                    @Override
+                    public String onToolCall(
+                            String rawToolCall
+                    ) {
+                        return executeInventoryToolCallForContinuation(
+                                campaignId,
+                                rawToolCall
+                        );
+                    }
+                },
+                createMasterGenerationCallback()
+        );
+    }
+
+
+    /**
+     * Вызывается прямо из native generation thread.
+     * Здесь синхронно выполняется Room-команда, после чего строка
+     * tool response возвращается обратно в тот же llama_context.
+     */
+    private String executeInventoryToolCallForContinuation(
+            long campaignId,
+            String rawToolCall
+    ) {
+        Log.d(
+                "MyDND_ONEPASS",
+                "TOOL RAW:\n" + rawToolCall
+        );
+
+        try {
+            GemmaToolCallParser.Result result =
+                    gemmaToolCallParser.parse(
+                            rawToolCall
+                    );
+
+            if (!result.hasToolCall()) {
+                List<String> inventoryNow =
+                        inventoryRepository.getItemNames(
+                                campaignId
+                        );
+
+                String response =
+                        buildGemmaInventoryToolResponse(
+                                "no_inventory_change",
+                                "REJECTED",
+                                "NO_TOOL_CALL_PARSED",
+                                "",
+                                inventoryNow
+                        );
+
+                Log.e(
+                        "MyDND_ONEPASS",
+                        "Parser did not find tool call; returning safe response"
+                );
+
+                return response;
+            }
+
+            String functionName =
+                    result.getFunctionName();
+
+            if ("no_inventory_change".equals(
+                    functionName
+            )) {
+                List<String> inventoryNow =
+                        inventoryRepository.getItemNames(
+                                campaignId
+                        );
+
+                String response =
+                        buildGemmaInventoryToolResponse(
+                                functionName,
+                                "OK",
+                                "NO_INVENTORY_CHANGE",
+                                "",
+                                inventoryNow
+                        );
+
+                Log.d(
+                        "MyDND_ONEPASS",
+                        "TOOL NO CHANGE | AFTER="
+                                + inventoryNow
+                );
+
+                return response;
+            }
+
+            InventoryRepository.ApplyResult applyResult =
+                    inventoryRepository.applyToolCall(
+                            campaignId,
+                            functionName,
+                            result.getItemName()
+                    );
+
+            List<String> inventoryNow =
+                    inventoryRepository.getItemNames(
+                            campaignId
+                    );
+
+            String status =
+                    applyResult.isApplied()
+                            ? "APPLIED"
+                            : "REJECTED";
+
+            Log.d(
+                    "MyDND_ONEPASS",
+                    "TOOL "
+                            + status
+                            + " | function="
+                            + functionName
+                            + " | code="
+                            + applyResult.getCode()
+                            + " | item="
+                            + applyResult.getItemName()
+                            + " | AFTER="
+                            + inventoryNow
+            );
+
+            return buildGemmaInventoryToolResponse(
+                    functionName,
+                    status,
+                    applyResult.getCode(),
+                    applyResult.getItemName(),
+                    inventoryNow
+            );
+
+        } catch (Throwable throwable) {
+            Log.e(
+                    "MyDND_ONEPASS",
+                    "Tool execution failed",
+                    throwable
+            );
+
+            List<String> inventoryNow;
+
+            try {
+                inventoryNow =
+                        inventoryRepository.getItemNames(
+                                campaignId
+                        );
+            } catch (Throwable ignored) {
+                inventoryNow =
+                        Collections.emptyList();
+            }
+
+            return buildGemmaInventoryToolResponse(
+                    "no_inventory_change",
+                    "ERROR",
+                    "JAVA_TOOL_EXCEPTION",
+                    "",
+                    inventoryNow
+            );
+        }
+    }
+
+
+    private String buildGemmaInventoryToolResponse(
+            String functionName,
+            String status,
+            String code,
+            String itemName,
+            List<String> inventoryAfter
+    ) {
+        String safeFunctionName =
+                sanitizeToolField(
+                        functionName
+                );
+
+        if (safeFunctionName.isEmpty()) {
+            safeFunctionName =
+                    "no_inventory_change";
+        }
+
+        String inventoryText =
+                inventoryAfter == null
+                || inventoryAfter.isEmpty()
+                        ? "пусто"
+                        : String.join(
+                                " | ",
+                                inventoryAfter
+                        );
+
+        return "<|tool_response>response:"
+                + safeFunctionName
+                + "{status:<|\"|>"
+                + sanitizeToolField(status)
+                + "<|\"|>,code:<|\"|>"
+                + sanitizeToolField(code)
+                + "<|\"|>,item:<|\"|>"
+                + sanitizeToolField(itemName)
+                + "<|\"|>,inventory_after:<|\"|>"
+                + sanitizeToolField(inventoryText)
+                + "<|\"|>}<tool_response|>";
+    }
+
+
+    private String sanitizeToolField(
+            String value
+    ) {
+        if (value == null) {
+            return "";
+        }
+
+        return value
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace('\t', ' ')
+                .replace("<|", "‹")
+                .replace("|>", "›")
+                .replace('{', '(')
+                .replace('}', ')')
+                .trim()
+                .replaceAll(
+                        "\\s+",
+                        " "
+                );
+    }
+
+
+    private void finishOnePassPreparationError(
+            Throwable throwable
+    ) {
+        Log.e(
+                "MyDND_ONEPASS",
+                "Failed to prepare one-pass generation",
+                throwable
+        );
+
+        runOnUiThread(() -> {
+            removeThinkingIndicator();
+
+            generationInProgress =
+                    false;
+
+            generationCancelledByUser =
+                    false;
+
+            masterStreamingStarted =
+                    false;
+
+            sendButton.setEnabled(
+                    true
+            );
+
+            sendButton.setText(
+                    "Отправить"
+            );
         });
     }
 
@@ -1479,10 +1851,12 @@ public class MainActivity extends ComponentActivity {
                 prepareMasterPrompt(
                         prompt
                 );
+
         Log.d(
                 "MyDND_FINAL_PROMPT",
                 "\n" + preparedPrompt
         );
+
         Log.d(
                 "MyDND_MODEL",
                 "MASTER model="
@@ -1495,82 +1869,178 @@ public class MainActivity extends ComponentActivity {
                 ModelRole.MASTER,
                 preparedPrompt,
                 generationProfile,
-                new LlmCallback() {
+                createMasterGenerationCallback()
+        );
+    }
 
-                    @Override
-                    public void onToken(String token) {
-                        runOnUiThread(() -> {
-                            if (token == null || token.isEmpty()) {
-                                return;
-                            }
 
-                            if (token.startsWith("[Система]")) {
-                                flushStreamingTokens();
-                                return;
-                            }
+    private LlmCallback createMasterGenerationCallback() {
+        return new LlmCallback() {
 
-                            if (!masterStreamingStarted) {
-                                removeThinkingIndicator();
-
-                                // Запоминаем позицию, с которой начался сырой
-                                // streaming-ответ мастера.
-                                masterStreamingStartPosition =
-                                        chatTextView.getText().length();
-
-                                masterStreamingStarted = true;
-                            }
-
-                            appendStreamingToken(token);
-                        });
+            @Override
+            public void onToken(String token) {
+                runOnUiThread(() -> {
+                    if (token == null || token.isEmpty()) {
+                        return;
                     }
 
-                    @Override
-                    public void onComplete(
-                            String fullText
-                    ) {
-                        Log.d(
-                                "MyDND_MASTER_RAW",
-                                "RAW:\n"
-                                        + fullText
+                    if (token.startsWith("[Система]")) {
+                        flushStreamingTokens();
+                        return;
+                    }
+
+                    if (!masterStreamingStarted) {
+                        removeThinkingIndicator();
+
+                        // Запоминаем позицию, с которой начался сырой
+                        // streaming-ответ мастера.
+                        masterStreamingStartPosition =
+                                chatTextView.getText().length();
+
+                        masterStreamingStarted = true;
+                    }
+
+                    appendStreamingToken(token);
+                });
+            }
+
+
+            @Override
+            public void onComplete(
+                    String fullText
+            ) {
+                Log.d(
+                        "MyDND_MASTER_RAW",
+                        "RAW:\n"
+                                + fullText
+                );
+
+
+                final String narrative =
+                        fullText == null
+                                ? ""
+                                : fullText;
+
+
+                runOnUiThread(() -> {
+
+                    removeThinkingIndicator();
+
+                    flushStreamingTokens();
+
+
+                    if (generationCancelledByUser) {
+
+                        removeLastPlayerEvent();
+
+
+                        appendColoredText(
+                                "\n\n",
+                                COLOR_MASTER
                         );
 
 
-                        final String narrative =
-                                fullText == null
-                                        ? ""
-                                        : fullText;
+                        generationInProgress =
+                                false;
+
+                        generationCancelledByUser =
+                                false;
+
+                        masterStreamingStarted =
+                                false;
+
+                        masterStreamingStartPosition =
+                                -1;
 
 
-                        runOnUiThread(() -> {
+                        sendButton.setEnabled(
+                                true
+                        );
 
-                            removeThinkingIndicator();
-
-                            flushStreamingTokens();
-
-
-                            if (generationCancelledByUser) {
-
-                                removeLastPlayerEvent();
+                        sendButton.setText(
+                                "Отправить"
+                        );
 
 
-                                appendColoredText(
-                                        "\n\n",
-                                        COLOR_MASTER
-                                );
+                        updateChat();
+
+                        return;
+                    }
 
 
-                                generationInProgress =
-                                        false;
+                    /*
+                     * Чистим финальный художественный ответ
+                     * перед показом и сохранением.
+                     */
+                    String visibleText =
+                            responseCleaner.clean(
+                                    narrative
+                            );
 
-                                generationCancelledByUser =
-                                        false;
 
-                                masterStreamingStarted =
-                                        false;
+                    if (masterStreamingStarted) {
 
-                                masterStreamingStartPosition =
-                                        -1;
+                        /*
+                         * Streaming уже показал пользователю
+                         * художественный ответ.
+                         *
+                         * Заменяем его финальной очищенной
+                         * версией.
+                         */
+                        replaceStreamedMasterText(
+                                visibleText
+                        );
 
+                    } else {
+
+                        appendColoredText(
+                                visibleText
+                                        + "\n\n",
+                                COLOR_MASTER
+                        );
+                    }
+
+
+                    /*
+                     * В game_events сохраняется только
+                     * художественный текст мастера.
+                     */
+                    GameEvent masterEvent =
+                            GameEvent.master(
+                                    visibleText
+                            );
+
+
+                    gameEvents.add(
+                            masterEvent
+                    );
+
+
+                    generationInProgress =
+                            false;
+
+                    masterStreamingStarted =
+                            false;
+
+                    masterStreamingStartPosition =
+                            -1;
+
+
+                    sendButton.setEnabled(
+                            false
+                    );
+
+                    sendButton.setText(
+                            "Сохраняю ход..."
+                    );
+
+
+                    updateChat();
+
+
+                    saveEventToDb(
+                            masterEvent,
+                            () -> {
 
                                 sendButton.setEnabled(
                                         true
@@ -1579,123 +2049,36 @@ public class MainActivity extends ComponentActivity {
                                 sendButton.setText(
                                         "Отправить"
                                 );
-
-
-                                updateChat();
-
-                                return;
                             }
+                    );
+                });
+            }
 
 
-                            /*
-                             * Чистим финальный художественный ответ
-                             * перед показом и сохранением.
-                             */
-                            String visibleText =
-                                    responseCleaner.clean(
-                                            narrative
-                                    );
+            @Override
+            public void onError(Throwable throwable) {
+                runOnUiThread(() -> {
+                    removeThinkingIndicator();
+                    flushStreamingTokens();
 
+                    generationInProgress = false;
+                    generationCancelledByUser = false;
+                    masterStreamingStarted = false;
 
-                            if (masterStreamingStarted) {
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
 
-                                /*
-                                 * Streaming уже показал пользователю
-                                 * художественный ответ.
-                                 *
-                                 * Заменяем его финальной очищенной
-                                 * версией.
-                                 */
-                                replaceStreamedMasterText(
-                                        visibleText
-                                );
-
-                            } else {
-
-                                appendColoredText(
-                                        visibleText
-                                                + "\n\n",
-                                        COLOR_MASTER
-                                );
-                            }
-
-
-                            /*
-                             * В game_events сохраняется только
-                             * художественный текст мастера.
-                             */
-                            GameEvent masterEvent =
-                                    GameEvent.master(
-                                            visibleText
-                                    );
-
-
-                            gameEvents.add(
-                                    masterEvent
-                            );
-
-
-                            generationInProgress =
-                                    false;
-
-                            masterStreamingStarted =
-                                    false;
-
-                            masterStreamingStartPosition =
-                                    -1;
-
-
-                            sendButton.setEnabled(
-                                    false
-                            );
-
-                            sendButton.setText(
-                                    "Сохраняю ход..."
-                            );
-
-
-                            updateChat();
-
-
-                            saveEventToDb(
-                                    masterEvent,
-                                    () -> {
-
-                                        sendButton.setEnabled(
-                                                true
-                                        );
-
-                                        sendButton.setText(
-                                                "Отправить"
-                                        );
-                                    }
-                            );
-                        });
-                    }
-
-                    @Override
-                    public void onError(Throwable throwable) {
-                        runOnUiThread(() -> {
-                            removeThinkingIndicator();
-                            flushStreamingTokens();
-
-                            generationInProgress = false;
-                            generationCancelledByUser = false;
-                            masterStreamingStarted = false;
-
-                            sendButton.setEnabled(true);
-                            sendButton.setText("Отправить");
-
-                            Log.e(
-                                    "MyDND_LLM",
-                                    "Generation failed",
-                                    throwable
-                            );
-                        });
-                    }
-                }
-        );
+                    Log.e(
+                            "MyDND_LLM",
+                            "Generation failed",
+                            throwable
+                    );
+                });
+            }
+        };
     }
+
+
     private void updateSummaryIfNeeded() {
         summaryService.updateIfNeeded(
                 currentCampaignId,

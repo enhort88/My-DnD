@@ -133,6 +133,84 @@ public class LlmModelManager {
     }
 
 
+    public void generateInventoryToolAware(
+            ModelRole role,
+            String prompt,
+            GenerationProfile profile,
+            NativeToolCallback toolCallback,
+            LlmCallback callback
+    ) {
+        final LocalLlmEngine engine;
+
+        synchronized (lock) {
+            if (busy) {
+                callback.onError(
+                        new IllegalStateException(
+                                "Другая генерация уже выполняется"
+                        )
+                );
+                return;
+            }
+
+            engine = switchToLocked(role);
+            busy = true;
+        }
+
+        Log.d(
+                TAG,
+                "generateInventoryToolAware(): role=" + role
+        );
+
+        engine.generateInventoryToolAware(
+                prompt,
+                profile,
+                toolCallback,
+                new LlmCallback() {
+
+                    @Override
+                    public void onToken(
+                            String token
+                    ) {
+                        callback.onToken(token);
+                    }
+
+
+                    @Override
+                    public void onComplete(
+                            String fullText
+                    ) {
+                        finishGeneration();
+
+                        Log.d(
+                                TAG,
+                                "generateInventoryToolAware(): completed, role="
+                                        + role
+                        );
+
+                        callback.onComplete(fullText);
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        finishGeneration();
+
+                        Log.e(
+                                TAG,
+                                "generateInventoryToolAware(): failed, role="
+                                        + role,
+                                throwable
+                        );
+
+                        callback.onError(throwable);
+                    }
+                }
+        );
+    }
+
+
     public void cancelCurrent() {
         LocalLlmEngine engine;
 

@@ -106,6 +106,103 @@ static bool ends_with_text(
 }
 
 
+
+static bool is_complete_inventory_tool_call(
+        const std::string & text
+) {
+    if (text.empty()) {
+        return false;
+    }
+
+    if (text.find("<|tool_call>")
+        != std::string::npos) {
+
+        return text.find("<tool_call|>")
+               != std::string::npos;
+    }
+
+    const bool known_short_call =
+            text.find("add_item_to_inventory{")
+                    != std::string::npos
+            || text.find("remove_item_from_inventory{")
+                    != std::string::npos
+            || text.find("no_inventory_change{")
+                    != std::string::npos;
+
+    if (!known_short_call) {
+        return false;
+    }
+
+    size_t end = text.find_last_not_of(
+            " \t\r\n"
+    );
+
+    return end != std::string::npos
+           && text[end] == '}';
+}
+
+
+static llama_sampler * create_sampler(
+        float temperature,
+        float top_p,
+        int top_k,
+        float repeat_penalty
+) {
+    llama_sampler_chain_params sampler_params =
+            llama_sampler_chain_default_params();
+
+    sampler_params.no_perf = true;
+
+    llama_sampler * sampler =
+            llama_sampler_chain_init(
+                    sampler_params
+            );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_penalties(
+                    96,
+                    repeat_penalty,
+                    0.20f,
+                    0.10f
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_k(
+                    top_k
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_p(
+                    top_p,
+                    1
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_temp(
+                    temperature
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_dist(
+                    static_cast<uint32_t>(
+                            time(nullptr)
+                    )
+            )
+    );
+
+    return sampler;
+}
+
+
 static const char * MYDND_METADATA_GRAMMAR =
         R"GBNF(
 root ::= no-change | item-player | item-world
@@ -1346,6 +1443,907 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         return string_to_jstring(env, std::string("Ошибка nativeGenerateStream: ") + ex.what());
     } catch (...) {
         return string_to_jstring(env, "Ошибка nativeGenerateStream: неизвестная ошибка.");
+    }
+}
+
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStream(
+        JNIEnv * env,
+        jobject /* this */,
+        jlong nativeHandle,
+        jstring promptText,
+        jint maxTokens,
+        jfloat temperature,
+        jfloat topP,
+        jint topK,
+        jfloat repeatPenalty,
+        jobject tokenCallbackObject,
+        jobject toolCallbackObject) {
+
+    MYDND_LOGI(
+            "nativeGenerateInventoryToolAwareStream: ENTER"
+    );
+
+    if (nativeHandle == 0) {
+        return string_to_jstring(
+                env,
+                "Ошибка: модель не загружена."
+        );
+    }
+
+    if (tokenCallbackObject == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: tokenCallbackObject == nullptr."
+        );
+    }
+
+    if (toolCallbackObject == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: toolCallbackObject == nullptr."
+        );
+    }
+
+    jclass tokenCallbackClass =
+            env->GetObjectClass(
+                    tokenCallbackObject
+            );
+
+    if (tokenCallbackClass == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: не найден class tokenCallbackObject."
+        );
+    }
+
+    jmethodID onTokenMethod =
+            env->GetMethodID(
+                    tokenCallbackClass,
+                    "onToken",
+                    "(Ljava/lang/String;)V"
+            );
+
+    if (onTokenMethod == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: не найден метод onToken(String)."
+        );
+    }
+
+    jclass toolCallbackClass =
+            env->GetObjectClass(
+                    toolCallbackObject
+            );
+
+    if (toolCallbackClass == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: не найден class toolCallbackObject."
+        );
+    }
+
+    jmethodID onToolCallMethod =
+            env->GetMethodID(
+                    toolCallbackClass,
+                    "onToolCall",
+                    "(Ljava/lang/String;)Ljava/lang/String;"
+            );
+
+    if (onToolCallMethod == nullptr) {
+        return string_to_jstring(
+                env,
+                "Ошибка: не найден метод onToolCall(String)."
+        );
+    }
+
+    MyDndLlamaHandle * handle =
+            reinterpret_cast<MyDndLlamaHandle *>(
+                    nativeHandle
+            );
+
+    std::lock_guard<std::mutex> lock(
+            handle->mutex
+    );
+
+    handle->cancel_requested.store(
+            false
+    );
+
+    try {
+        std::string prompt =
+                jstring_to_string(
+                        env,
+                        promptText
+                );
+
+        if (prompt.empty()) {
+            return string_to_jstring(
+                    env,
+                    ""
+            );
+        }
+
+        const int narrative_predict =
+                maxTokens > 0
+                        ? maxTokens
+                        : 140;
+
+        const int narrative_hard_max =
+                narrative_predict + 60;
+
+        const int decision_max_tokens =
+                96;
+
+        const int tool_response_reserve =
+                192;
+
+        const float safe_temperature =
+                temperature > 0.0f
+                        ? temperature
+                        : 0.75f;
+
+        const float safe_top_p =
+                topP > 0.0f
+                && topP <= 1.0f
+                        ? topP
+                        : 0.90f;
+
+        const int safe_top_k =
+                topK > 0
+                        ? topK
+                        : 40;
+
+        const float safe_repeat_penalty =
+                repeatPenalty >= 1.0f
+                        ? repeatPenalty
+                        : 1.12f;
+
+        llama_memory_clear(
+                llama_get_memory(
+                        handle->ctx
+                ),
+                true
+        );
+
+        int n_prompt =
+                -llama_tokenize(
+                        handle->vocab,
+                        prompt.c_str(),
+                        static_cast<int32_t>(
+                                prompt.size()
+                        ),
+                        nullptr,
+                        0,
+                        true,
+                        true
+                );
+
+        if (n_prompt <= 0) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: не удалось токенизировать prompt."
+            );
+        }
+
+        const uint32_t n_ctx =
+                llama_n_ctx(
+                        handle->ctx
+                );
+
+        if (static_cast<uint32_t>(
+                    n_prompt
+                    + decision_max_tokens
+                    + tool_response_reserve
+                    + narrative_hard_max
+            ) >= n_ctx) {
+
+            MYDND_LOGE(
+                    "nativeGenerateInventoryToolAwareStream: context overflow, prompt=%d, decision=%d, toolReserve=%d, narrative=%d, ctx=%u",
+                    n_prompt,
+                    decision_max_tokens,
+                    tool_response_reserve,
+                    narrative_hard_max,
+                    n_ctx
+            );
+
+            return string_to_jstring(
+                    env,
+                    "Ошибка: tool-aware prompt и ответ не помещаются в контекст модели."
+            );
+        }
+
+        std::vector<llama_token> prompt_tokens(
+                n_prompt
+        );
+
+        int tokenized =
+                llama_tokenize(
+                        handle->vocab,
+                        prompt.c_str(),
+                        static_cast<int32_t>(
+                                prompt.size()
+                        ),
+                        prompt_tokens.data(),
+                        static_cast<int32_t>(
+                                prompt_tokens.size()
+                        ),
+                        true,
+                        true
+                );
+
+        if (tokenized < 0) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: tokenizer вернул отрицательный результат."
+            );
+        }
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: prompt tokenized = %d",
+                tokenized
+        );
+
+        const int prompt_chunk_size =
+                16;
+
+        auto prompt_decode_start =
+                std::chrono::steady_clock::now();
+
+        for (
+                int pos = 0;
+                pos < tokenized;
+                pos += prompt_chunk_size
+                ) {
+
+            if (handle->cancel_requested.load()) {
+                MYDND_LOGI(
+                        "nativeGenerateInventoryToolAwareStream: cancelled during prompt decode, pos=%d",
+                        pos
+                );
+
+                return string_to_jstring(
+                        env,
+                        ""
+                );
+            }
+
+            int chunk_size =
+                    prompt_chunk_size;
+
+            if (pos + chunk_size > tokenized) {
+                chunk_size =
+                        tokenized - pos;
+            }
+
+            llama_batch batch =
+                    llama_batch_get_one(
+                            prompt_tokens.data() + pos,
+                            chunk_size
+                    );
+
+            if (llama_decode(
+                    handle->ctx,
+                    batch
+            ) != 0) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: prompt decode failed, pos=%d, chunk=%d",
+                        pos,
+                        chunk_size
+                );
+
+                return string_to_jstring(
+                        env,
+                        "Ошибка: llama_decode не смог обработать часть tool-aware prompt."
+                );
+            }
+        }
+
+        auto prompt_decode_end =
+                std::chrono::steady_clock::now();
+
+        auto prompt_decode_ms =
+                std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                >(
+                        prompt_decode_end
+                        - prompt_decode_start
+                ).count();
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: ONE PASS prompt decode = %lld ms",
+                static_cast<long long>(
+                        prompt_decode_ms
+                )
+        );
+
+        if (handle->cancel_requested.load()) {
+            return string_to_jstring(
+                    env,
+                    ""
+            );
+        }
+
+        /*
+         * Фаза 1: короткое детерминированное решение о состоянии инвентаря.
+         * Ничего из этой фазы пользователю не стримим.
+         */
+        llama_sampler * decision_sampler =
+                create_sampler(
+                        0.10f,
+                        0.80f,
+                        20,
+                        1.00f
+                );
+
+        std::string decision_output;
+
+        bool tool_call_complete =
+                false;
+
+        auto decision_start =
+                std::chrono::steady_clock::now();
+
+        int decision_tokens =
+                0;
+
+        for (
+                int i = 0;
+                i < decision_max_tokens;
+                i++
+                ) {
+
+            if (handle->cancel_requested.load()) {
+                break;
+            }
+
+            llama_token token =
+                    llama_sampler_sample(
+                            decision_sampler,
+                            handle->ctx,
+                            -1
+                    );
+
+            if (llama_vocab_is_eog(
+                    handle->vocab,
+                    token
+            )) {
+                break;
+            }
+
+            decision_tokens++;
+
+            char buffer[256];
+
+            int piece_length =
+                    llama_token_to_piece(
+                            handle->vocab,
+                            token,
+                            buffer,
+                            sizeof(buffer),
+                            0,
+                            true
+                    );
+
+            if (piece_length > 0) {
+                decision_output.append(
+                        buffer,
+                        piece_length
+                );
+            }
+
+            llama_batch token_batch =
+                    llama_batch_get_one(
+                            &token,
+                            1
+                    );
+
+            if (llama_decode(
+                    handle->ctx,
+                    token_batch
+            ) != 0) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: decision token decode failed"
+                );
+
+                break;
+            }
+
+            if (is_complete_inventory_tool_call(
+                    decision_output
+            )) {
+                tool_call_complete =
+                        true;
+
+                break;
+            }
+        }
+
+        auto decision_end =
+                std::chrono::steady_clock::now();
+
+        auto decision_ms =
+                std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                >(
+                        decision_end
+                        - decision_start
+                ).count();
+
+        llama_sampler_free(
+                decision_sampler
+        );
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: decision = %lld ms, tokens=%d, tool=%s",
+                static_cast<long long>(
+                        decision_ms
+                ),
+                decision_tokens,
+                tool_call_complete
+                        ? "YES"
+                        : "NO"
+        );
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: TOOL RAW = %s",
+                decision_output.c_str()
+        );
+
+        if (handle->cancel_requested.load()) {
+            return string_to_jstring(
+                    env,
+                    ""
+            );
+        }
+
+        if (!tool_call_complete) {
+            /*
+             * Безопасный fallback:
+             * если модель нарушила протокол и сразу написала текст,
+             * не ломаем игру и показываем его как обычный ответ.
+             */
+            MYDND_LOGE(
+                    "nativeGenerateInventoryToolAwareStream: no complete tool call; fallback to direct output"
+            );
+
+            if (!decision_output.empty()) {
+                jstring jText =
+                        string_to_jstring(
+                                env,
+                                decision_output
+                        );
+
+                if (jText != nullptr) {
+                    env->CallVoidMethod(
+                            tokenCallbackObject,
+                            onTokenMethod,
+                            jText
+                    );
+
+                    env->DeleteLocalRef(
+                            jText
+                    );
+                }
+            }
+
+            return string_to_jstring(
+                    env,
+                    decision_output
+            );
+        }
+
+        /*
+         * Фаза 2: синхронно отдаём raw tool call Java-коду.
+         * Java валидирует команду, меняет Room и возвращает
+         * уже готовый Gemma 4 <|tool_response>... блок.
+         */
+        jstring jToolCall =
+                string_to_jstring(
+                        env,
+                        decision_output
+                );
+
+        jobject toolResponseObject =
+                env->CallObjectMethod(
+                        toolCallbackObject,
+                        onToolCallMethod,
+                        jToolCall
+                );
+
+        env->DeleteLocalRef(
+                jToolCall
+        );
+
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+
+            return string_to_jstring(
+                    env,
+                    "Ошибка: Java tool callback завершился с исключением."
+            );
+        }
+
+        if (toolResponseObject == nullptr) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: Java tool callback вернул null."
+            );
+        }
+
+        std::string tool_response =
+                jstring_to_string(
+                        env,
+                        static_cast<jstring>(
+                                toolResponseObject
+                        )
+                );
+
+        env->DeleteLocalRef(
+                toolResponseObject
+        );
+
+        if (tool_response.empty()) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: Java tool callback вернул пустой ответ."
+            );
+        }
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: TOOL RESPONSE = %s",
+                tool_response.c_str()
+        );
+
+        /*
+         * Продолжаем ТОТ ЖЕ llama_context.
+         * add_special=false: BOS в середине контекста не нужен.
+         * parse_special=true: <|tool_response> должен стать special token.
+         */
+        int tool_response_count =
+                -llama_tokenize(
+                        handle->vocab,
+                        tool_response.c_str(),
+                        static_cast<int32_t>(
+                                tool_response.size()
+                        ),
+                        nullptr,
+                        0,
+                        false,
+                        true
+                );
+
+        if (tool_response_count <= 0) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: не удалось токенизировать tool response."
+            );
+        }
+
+        std::vector<llama_token> tool_response_tokens(
+                tool_response_count
+        );
+
+        int tool_response_tokenized =
+                llama_tokenize(
+                        handle->vocab,
+                        tool_response.c_str(),
+                        static_cast<int32_t>(
+                                tool_response.size()
+                        ),
+                        tool_response_tokens.data(),
+                        static_cast<int32_t>(
+                                tool_response_tokens.size()
+                        ),
+                        false,
+                        true
+                );
+
+        if (tool_response_tokenized < 0) {
+            return string_to_jstring(
+                    env,
+                    "Ошибка: tokenizer не обработал tool response."
+            );
+        }
+
+        auto response_decode_start =
+                std::chrono::steady_clock::now();
+
+        for (
+                int pos = 0;
+                pos < tool_response_tokenized;
+                pos += prompt_chunk_size
+                ) {
+
+            if (handle->cancel_requested.load()) {
+                return string_to_jstring(
+                        env,
+                        ""
+                );
+            }
+
+            int chunk_size =
+                    prompt_chunk_size;
+
+            if (pos + chunk_size
+                > tool_response_tokenized) {
+
+                chunk_size =
+                        tool_response_tokenized
+                        - pos;
+            }
+
+            llama_batch response_batch =
+                    llama_batch_get_one(
+                            tool_response_tokens.data()
+                            + pos,
+                            chunk_size
+                    );
+
+            if (llama_decode(
+                    handle->ctx,
+                    response_batch
+            ) != 0) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: tool response decode failed, pos=%d",
+                        pos
+                );
+
+                return string_to_jstring(
+                        env,
+                        "Ошибка: llama_decode не смог добавить tool response в текущий context."
+                );
+            }
+        }
+
+        auto response_decode_end =
+                std::chrono::steady_clock::now();
+
+        auto response_decode_ms =
+                std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                >(
+                        response_decode_end
+                        - response_decode_start
+                ).count();
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: SAME CONTEXT tool response decode = %lld ms, tokens=%d",
+                static_cast<long long>(
+                        response_decode_ms
+                ),
+                tool_response_tokenized
+        );
+
+        /*
+         * Фаза 3: художественное продолжение уже после результата Room.
+         * Используем обычный narrative sampler и стримим только эту фазу.
+         */
+        llama_sampler * narrative_sampler =
+                create_sampler(
+                        safe_temperature,
+                        safe_top_p,
+                        safe_top_k,
+                        safe_repeat_penalty
+                );
+
+        std::string narrative_output;
+        std::string streaming_pending;
+
+        const int soft_min_tokens =
+                narrative_predict * 3 / 4;
+
+        auto narrative_start =
+                std::chrono::steady_clock::now();
+
+        int narrative_tokens =
+                0;
+
+        for (
+                int i = 0;
+                i < narrative_hard_max;
+                i++
+                ) {
+
+            if (handle->cancel_requested.load()) {
+                break;
+            }
+
+            llama_token token =
+                    llama_sampler_sample(
+                            narrative_sampler,
+                            handle->ctx,
+                            -1
+                    );
+
+            if (llama_vocab_is_eog(
+                    handle->vocab,
+                    token
+            )) {
+                break;
+            }
+
+            narrative_tokens++;
+
+            char buffer[256];
+
+            int piece_length =
+                    llama_token_to_piece(
+                            handle->vocab,
+                            token,
+                            buffer,
+                            sizeof(buffer),
+                            0,
+                            true
+                    );
+
+            if (piece_length > 0) {
+                std::string piece(
+                        buffer,
+                        piece_length
+                );
+
+                narrative_output.append(
+                        piece
+                );
+
+                streaming_pending.append(
+                        piece
+                );
+
+                size_t ready_length =
+                        complete_utf8_prefix_length(
+                                streaming_pending
+                        );
+
+                if (ready_length > 0) {
+                    std::string ready_text =
+                            streaming_pending.substr(
+                                    0,
+                                    ready_length
+                            );
+
+                    streaming_pending.erase(
+                            0,
+                            ready_length
+                    );
+
+                    jstring jToken =
+                            string_to_jstring(
+                                    env,
+                                    ready_text
+                            );
+
+                    if (jToken != nullptr) {
+                        env->CallVoidMethod(
+                                tokenCallbackObject,
+                                onTokenMethod,
+                                jToken
+                        );
+
+                        env->DeleteLocalRef(
+                                jToken
+                        );
+                    }
+
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionDescribe();
+                        env->ExceptionClear();
+                        break;
+                    }
+                }
+            }
+
+            llama_batch token_batch =
+                    llama_batch_get_one(
+                            &token,
+                            1
+                    );
+
+            if (llama_decode(
+                    handle->ctx,
+                    token_batch
+            ) != 0) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: narrative token decode failed"
+                );
+
+                break;
+            }
+
+            if (i >= soft_min_tokens
+                && ends_with_sentence_mark(
+                        narrative_output
+                )) {
+
+                break;
+            }
+        }
+
+        if (!streaming_pending.empty()) {
+            jstring jToken =
+                    string_to_jstring(
+                            env,
+                            streaming_pending
+                    );
+
+            if (jToken != nullptr) {
+                env->CallVoidMethod(
+                        tokenCallbackObject,
+                        onTokenMethod,
+                        jToken
+                );
+
+                env->DeleteLocalRef(
+                        jToken
+                );
+            }
+        }
+
+        auto narrative_end =
+                std::chrono::steady_clock::now();
+
+        auto narrative_ms =
+                std::chrono::duration_cast<
+                        std::chrono::milliseconds
+                >(
+                        narrative_end
+                        - narrative_start
+                ).count();
+
+        double tokens_per_second =
+                0.0;
+
+        if (narrative_ms > 0) {
+            tokens_per_second =
+                    narrative_tokens * 1000.0
+                    / static_cast<double>(
+                            narrative_ms
+                    );
+        }
+
+        llama_sampler_free(
+                narrative_sampler
+        );
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: narrative = %lld ms, tokens=%d, speed=%.2f tok/s",
+                static_cast<long long>(
+                        narrative_ms
+                ),
+                narrative_tokens,
+                tokens_per_second
+        );
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: FINISH, narrative length=%zu",
+                narrative_output.size()
+        );
+
+        return string_to_jstring(
+                env,
+                narrative_output
+        );
+
+    } catch (const std::exception & ex) {
+        return string_to_jstring(
+                env,
+                std::string(
+                        "Ошибка nativeGenerateInventoryToolAwareStream: "
+                ) + ex.what()
+        );
+    } catch (...) {
+        return string_to_jstring(
+                env,
+                "Ошибка nativeGenerateInventoryToolAwareStream: неизвестная ошибка."
+        );
     }
 }
 

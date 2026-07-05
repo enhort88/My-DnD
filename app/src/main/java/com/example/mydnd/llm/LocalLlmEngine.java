@@ -168,6 +168,85 @@ public class LocalLlmEngine implements LlmEngine {
     }
 
 
+    public void generateInventoryToolAware(
+            String prompt,
+            GenerationProfile profile,
+            NativeToolCallback toolCallback,
+            LlmCallback callback
+    ) {
+        cancelled = false;
+
+        new Thread(
+                () -> {
+                    try {
+                        Log.d(
+                                TAG,
+                                "generateInventoryToolAware(): started"
+                        );
+
+                        load();
+
+                        Log.d(
+                                TAG,
+                                "generateInventoryToolAware(): model loaded"
+                        );
+
+                        if (cancelled) {
+                            Log.d(
+                                    TAG,
+                                    "generateInventoryToolAware(): cancelled after load"
+                            );
+
+                            callback.onComplete("");
+                            return;
+                        }
+
+                        NativeTokenCallback nativeTokenCallback =
+                                new NativeTokenCallback() {
+
+                                    @Override
+                                    public void onToken(
+                                            String token
+                                    ) {
+                                        callback.onToken(token);
+                                    }
+                                };
+
+                        String answer =
+                                nativeBridge.nativeGenerateInventoryToolAwareStream(
+                                        handle,
+                                        prompt,
+                                        profile.getMaxTokens(),
+                                        profile.getTemperature(),
+                                        profile.getTopP(),
+                                        profile.getTopK(),
+                                        profile.getRepeatPenalty(),
+                                        nativeTokenCallback,
+                                        toolCallback
+                                );
+
+                        Log.d(
+                                TAG,
+                                "generateInventoryToolAware(): native generation finished"
+                        );
+
+                        callback.onComplete(answer);
+
+                    } catch (Throwable throwable) {
+                        Log.e(
+                                TAG,
+                                "generateInventoryToolAware(): error",
+                                throwable
+                        );
+
+                        callback.onError(throwable);
+                    }
+                },
+                "LocalLlmInventoryToolAwareThread"
+        ).start();
+    }
+
+
     @Override
     public void cancel() {
         cancelled = true;
