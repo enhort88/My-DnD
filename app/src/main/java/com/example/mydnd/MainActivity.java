@@ -12,7 +12,6 @@ import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
-import com.example.mydnd.llm.MasterResponseParser;
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.prompt.PromptBuilder;
 import com.example.mydnd.prompt.GemmaToolPromptBuilder;
@@ -40,14 +39,12 @@ import com.example.mydnd.memory.SummaryService;
 import com.example.mydnd.db.entity.SummaryEntity;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
-import android.text.SpannableStringBuilder;
 import android.widget.ImageView;
 import com.example.mydnd.memory.MemoryFactExtractor;
 import com.example.mydnd.memory.ImportanceFilter;
 import com.example.mydnd.memory.ChangeClassifier;
 import com.example.mydnd.memory.ChangeOperationClassifier;
 import com.example.mydnd.memory.EntityExtractor;
-import com.example.mydnd.prompt.MetadataPromptBuilder;
 
 public class MainActivity extends ComponentActivity {
 
@@ -71,9 +68,6 @@ public class MainActivity extends ComponentActivity {
     private Button loadGameButton;
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
-
-    private final MasterResponseParser masterResponseParser =
-            new MasterResponseParser();
 
     private boolean generationCancelledByUser = false;
     private TextView chatTextView;
@@ -146,9 +140,6 @@ public class MainActivity extends ComponentActivity {
 
     private final GemmaToolCallParser gemmaToolCallParser =
             new GemmaToolCallParser();
-    private final MetadataPromptBuilder metadataPromptBuilder =
-            new MetadataPromptBuilder();
-
     private GenerationProfile generationProfile = GenerationProfile.normal();
 
 
@@ -1457,8 +1448,7 @@ public class MainActivity extends ComponentActivity {
                 }
 
                 startLlmGeneration(
-                        prompt,
-                        playerText
+                        prompt
                 );
 
             } catch (Throwable throwable) {
@@ -1481,8 +1471,7 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void startLlmGeneration(
-            String prompt,
-            String playerText
+            String prompt
     ) {
         masterStreamingStartPosition = -1;
 
@@ -1494,21 +1483,6 @@ public class MainActivity extends ComponentActivity {
                 "MyDND_FINAL_PROMPT",
                 "\n" + preparedPrompt
         );
-        String metadataPrompt =
-                metadataPromptBuilder.buildPrompt(
-                        playerText
-                );
-//        Log.d(
-//                "MyDND_METADATA_PROMPT",
-//                "\n" + metadataPrompt
-//        );
-
-
-        String preparedMetadataPrompt =
-                prepareMasterPrompt(
-                        metadataPrompt
-                );
-
         Log.d(
                 "MyDND_MODEL",
                 "MASTER model="
@@ -1520,7 +1494,6 @@ public class MainActivity extends ComponentActivity {
         modelManager.generate(
                 ModelRole.MASTER,
                 preparedPrompt,
-                // preparedMetadataPrompt,
                 generationProfile,
                 new LlmCallback() {
 
@@ -1556,45 +1529,16 @@ public class MainActivity extends ComponentActivity {
                             String fullText
                     ) {
                         Log.d(
-                                "MyDND_MASTER_MARKUP",
+                                "MyDND_MASTER_RAW",
                                 "RAW:\n"
                                         + fullText
                         );
 
 
-                        MasterResponseParser.Result parsedResponse =
-                                masterResponseParser.parse(
-                                        fullText
-                                );
-
-
-                        MasterResponseParser.Metadata metadata =
-                                parsedResponse.getMetadata();
-
-
-                        if (metadata != null) {
-
-                            Log.d(
-                                    "MyDND_METADATA",
-                                    "type="
-                                            + metadata.getType()
-                                            + ", holder="
-                                            + metadata.getHolder()
-                                            + ", name="
-                                            + metadata.getName()
-                            );
-
-                        } else {
-
-                            Log.w(
-                                    "MyDND_METADATA",
-                                    "No metadata parsed"
-                            );
-                        }
-
-
                         final String narrative =
-                                parsedResponse.getNarrative();
+                                fullText == null
+                                        ? ""
+                                        : fullText;
 
 
                         runOnUiThread(() -> {
@@ -1644,10 +1588,8 @@ public class MainActivity extends ComponentActivity {
 
 
                             /*
-                             * ВАЖНО:
-                             *
-                             * Чистим только художественный ответ.
-                             * JSON сюда больше не попадает.
+                             * Чистим финальный художественный ответ
+                             * перед показом и сохранением.
                              */
                             String visibleText =
                                     responseCleaner.clean(
@@ -1680,9 +1622,7 @@ public class MainActivity extends ComponentActivity {
 
                             /*
                              * В game_events сохраняется только
-                             * художественный текст.
-                             *
-                             * Metadata отдельно.
+                             * художественный текст мастера.
                              */
                             GameEvent masterEvent =
                                     GameEvent.master(
