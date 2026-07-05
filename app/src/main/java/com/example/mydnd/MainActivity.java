@@ -1,4 +1,5 @@
 package com.example.mydnd;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.os.Bundle;
 import android.view.inputmethod.InputMethodManager;
@@ -17,6 +18,7 @@ import com.example.mydnd.prompt.PromptBuilder;
 import com.example.mydnd.prompt.GemmaToolPromptBuilder;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import android.os.Handler;
 import android.os.Looper;
@@ -78,6 +80,7 @@ public class MainActivity extends ComponentActivity {
     private EditText inputEditText;
     private ScrollView chatScrollView;
     private Button sendButton;
+    private Button inventoryButton;
 
     private LlmModelManager modelManager;
 
@@ -196,8 +199,14 @@ public class MainActivity extends ComponentActivity {
         inputEditText = findViewById(R.id.inputEditText);
         chatScrollView = findViewById(R.id.chatScrollView);
         sendButton = findViewById(R.id.sendButton);
+        inventoryButton = findViewById(R.id.inventoryButton);
+
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
+
+        inventoryButton.setOnClickListener(v ->
+                showInventoryDialog()
+        );
 
         File modelsDirectory =
                 getExternalFilesDir("models");
@@ -336,7 +345,7 @@ public class MainActivity extends ComponentActivity {
 
         showThinkingIndicator();
 
-        buildMemoryAndGenerate(playerText);
+        processInventoryAndGenerate(playerText);
 
 
 
@@ -799,6 +808,322 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
+
+    /**
+     * Обычный игровой ход теперь сначала проверяет только изменение инвентаря.
+     * Tool-call скрыт от игрока. После применения команды запускается обычный MASTER.
+     */
+    private void processInventoryAndGenerate(
+            String playerText
+    ) {
+        if (currentCampaignId <= 0L) {
+            buildMemoryAndGenerate(
+                    playerText,
+                    Collections.emptyList(),
+                    ""
+            );
+
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            try {
+                List<String> inventoryBefore =
+                        inventoryRepository.getItemNames(
+                                currentCampaignId
+                        );
+
+                String toolPrompt =
+                        gemmaToolPromptBuilder
+                                .buildInventoryPrompt(
+                                        playerText,
+                                        inventoryBefore
+                                );
+
+                runOnUiThread(() ->
+                        startInventoryRouting(
+                                playerText,
+                                inventoryBefore,
+                                toolPrompt
+                        )
+                );
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_INVENTORY_FLOW",
+                        "Failed to prepare inventory routing",
+                        throwable
+                );
+
+                runOnUiThread(() ->
+                        buildMemoryAndGenerate(
+                                playerText,
+                                Collections.emptyList(),
+                                ""
+                        )
+                );
+            }
+        });
+    }
+
+
+    private void startInventoryRouting(
+            String playerText,
+            List<String> inventoryBefore,
+            String toolPrompt
+    ) {
+        Log.d(
+                "MyDND_INVENTORY_FLOW",
+                "BEFORE=" + inventoryBefore
+        );
+
+        modelManager.generate(
+                ModelRole.MASTER,
+                toolPrompt,
+                GenerationProfile.toolCallTest(),
+                new LlmCallback() {
+
+                    @Override
+                    public void onToken(
+                            String token
+                    ) {
+                        // Служебный tool-call игроку не показываем.
+                    }
+
+
+                    @Override
+                    public void onComplete(
+                            String fullText
+                    ) {
+                        if (generationCancelledByUser) {
+                            runOnUiThread(() ->
+                                    finishCancelledInventoryRouting()
+                            );
+
+                            return;
+                        }
+
+                        Log.d(
+                                "MyDND_INVENTORY_FLOW",
+                                "RAW TOOL RESULT:\n" + fullText
+                        );
+
+                        GemmaToolCallParser.Result result =
+                                gemmaToolCallParser.parse(
+                                        fullText
+                                );
+
+                        if (!result.hasToolCall()) {
+                            runOnUiThread(() ->
+                                    buildMemoryAndGenerate(
+                                            playerText,
+                                            inventoryBefore,
+                                            ""
+                                    )
+                            );
+
+                            return;
+                        }
+
+                        String functionName =
+                                result.getFunctionName();
+
+                        String itemName =
+                                result.getItemName();
+
+                        DbExecutor.execute(() -> {
+                            InventoryRepository.ApplyResult applyResult =
+                                    inventoryRepository.applyToolCall(
+                                            currentCampaignId,
+                                            functionName,
+                                            itemName
+                                    );
+
+                            List<String> inventoryNow =
+                                    inventoryRepository.getItemNames(
+                                            currentCampaignId
+                                    );
+
+                            String inventoryUpdate =
+                                    buildInventoryUpdateForPrompt(
+                                            functionName,
+                                            applyResult
+                                    );
+
+                            Log.d(
+                                    "MyDND_INVENTORY_FLOW",
+                                    "TOOL "
+                                            + (applyResult.isApplied()
+                                            ? "APPLIED"
+                                            : "REJECTED")
+                                            + " code="
+                                            + applyResult.getCode()
+                                            + " | item="
+                                            + applyResult.getItemName()
+                                            + " | AFTER="
+                                            + inventoryNow
+                            );
+
+                            runOnUiThread(() ->
+                                    buildMemoryAndGenerate(
+                                            playerText,
+                                            inventoryNow,
+                                            inventoryUpdate
+                                    )
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        if (generationCancelledByUser) {
+                            runOnUiThread(() ->
+                                    finishCancelledInventoryRouting()
+                            );
+
+                            return;
+                        }
+
+                        Log.e(
+                                "MyDND_INVENTORY_FLOW",
+                                "Inventory routing failed; continuing without update",
+                                throwable
+                        );
+
+                        runOnUiThread(() ->
+                                buildMemoryAndGenerate(
+                                        playerText,
+                                        inventoryBefore,
+                                        ""
+                                )
+                        );
+                    }
+                }
+        );
+    }
+
+
+    private String buildInventoryUpdateForPrompt(
+            String functionName,
+            InventoryRepository.ApplyResult applyResult
+    ) {
+        if (applyResult == null
+                || !applyResult.isApplied()) {
+
+            return "";
+        }
+
+        if (InventoryRepository.TOOL_ADD_ITEM.equals(
+                functionName
+        )) {
+            return "Персонаж получил предмет: "
+                    + applyResult.getItemName()
+                    + ".";
+        }
+
+        if (InventoryRepository.TOOL_REMOVE_ITEM.equals(
+                functionName
+        )) {
+            return "Персонаж больше не имеет предмета: "
+                    + applyResult.getItemName()
+                    + ".";
+        }
+
+        return "";
+    }
+
+
+    private void finishCancelledInventoryRouting() {
+        removeThinkingIndicator();
+        removeLastPlayerEvent();
+
+        generationInProgress = false;
+        generationCancelledByUser = false;
+        masterStreamingStarted = false;
+        masterStreamingStartPosition = -1;
+
+        sendButton.setEnabled(true);
+        sendButton.setText("Отправить");
+    }
+
+
+    private void showInventoryDialog() {
+        if (currentCampaignId <= 0L) {
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            try {
+                List<String> inventory =
+                        inventoryRepository.getItemNames(
+                                currentCampaignId
+                        );
+
+                String inventoryText =
+                        formatInventoryForDialog(
+                                inventory
+                        );
+
+                runOnUiThread(() ->
+                        new AlertDialog.Builder(
+                                MainActivity.this
+                        )
+                                .setTitle("Инвентарь")
+                                .setMessage(inventoryText)
+                                .setPositiveButton(
+                                        "Закрыть",
+                                        null
+                                )
+                                .show()
+                );
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_INVENTORY_UI",
+                        "Failed to load inventory",
+                        throwable
+                );
+            }
+        });
+    }
+
+
+    private String formatInventoryForDialog(
+            List<String> inventory
+    ) {
+        if (inventory == null
+                || inventory.isEmpty()) {
+
+            return "Пусто";
+        }
+
+        StringBuilder builder =
+                new StringBuilder();
+
+        for (String item : inventory) {
+            if (item == null
+                    || item.trim().isEmpty()) {
+
+                continue;
+            }
+
+            if (builder.length() > 0) {
+                builder.append('\n');
+            }
+
+            builder.append("• ");
+            builder.append(item.trim());
+        }
+
+        return builder.length() == 0
+                ? "Пусто"
+                : builder.toString();
+    }
+
+
     private void runInventoryToolTest(
             String action
     ) {
@@ -1094,7 +1419,11 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private void buildMemoryAndGenerate(String playerText) {
+    private void buildMemoryAndGenerate(
+            String playerText,
+            List<String> inventory,
+            String inventoryUpdate
+    ) {
         DbExecutor.execute(() -> {
             try {
                 MemoryContext memoryContext =
@@ -1106,7 +1435,9 @@ public class MainActivity extends ComponentActivity {
                 String prompt =
                         promptBuilder.buildPrompt(
                                 playerText,
-                                memoryContext
+                                memoryContext,
+                                inventory,
+                                inventoryUpdate
                         );
 
                 Log.d(
@@ -1167,10 +1498,10 @@ public class MainActivity extends ComponentActivity {
                 metadataPromptBuilder.buildPrompt(
                         playerText
                 );
-        Log.d(
-                "MyDND_METADATA_PROMPT",
-                "\n" + metadataPrompt
-        );
+//        Log.d(
+//                "MyDND_METADATA_PROMPT",
+//                "\n" + metadataPrompt
+//        );
 
 
         String preparedMetadataPrompt =

@@ -3,6 +3,9 @@ package com.example.mydnd.prompt;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.memory.MemoryContext;
 
+import java.util.Collections;
+import java.util.List;
+
 public class PromptBuilder {
 
     private static final int MAX_SUMMARY_CHARS =
@@ -14,16 +17,41 @@ public class PromptBuilder {
     private static final int MAX_RELEVANT_FACTS_CHARS =
             450;
 
+
     public String buildPrompt(
             String playerText,
             MemoryContext memoryContext
     ) {
+        return buildPrompt(
+                playerText,
+                memoryContext,
+                Collections.emptyList(),
+                ""
+        );
+    }
 
+
+    public String buildPrompt(
+            String playerText,
+            MemoryContext memoryContext,
+            List<String> inventory,
+            String inventoryUpdate
+    ) {
         String recentEvents =
                 buildRecentEvents(memoryContext);
 
         String relevantFacts =
                 buildRelevantFacts(memoryContext);
+
+        List<String> safeInventory =
+                inventory == null
+                        ? Collections.emptyList()
+                        : inventory;
+
+        String safeInventoryUpdate =
+                inventoryUpdate == null
+                        ? ""
+                        : inventoryUpdate.trim();
 
 
         StringBuilder prompt =
@@ -44,6 +72,8 @@ public class PromptBuilder {
         prompt.append("\nНе решай за персонажа игрока.");
         prompt.append("\nКубики не бросай.");
         prompt.append("\nЕсли действие рискованное — попроси проверку.");
+        prompt.append("\nСостояние INVENTORY задаётся приложением и является фактом. Не противоречь ему.");
+        prompt.append("\nЕсли есть INVENTORY_UPDATE, естественно отрази это изменение в сцене.");
 
 
         prompt.append("\n\nSTYLE:");
@@ -61,8 +91,42 @@ public class PromptBuilder {
         prompt.append("\nНочь. Дождь. Внутри тихо и тревожно.");
 
 
-        if (memoryContext.hasSummary()) {
+        prompt.append("\n\nINVENTORY:");
 
+        boolean hasInventoryItems =
+                false;
+
+        for (String itemName : safeInventory) {
+            if (itemName == null
+                    || itemName.trim().isEmpty()) {
+
+                continue;
+            }
+
+            hasInventoryItems =
+                    true;
+
+            prompt.append("\n- ");
+            prompt.append(
+                    itemName.trim()
+            );
+        }
+
+        if (!hasInventoryItems) {
+            prompt.append("\n(пусто)");
+        }
+
+
+        if (!safeInventoryUpdate.isEmpty()) {
+            prompt.append("\n\nINVENTORY_UPDATE:");
+            prompt.append("\n");
+            prompt.append(
+                    safeInventoryUpdate
+            );
+        }
+
+
+        if (memoryContext.hasSummary()) {
             prompt.append("\n\nSUMMARY:");
             prompt.append("\n");
             prompt.append(
@@ -72,7 +136,6 @@ public class PromptBuilder {
 
 
         if (!recentEvents.isEmpty()) {
-
             prompt.append("\n\nRECENT_EVENTS:");
             prompt.append("\n");
             prompt.append(
@@ -82,7 +145,6 @@ public class PromptBuilder {
 
 
         if (memoryContext.hasRelevantFacts()) {
-
             prompt.append("\n\nRELEVANT_FACTS:");
             prompt.append("\n");
             prompt.append(

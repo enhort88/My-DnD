@@ -226,50 +226,83 @@
             android:id="@+id/inputPanel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
+            android:orientation="vertical"
             android:paddingTop="8dp">
 
 
-            <!-- Ввод действия -->
+            <!-- Поле ввода сделано выше, чтобы длинное действие было удобнее читать -->
 
             <EditText
                 android:id="@+id/inputEditText"
-                android:layout_width="0dp"
-                android:layout_height="52dp"
-                android:layout_weight="1"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
                 android:hint="Что ты делаешь?"
                 android:textColor="#FFFFFF"
                 android:textColorHint="#777777"
                 android:backgroundTint="#A98A55"
-                android:minLines="1"
-                android:maxLines="4"
+                android:gravity="top|start"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:minLines="2"
+                android:maxLines="5"
                 android:singleLine="false" />
 
 
-            <!--
-                Эта одна кнопка автоматически используется как:
+            <!-- Нижняя строка: инвентарь слева, отправка справа -->
 
-                Отправить
-                Стоп
-                Останавливаю...
-                Обновляю память...
-            -->
+            <LinearLayout
+                android:id="@+id/inputActionsPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-            <Button
-                android:id="@+id/sendButton"
-                style="@style/FantasySendButton"
-                android:layout_width="140dp"
-                android:layout_height="52dp"
-                android:layout_marginStart="8dp"
-                android:text="Отправить"
-                android:maxLines="1"
-                android:autoSizeTextType="uniform"
-                android:autoSizeMinTextSize="9sp"
-                android:autoSizeMaxTextSize="15sp"
-                android:autoSizeStepGranularity="1sp" />
+
+                <Button
+                    android:id="@+id/inventoryButton"
+                    style="@style/FantasySendButton"
+                    android:layout_width="118dp"
+                    android:layout_height="48dp"
+                    android:text="Инвентарь"
+                    android:maxLines="1"
+                    android:autoSizeTextType="uniform"
+                    android:autoSizeMinTextSize="9sp"
+                    android:autoSizeMaxTextSize="14sp"
+                    android:autoSizeStepGranularity="1sp" />
+
+
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+
+                <!--
+                    Кнопка автоматически используется как:
+
+                    Отправить
+                    Стоп
+                    Останавливаю...
+                    Обновляю память...
+                -->
+
+                <Button
+                    android:id="@+id/sendButton"
+                    style="@style/FantasySendButton"
+                    android:layout_width="140dp"
+                    android:layout_height="48dp"
+                    android:text="Отправить"
+                    android:maxLines="1"
+                    android:autoSizeTextType="uniform"
+                    android:autoSizeMinTextSize="9sp"
+                    android:autoSizeMaxTextSize="15sp"
+                    android:autoSizeStepGranularity="1sp" />
+
+            </LinearLayout>
 
         </LinearLayout>
+
 
     </LinearLayout>
 
