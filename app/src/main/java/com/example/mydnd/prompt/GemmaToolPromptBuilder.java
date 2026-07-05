@@ -1,23 +1,23 @@
 package com.example.mydnd.prompt;
 
+import java.util.Collections;
+import java.util.List;
+
 public class GemmaToolPromptBuilder {
 
-    public String buildRememberFactPrompt(
-            String action
+    public String buildInventoryPrompt(
+            String action,
+            List<String> inventoryBefore
     ) {
         String safeAction =
                 action == null
                         ? ""
                         : action.trim();
 
-        /*
-         * Временный PoC.
-         * Реального InventoryRepository в проекте пока нет,
-         * поэтому для одного диагностического теста считаем,
-         * что до хода у персонажа уже есть костяной амулет.
-         */
-        String inventoryBefore =
-                "(empty)";
+        List<String> safeInventory =
+                inventoryBefore == null
+                        ? Collections.emptyList()
+                        : inventoryBefore;
 
         StringBuilder prompt =
                 new StringBuilder();
@@ -38,6 +38,56 @@ public class GemmaToolPromptBuilder {
                         + "Never narrate and never explain your choice."
         );
 
+        appendAddItemTool(
+                prompt
+        );
+
+        appendRemoveItemTool(
+                prompt
+        );
+
+        prompt.append("<turn|>\n");
+        prompt.append("<|turn>user\n");
+        prompt.append("INVENTORY BEFORE:\n");
+
+        boolean hasInventoryItems =
+                false;
+
+        for (String itemName : safeInventory) {
+            if (itemName == null
+                    || itemName.trim().isEmpty()) {
+
+                continue;
+            }
+
+            hasInventoryItems =
+                    true;
+
+            prompt.append("- ");
+            prompt.append(
+                    itemName.trim()
+            );
+            prompt.append('\n');
+        }
+
+        if (!hasInventoryItems) {
+            prompt.append("(empty)\n");
+        }
+
+        prompt.append("\nACTION:\n");
+        prompt.append(
+                safeAction
+        );
+        prompt.append("<turn|>\n");
+        prompt.append("<|turn>model\n");
+
+        return prompt.toString();
+    }
+
+
+    private void appendAddItemTool(
+            StringBuilder prompt
+    ) {
         prompt.append(
                 "<|tool>declaration:add_item_to_inventory{"
                         + "description:<|\"|>Call when a concrete item is absent from INVENTORY BEFORE but present after the completed ACTION.<|\"|>,"
@@ -53,7 +103,12 @@ public class GemmaToolPromptBuilder {
                         + "}"
                         + "}<tool|>"
         );
+    }
 
+
+    private void appendRemoveItemTool(
+            StringBuilder prompt
+    ) {
         prompt.append(
                 "<|tool>declaration:remove_item_from_inventory{"
                         + "description:<|\"|>Call when a concrete item is present in INVENTORY BEFORE but absent after the completed ACTION.<|\"|>,"
@@ -69,16 +124,5 @@ public class GemmaToolPromptBuilder {
                         + "}"
                         + "}<tool|>"
         );
-
-        prompt.append("<turn|>\n");
-        prompt.append("<|turn>user\n");
-        prompt.append("INVENTORY BEFORE:\n");
-        prompt.append(inventoryBefore);
-        prompt.append("\n\nACTION:\n");
-        prompt.append(safeAction);
-        prompt.append("<turn|>\n");
-        prompt.append("<|turn>model\n");
-
-        return prompt.toString();
     }
 }

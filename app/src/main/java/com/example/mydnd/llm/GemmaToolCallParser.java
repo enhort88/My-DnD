@@ -164,8 +164,17 @@ public class GemmaToolCallParser {
          * Kept for compatibility with the current MainActivity test UI.
          * For inventory tools this value is the item name.
          */
-        public String getFact() {
+        public String getItemName() {
             return fact;
+        }
+
+
+        /**
+         * Старое имя оставлено для совместимости
+         * с экспериментальным UI.
+         */
+        public String getFact() {
+            return getItemName();
         }
 
 

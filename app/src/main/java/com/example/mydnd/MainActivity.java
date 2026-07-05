@@ -7,6 +7,7 @@ import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import com.example.mydnd.game.GameEvent;
+import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
@@ -60,6 +61,8 @@ public class MainActivity extends ComponentActivity {
     private static final String TAG_MEMORY = "MyDND_MEMORY";
 
     private CampaignMemory campaignMemory;
+
+    private InventoryRepository inventoryRepository;
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
@@ -158,6 +161,7 @@ public class MainActivity extends ComponentActivity {
 
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
+        inventoryRepository = new InventoryRepository(database);
 
         initDefaultCampaign();
 
@@ -311,7 +315,7 @@ public class MainActivity extends ComponentActivity {
             inputEditText.setText("");
             hideKeyboard();
 
-            runRememberFactToolTest(
+            runInventoryToolTest(
                     action
             );
 
@@ -795,7 +799,7 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
-    private void runRememberFactToolTest(
+    private void runInventoryToolTest(
             String action
     ) {
         if (action == null
@@ -813,19 +817,82 @@ public class MainActivity extends ComponentActivity {
             return;
         }
 
-        String prompt =
-                gemmaToolPromptBuilder
-                        .buildRememberFactPrompt(
-                                action
+        if (currentCampaignId <= 0L) {
+            Log.w(
+                    "MyDND_TOOL",
+                    "Skipped: campaignId is not ready"
+            );
+
+            return;
+        }
+
+        generationInProgress = true;
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Читаю инвентарь...");
+
+        DbExecutor.execute(() -> {
+            try {
+                List<String> inventoryBefore =
+                        inventoryRepository.getItemNames(
+                                currentCampaignId
                         );
+
+                String prompt =
+                        gemmaToolPromptBuilder
+                                .buildInventoryPrompt(
+                                        action,
+                                        inventoryBefore
+                                );
+
+                runOnUiThread(() ->
+                        startInventoryToolGeneration(
+                                action,
+                                inventoryBefore,
+                                prompt
+                        )
+                );
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_TOOL",
+                        "Failed to read inventory before tool call",
+                        throwable
+                );
+
+                runOnUiThread(() -> {
+                    generationInProgress = false;
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
+
+                    appendColoredText(
+                            "[INVENTORY ERROR] "
+                                    + throwable.getMessage()
+                                    + "\n\n",
+                            COLOR_SYSTEM
+                    );
+                });
+            }
+        });
+    }
+
+
+    private void startInventoryToolGeneration(
+            String action,
+            List<String> inventoryBefore,
+            String prompt
+    ) {
+        Log.d(
+                "MyDND_TOOL",
+                "INVENTORY BEFORE="
+                        + inventoryBefore
+        );
 
         Log.d(
                 "MyDND_TOOL",
                 "PROMPT:\n"
                         + prompt
         );
-
-        generationInProgress = true;
 
         sendButton.setEnabled(false);
         sendButton.setText("Тест tool...");
@@ -866,44 +933,118 @@ public class MainActivity extends ComponentActivity {
                                         fullText
                                 );
 
-                        runOnUiThread(() -> {
-                            generationInProgress = false;
+                        if (!result.hasToolCall()) {
+                            DbExecutor.execute(() -> {
+                                List<String> inventoryNow =
+                                        inventoryRepository.getItemNames(
+                                                currentCampaignId
+                                        );
 
-                            sendButton.setEnabled(true);
-                            sendButton.setText("Отправить");
+                                runOnUiThread(() -> {
+                                    generationInProgress = false;
+                                    sendButton.setEnabled(true);
+                                    sendButton.setText("Отправить");
 
-                            if (result.hasToolCall()) {
+                                    Log.d(
+                                            "MyDND_TOOL",
+                                            "NO TOOL CALL | inventory="
+                                                    + inventoryNow
+                                    );
+
+                                    appendColoredText(
+                                            "[NO INVENTORY CHANGE]\n"
+                                                    + "Инвентарь: "
+                                                    + formatInventoryForUi(
+                                                            inventoryNow
+                                                    )
+                                                    + "\n\n",
+                                            COLOR_SYSTEM
+                                    );
+                                });
+                            });
+
+                            return;
+                        }
+
+                        String functionName =
+                                result.getFunctionName();
+
+                        String itemName =
+                                result.getItemName();
+
+                        Log.d(
+                                "MyDND_TOOL",
+                                "TOOL CALL name="
+                                        + functionName
+                                        + " | item="
+                                        + itemName
+                        );
+
+                        DbExecutor.execute(() -> {
+                            InventoryRepository.ApplyResult applyResult =
+                                    inventoryRepository.applyToolCall(
+                                            currentCampaignId,
+                                            functionName,
+                                            itemName
+                                    );
+
+                            List<String> inventoryNow =
+                                    inventoryRepository.getItemNames(
+                                            currentCampaignId
+                                    );
+
+                            if (applyResult.isApplied()) {
                                 Log.d(
                                         "MyDND_TOOL",
-                                        "TOOL CALL name="
-                                                + result.getFunctionName()
-                                                + " | fact="
-                                                + result.getFact()
+                                        "TOOL APPLIED code="
+                                                + applyResult.getCode()
+                                                + " | item="
+                                                + applyResult.getItemName()
+                                                + " | inventory="
+                                                + inventoryNow
                                 );
 
+                            } else {
+                                Log.w(
+                                        "MyDND_TOOL",
+                                        "TOOL REJECTED code="
+                                                + applyResult.getCode()
+                                                + " | item="
+                                                + applyResult.getItemName()
+                                                + " | inventory="
+                                                + inventoryNow
+                                );
+                            }
+
+                            runOnUiThread(() -> {
+                                generationInProgress = false;
+                                sendButton.setEnabled(true);
+                                sendButton.setText("Отправить");
+
+                                String status =
+                                        applyResult.isApplied()
+                                                ? "APPLIED"
+                                                : "REJECTED";
+
                                 appendColoredText(
-                                        "[TOOL CALL] "
-                                                + result.getFunctionName()
+                                        "[TOOL "
+                                                + status
+                                                + "] "
+                                                + functionName
                                                 + "\n"
-                                                + result.getFact()
+                                                + applyResult.getItemName()
+                                                + "\n"
+                                                + "code="
+                                                + applyResult.getCode()
+                                                + "\n"
+                                                + "Инвентарь: "
+                                                + formatInventoryForUi(
+                                                        inventoryNow
+                                                )
                                                 + "\n\n",
                                         COLOR_SYSTEM
                                 );
-
-                                return;
-                            }
-
-                            Log.w(
-                                    "MyDND_TOOL",
-                                    "NO TOOL CALL"
-                            );
-
-                            appendColoredText(
-                                    "[NO TOOL CALL]\n"
-                                            + result.getRawText()
-                                            + "\n\n",
-                                    COLOR_SYSTEM
-                            );
+                            });
                         });
                     }
 
@@ -933,6 +1074,22 @@ public class MainActivity extends ComponentActivity {
                         });
                     }
                 }
+        );
+    }
+
+
+    private String formatInventoryForUi(
+            List<String> inventory
+    ) {
+        if (inventory == null
+                || inventory.isEmpty()) {
+
+            return "(пусто)";
+        }
+
+        return String.join(
+                ", ",
+                inventory
         );
     }
 
