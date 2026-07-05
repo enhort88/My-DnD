@@ -5,6 +5,7 @@ import android.util.Log;
 import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
 import com.example.mydnd.db.entity.GameEventEntity;
+import com.example.mydnd.db.entity.MemoryFactEntity;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.LlmModelManager;
@@ -219,6 +220,13 @@ public class ImportanceFilter {
                                             );
 
 
+                                    int savedCount =
+                                            saveRawFacts(
+                                                    campaignId,
+                                                    result
+                                            );
+
+
                                     working.set(false);
 
 
@@ -226,6 +234,8 @@ public class ImportanceFilter {
                                             TAG,
                                             "IMPORTANT COUNT="
                                                     + result.size()
+                                                    + ", SAVED="
+                                                    + savedCount
                                     );
 
 
@@ -533,6 +543,122 @@ public class ImportanceFilter {
 
 
         return result;
+    }
+
+
+    private int saveRawFacts(
+            long campaignId,
+            List<ImportantSentence> sentences
+    ) {
+        if (sentences == null
+                || sentences.isEmpty()) {
+
+            return 0;
+        }
+
+
+        int savedCount = 0;
+
+        long now =
+                System.currentTimeMillis();
+
+
+        for (ImportantSentence sentence
+                : sentences) {
+
+            if (sentence == null
+                    || sentence.getText() == null) {
+
+                continue;
+            }
+
+
+            String factText =
+                    sentence.getText().trim();
+
+
+            if (factText.isEmpty()) {
+                continue;
+            }
+
+
+            int duplicateCount =
+                    database.memoryFactDao()
+                            .countActiveExactFact(
+                                    campaignId,
+                                    factText
+                            );
+
+
+            if (duplicateCount > 0) {
+
+                Log.d(
+                        TAG,
+                        "SKIP DUPLICATE: "
+                                + factText
+                );
+
+                continue;
+            }
+
+
+            MemoryFactEntity fact =
+                    new MemoryFactEntity();
+
+            fact.campaignId =
+                    campaignId;
+
+            fact.factType =
+                    "RAW_FACT";
+
+            fact.subject =
+                    sentence.getSpeaker();
+
+            fact.factText =
+                    factText;
+
+            fact.importance =
+                    50;
+
+            fact.tags =
+                    null;
+
+            fact.active =
+                    true;
+
+            fact.createdAt =
+                    now;
+
+            fact.updatedAt =
+                    now;
+
+            fact.lastUsedAt =
+                    0L;
+
+
+            long factId =
+                    database.memoryFactDao()
+                            .insert(
+                                    fact
+                            );
+
+
+            savedCount++;
+
+
+            Log.d(
+                    TAG,
+                    "SAVED RAW FACT id="
+                            + factId
+                            + " | "
+                            + sentence.getSpeaker()
+                            + ": "
+                            + factText
+            );
+        }
+
+
+        return savedCount;
     }
 
 

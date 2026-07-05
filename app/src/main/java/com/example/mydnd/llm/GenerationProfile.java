@@ -103,6 +103,17 @@ public class GenerationProfile {
         );
     }
 
+    public static GenerationProfile toolCallTest() {
+        return new GenerationProfile(
+                "Tool call test",
+                80,
+                0.10f,
+                0.80f,
+                20,
+                1.00f
+        );
+    }
+
     public static GenerationProfile importanceFilter() {
         return new GenerationProfile(
                 "Importance filter",

@@ -8,10 +8,12 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.llm.GenerationProfile;
+import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.MasterResponseParser;
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.prompt.PromptBuilder;
+import com.example.mydnd.prompt.GemmaToolPromptBuilder;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -132,6 +134,12 @@ public class MainActivity extends ComponentActivity {
 
     private final List<GameEvent> gameEvents = new ArrayList<>();
     private final PromptBuilder promptBuilder = new PromptBuilder();
+
+    private final GemmaToolPromptBuilder gemmaToolPromptBuilder =
+            new GemmaToolPromptBuilder();
+
+    private final GemmaToolCallParser gemmaToolCallParser =
+            new GemmaToolCallParser();
     private final MetadataPromptBuilder metadataPromptBuilder =
             new MetadataPromptBuilder();
 
@@ -291,6 +299,22 @@ public class MainActivity extends ComponentActivity {
         String playerText = inputEditText.getText().toString().trim();
 
         if (playerText.isEmpty()) {
+            return;
+        }
+
+        if (playerText.startsWith("/tool ")) {
+            String action =
+                    playerText
+                            .substring("/tool ".length())
+                            .trim();
+
+            inputEditText.setText("");
+            hideKeyboard();
+
+            runRememberFactToolTest(
+                    action
+            );
+
             return;
         }
 
@@ -771,6 +795,148 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
+    private void runRememberFactToolTest(
+            String action
+    ) {
+        if (action == null
+                || action.trim().isEmpty()) {
+
+            return;
+        }
+
+        if (modelManager.isBusy()) {
+            Log.w(
+                    "MyDND_TOOL",
+                    "Skipped: model manager is busy"
+            );
+
+            return;
+        }
+
+        String prompt =
+                gemmaToolPromptBuilder
+                        .buildRememberFactPrompt(
+                                action
+                        );
+
+        Log.d(
+                "MyDND_TOOL",
+                "PROMPT:\n"
+                        + prompt
+        );
+
+        generationInProgress = true;
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Тест tool...");
+
+        appendColoredText(
+                "› [TOOL TEST] "
+                        + action
+                        + "\n\n",
+                COLOR_PLAYER
+        );
+
+        modelManager.generate(
+                ModelRole.MASTER,
+                prompt,
+                GenerationProfile.toolCallTest(),
+                new LlmCallback() {
+
+                    @Override
+                    public void onToken(
+                            String token
+                    ) {
+                        // Tool-call токены не показываем пользователю.
+                    }
+
+
+                    @Override
+                    public void onComplete(
+                            String fullText
+                    ) {
+                        Log.d(
+                                "MyDND_TOOL",
+                                "RAW RESULT:\n"
+                                        + fullText
+                        );
+
+                        GemmaToolCallParser.Result result =
+                                gemmaToolCallParser.parse(
+                                        fullText
+                                );
+
+                        runOnUiThread(() -> {
+                            generationInProgress = false;
+
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+
+                            if (result.hasToolCall()) {
+                                Log.d(
+                                        "MyDND_TOOL",
+                                        "TOOL CALL name="
+                                                + result.getFunctionName()
+                                                + " | fact="
+                                                + result.getFact()
+                                );
+
+                                appendColoredText(
+                                        "[TOOL CALL] "
+                                                + result.getFunctionName()
+                                                + "\n"
+                                                + result.getFact()
+                                                + "\n\n",
+                                        COLOR_SYSTEM
+                                );
+
+                                return;
+                            }
+
+                            Log.w(
+                                    "MyDND_TOOL",
+                                    "NO TOOL CALL"
+                            );
+
+                            appendColoredText(
+                                    "[NO TOOL CALL]\n"
+                                            + result.getRawText()
+                                            + "\n\n",
+                                    COLOR_SYSTEM
+                            );
+                        });
+                    }
+
+
+                    @Override
+                    public void onError(
+                            Throwable throwable
+                    ) {
+                        Log.e(
+                                "MyDND_TOOL",
+                                "Tool test failed",
+                                throwable
+                        );
+
+                        runOnUiThread(() -> {
+                            generationInProgress = false;
+
+                            sendButton.setEnabled(true);
+                            sendButton.setText("Отправить");
+
+                            appendColoredText(
+                                    "[TOOL TEST ERROR] "
+                                            + throwable.getMessage()
+                                            + "\n\n",
+                                    COLOR_SYSTEM
+                            );
+                        });
+                    }
+                }
+        );
+    }
+
+
     private void buildMemoryAndGenerate(String playerText) {
         DbExecutor.execute(() -> {
             try {
@@ -836,6 +1002,10 @@ public class MainActivity extends ComponentActivity {
                 prepareMasterPrompt(
                         prompt
                 );
+        Log.d(
+                "MyDND_FINAL_PROMPT",
+                "\n" + preparedPrompt
+        );
         String metadataPrompt =
                 metadataPromptBuilder.buildPrompt(
                         playerText
@@ -862,7 +1032,7 @@ public class MainActivity extends ComponentActivity {
         modelManager.generate(
                 ModelRole.MASTER,
                 preparedPrompt,
-                preparedMetadataPrompt,
+                // preparedMetadataPrompt,
                 generationProfile,
                 new LlmCallback() {
 
@@ -1295,10 +1465,105 @@ public class MainActivity extends ComponentActivity {
     private String prepareMasterPrompt(
             String prompt
     ) {
-        return "<start_of_turn>user\n"
-                + prompt.trim()
-                + "\n<end_of_turn>\n"
-                + "<start_of_turn>model\n";
+        String cleanPrompt =
+                prompt == null
+                        ? ""
+                        : prompt.trim();
+
+
+        /*
+         * Сейчас PromptBuilder строит:
+         *
+         * SYSTEM:
+         * ...
+         *
+         * STYLE:
+         * ...
+         *
+         * CURRENT_SCENE:
+         * ...
+         *
+         * Поэтому временно разделяем его здесь.
+         *
+         * SYSTEM + STYLE
+         *      ↓
+         * настоящая system role
+         *
+         * CURRENT_SCENE и всё после неё
+         *      ↓
+         * user role
+         */
+        String splitMarker =
+                "\n\nCURRENT_SCENE:";
+
+
+        int splitIndex =
+                cleanPrompt.indexOf(
+                        splitMarker
+                );
+
+
+        String systemText;
+
+        String userText;
+
+
+        if (splitIndex >= 0) {
+
+            systemText =
+                    cleanPrompt
+                            .substring(
+                                    0,
+                                    splitIndex
+                            )
+                            .trim();
+
+
+            userText =
+                    cleanPrompt
+                            .substring(
+                                    splitIndex
+                            )
+                            .trim();
+
+        } else {
+
+            /*
+             * Безопасный fallback.
+             *
+             * Если структура PromptBuilder когда-нибудь
+             * изменится, запрос хотя бы останется рабочим.
+             */
+            systemText =
+                    "Ты мастер настольной RPG в духе DnD.";
+
+            userText =
+                    cleanPrompt;
+        }
+
+
+        /*
+         * Само слово SYSTEM: больше не нужно:
+         * теперь это настоящая роль модели.
+         */
+        if (systemText.startsWith("SYSTEM:")) {
+
+            systemText =
+                    systemText
+                            .substring(
+                                    "SYSTEM:".length()
+                            )
+                            .trim();
+        }
+
+
+        return "<|turn>system\n"
+                + systemText
+                + "<turn|>\n"
+                + "<|turn>user\n"
+                + userText
+                + "<turn|>\n"
+                + "<|turn>model\n";
     }
 
     private void runImportanceFilterV1(

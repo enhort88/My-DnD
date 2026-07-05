@@ -28,7 +28,7 @@ public class LlmModelManager {
         masterEngine =
                 new LocalLlmEngine(
                         masterModelPath,
-                        true
+                        false
                 );
 
         serviceEngine =

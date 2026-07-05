@@ -9,10 +9,66 @@
 #include <atomic>
 #include <ctime>
 #include <chrono>
+#include <algorithm>
 
 #define MYDND_LOG_TAG "MyDND_NATIVE"
 #define MYDND_LOGI(...) __android_log_print(ANDROID_LOG_INFO, MYDND_LOG_TAG, __VA_ARGS__)
 #define MYDND_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, MYDND_LOG_TAG, __VA_ARGS__)
+
+static void log_long_text(
+        const char * label,
+        const char * text
+) {
+    if (text == nullptr
+        || text[0] == '\0') {
+
+        MYDND_LOGI(
+                "%s: <EMPTY>",
+                label
+        );
+
+        return;
+    }
+
+
+    std::string value(
+            text
+    );
+
+
+    constexpr size_t chunk_size =
+            3000;
+
+
+    for (
+            size_t start = 0;
+            start < value.size();
+            start += chunk_size
+            ) {
+
+        size_t length =
+                std::min(
+                        chunk_size,
+                        value.size() - start
+                );
+
+
+        std::string chunk =
+                value.substr(
+                        start,
+                        length
+                );
+
+
+        MYDND_LOGI(
+                "%s [%zu..%zu]:\n%s",
+                label,
+                start,
+                start + length,
+                chunk.c_str()
+        );
+    }
+}
 
 struct MyDndLlamaHandle {
     llama_model * model = nullptr;
@@ -294,6 +350,42 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
         model_params.use_mlock = false;
 
         llama_model * model = llama_model_load_from_file(path.c_str(), model_params);
+
+        char model_description[512] = {0};
+
+
+        llama_model_desc(
+                model,
+                model_description,
+                sizeof(model_description)
+        );
+
+
+        MYDND_LOGI(
+                "MODEL DESCRIPTION: %s",
+                model_description
+        );
+
+
+        const char * chat_template =
+                llama_model_chat_template(
+                        model,
+                        nullptr
+                );
+
+
+        if (chat_template == nullptr) {
+
+            MYDND_LOGE(
+                    "CHAT TEMPLATE: NOT FOUND IN GGUF"
+            );
+
+        } else {
+
+            MYDND_LOGI(
+                    "CHAT TEMPLATE: FOUND"
+            );
+        }
 
         if (model == nullptr) {
             return 0;

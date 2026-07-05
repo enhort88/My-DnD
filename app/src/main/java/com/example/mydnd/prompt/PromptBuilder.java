@@ -14,81 +14,99 @@ public class PromptBuilder {
     private static final int MAX_RELEVANT_FACTS_CHARS =
             450;
 
-        public String buildPrompt(
-                String playerText,
-                MemoryContext memoryContext
+    public String buildPrompt(
+            String playerText,
+            MemoryContext memoryContext
+    ) {
 
-        ) {
+        String recentEvents =
+                buildRecentEvents(memoryContext);
 
-            String recentEvents =
-                    buildRecentEvents(memoryContext);
-
-            String relevantFacts =
-                    buildRelevantFacts(memoryContext);
-
+        String relevantFacts =
+                buildRelevantFacts(memoryContext);
 
 
-            StringBuilder prompt = new StringBuilder();
+        StringBuilder prompt =
+                new StringBuilder();
 
-// Режим thinking должен быть только один раз,
-// самой первой строкой prompt.
 
-            prompt.append("\n\nSYSTEM:");
+        prompt.append("\n\nSYSTEM:");
 
-            prompt.append("\nТы мастер настольной RPG в духе DnD.");
-            prompt.append("\nПиши только художественный ответ мастера.");
-            prompt.append("\nНе показывай рассуждения, анализ, план ответа или внутренний монолог.");
-            prompt.append("\nНачни сразу с художественного продолжения сцены.");
-            prompt.append("\nВесь видимый ответ должен быть только на русском языке.");
-            prompt.append("\nНе пиши названия служебных блоков.");
-            prompt.append("\nНе объясняй инструкции.");
-            prompt.append("\nНе пиши 'Мастер:' или 'Игрок:'.");
-            prompt.append("\nНе повторяй одни и те же слова или фразы подряд.");
-            prompt.append("\nНе решай за персонажа игрока.");
-            prompt.append("\nКубики не бросай.");
-            prompt.append("\nЕсли действие рискованное — попроси проверку.");
+        prompt.append("\nТы мастер настольной RPG в духе DnD.");
+        prompt.append("\nПиши только художественный ответ мастера.");
+        prompt.append("\nНе показывай рассуждения, анализ, план ответа или внутренний монолог.");
+        prompt.append("\nНачни сразу с художественного продолжения сцены.");
+        prompt.append("\nВесь видимый ответ должен быть только на русском языке.");
+        prompt.append("\nНе пиши названия служебных блоков.");
+        prompt.append("\nНе объясняй инструкции.");
+        prompt.append("\nНе пиши 'Мастер:' или 'Игрок:'.");
+        prompt.append("\nНе повторяй одни и те же слова или фразы подряд.");
+        prompt.append("\nНе решай за персонажа игрока.");
+        prompt.append("\nКубики не бросай.");
+        prompt.append("\nЕсли действие рискованное — попроси проверку.");
 
-            prompt.append("\n\nSTYLE:");
-            prompt.append("\nРусский язык.");
-            prompt.append("\nМрачное фэнтези.");
-            prompt.append("\nАтмосферно, но без лишнего пафоса.");
 
-            prompt.append("\n\nCURRENT_SCENE:");
-            prompt.append("\nСтарая придорожная таверна.");
-            prompt.append("\nНочь. Дождь. Внутри тихо и тревожно.");
+        prompt.append("\n\nSTYLE:");
+        prompt.append("\nРусский язык.");
+        prompt.append("\nМрачное фэнтези.");
+        prompt.append("\nАтмосферно, но без лишнего пафоса.");
 
-            if (memoryContext.hasSummary()) {
-                prompt.append("\n\nSUMMARY:");
-                prompt.append("\n");
-                prompt.append(memoryContext.getLatestSummary());
-            }
 
-            if (!recentEvents.isEmpty()) {
-                prompt.append("\n\nRECENT_EVENTS:");
-                prompt.append("\n");
-                prompt.append(recentEvents);
-            }
+        /*
+         * Всё начиная отсюда попадёт
+         * в настоящий user turn.
+         */
+        prompt.append("\n\nCURRENT_SCENE:");
+        prompt.append("\nСтарая придорожная таверна.");
+        prompt.append("\nНочь. Дождь. Внутри тихо и тревожно.");
 
-            if (memoryContext.hasRelevantFacts()) {
-                prompt.append("\n\nRELEVANT_FACTS:");
-                prompt.append("\n");
-                prompt.append(relevantFacts);
-            }
 
-            prompt.append("\n\nPLAYER_ACTION:");
+        if (memoryContext.hasSummary()) {
+
+            prompt.append("\n\nSUMMARY:");
             prompt.append("\n");
-            prompt.append(playerText);
-
-            prompt.append("\n\nTASK:");
-            prompt.append("\nПродолжи сцену на один небольшой шаг.");
-            prompt.append("\nПокажи реакцию мира и последствия действия.");
-            prompt.append("\nНе повторяй уже описанное без причины.");
-            prompt.append("\nЗаверши ответ логично.");
-
-            prompt.append("\n\nANSWER:");
-
-            return prompt.toString();
+            prompt.append(
+                    memoryContext.getLatestSummary()
+            );
         }
+
+
+        if (!recentEvents.isEmpty()) {
+
+            prompt.append("\n\nRECENT_EVENTS:");
+            prompt.append("\n");
+            prompt.append(
+                    recentEvents
+            );
+        }
+
+
+        if (memoryContext.hasRelevantFacts()) {
+
+            prompt.append("\n\nRELEVANT_FACTS:");
+            prompt.append("\n");
+            prompt.append(
+                    relevantFacts
+            );
+        }
+
+
+        prompt.append("\n\nPLAYER_ACTION:");
+        prompt.append("\n");
+        prompt.append(
+                playerText
+        );
+
+
+        prompt.append("\n\nTASK:");
+        prompt.append("\nПродолжи сцену на один небольшой шаг.");
+        prompt.append("\nПокажи реакцию мира и последствия действия.");
+        prompt.append("\nНе повторяй уже описанное без причины.");
+        prompt.append("\nЗаверши ответ логично.");
+
+
+        return prompt.toString();
+    }
 
 
     private String buildRecentEvents(
