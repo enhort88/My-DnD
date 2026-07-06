@@ -740,7 +740,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
         // Для телефона сначала скромный контекст.
         ctx_params.n_ctx = 2048;
         ctx_params.n_batch = 512;
-        ctx_params.n_ubatch = 128;
+        ctx_params.n_ubatch = 512;
         ctx_params.n_threads = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.no_perf = true;
@@ -1146,7 +1146,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         auto prompt_decode_start =
                 std::chrono::steady_clock::now();
 
-        const int prompt_chunk_size = 64;
+        const int prompt_chunk_size = 512;
 
         for (int pos = 0; pos < tokenized; pos += prompt_chunk_size) {
             if (handle->cancel_requested.load()) {
