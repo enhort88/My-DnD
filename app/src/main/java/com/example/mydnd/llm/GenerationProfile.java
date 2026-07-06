@@ -58,6 +58,39 @@ public class GenerationProfile {
         );
     }
 
+    public static GenerationProfile worldDraft() {
+        return new GenerationProfile(
+                "World draft",
+                700,
+                0.60f,
+                0.88f,
+                40,
+                1.05f
+        );
+    }
+
+    public static GenerationProfile characterDraft() {
+        return new GenerationProfile(
+                "Character draft",
+                600,
+                0.65f,
+                0.88f,
+                40,
+                1.05f
+        );
+    }
+
+    public static GenerationProfile situationDraft() {
+        return new GenerationProfile(
+                "Situation draft",
+                600,
+                0.70f,
+                0.90f,
+                40,
+                1.08f
+        );
+    }
+
     public String getName() {
         return name;
     }

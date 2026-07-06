@@ -112,12 +112,21 @@
 
 
             <Button
-                android:id="@+id/loadGameButton"
+                android:id="@+id/continueGameButton"
                 style="@style/FantasyButton"
                 android:layout_width="300dp"
                 android:layout_height="56dp"
                 android:layout_marginTop="10dp"
                 android:text="ПРОДОЛЖИТЬ" />
+
+
+            <Button
+                android:id="@+id/loadGamesButton"
+                style="@style/FantasyButton"
+                android:layout_width="300dp"
+                android:layout_height="56dp"
+                android:layout_marginTop="10dp"
+                android:text="ЗАГРУЗИТЬ ИГРУ" />
 
 
             <Button
@@ -248,10 +257,10 @@
                 android:singleLine="false" />
 
 
-            <!-- Нижняя строка: инвентарь слева, отправка справа -->
+            <!-- Быстрый доступ к состоянию кампании -->
 
             <LinearLayout
-                android:id="@+id/inputActionsPanel"
+                android:id="@+id/gameInfoButtonsPanel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
@@ -260,46 +269,72 @@
 
 
                 <Button
+                    android:id="@+id/characterButton"
+                    style="@style/FantasySendButton"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_weight="1"
+                    android:text="Персонаж"
+                    android:maxLines="1"
+                    android:autoSizeTextType="uniform"
+                    android:autoSizeMinTextSize="8sp"
+                    android:autoSizeMaxTextSize="13sp"
+                    android:autoSizeStepGranularity="1sp" />
+
+
+                <Button
                     android:id="@+id/inventoryButton"
                     style="@style/FantasySendButton"
-                    android:layout_width="118dp"
-                    android:layout_height="48dp"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
                     android:text="Инвентарь"
                     android:maxLines="1"
                     android:autoSizeTextType="uniform"
-                    android:autoSizeMinTextSize="9sp"
-                    android:autoSizeMaxTextSize="14sp"
+                    android:autoSizeMinTextSize="8sp"
+                    android:autoSizeMaxTextSize="13sp"
                     android:autoSizeStepGranularity="1sp" />
 
 
-                <Space
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
-
-
-                <!--
-                    Кнопка автоматически используется как:
-
-                    Отправить
-                    Стоп
-                    Останавливаю...
-                    Обновляю память...
-                -->
-
                 <Button
-                    android:id="@+id/sendButton"
+                    android:id="@+id/journalButton"
                     style="@style/FantasySendButton"
-                    android:layout_width="140dp"
-                    android:layout_height="48dp"
-                    android:text="Отправить"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:text="Журнал"
                     android:maxLines="1"
                     android:autoSizeTextType="uniform"
-                    android:autoSizeMinTextSize="9sp"
-                    android:autoSizeMaxTextSize="15sp"
+                    android:autoSizeMinTextSize="8sp"
+                    android:autoSizeMaxTextSize="13sp"
                     android:autoSizeStepGranularity="1sp" />
 
             </LinearLayout>
+
+
+            <!--
+                Кнопка автоматически используется как:
+
+                Отправить
+                Стоп
+                Останавливаю...
+                Обновляю память...
+            -->
+
+            <Button
+                android:id="@+id/sendButton"
+                style="@style/FantasySendButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="6dp"
+                android:text="Отправить"
+                android:maxLines="1"
+                android:autoSizeTextType="uniform"
+                android:autoSizeMinTextSize="9sp"
+                android:autoSizeMaxTextSize="15sp"
+                android:autoSizeStepGranularity="1sp" />
 
         </LinearLayout>
 

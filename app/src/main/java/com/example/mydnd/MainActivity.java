@@ -1,5 +1,6 @@
 package com.example.mydnd;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.Context;
 import android.os.Bundle;
 import android.view.inputmethod.InputMethodManager;
@@ -7,8 +8,13 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.game.InventoryRepository;
+import com.example.mydnd.game.CampaignPromptRepository;
+import com.example.mydnd.game.CampaignPromptState;
+import com.example.mydnd.game.save.SavedGameRepository;
+import com.example.mydnd.game.save.SavedGameSummary;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
@@ -20,6 +26,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Date;
+import java.util.Locale;
+import java.text.SimpleDateFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Color;
@@ -31,6 +40,7 @@ import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.GameEventEntity;
+import com.example.mydnd.db.entity.CharacterEntity;
 import android.util.Log;
 import com.example.mydnd.memory.CampaignMemory;
 import com.example.mydnd.memory.MemoryContext;
@@ -49,6 +59,9 @@ import com.example.mydnd.memory.EntityExtractor;
 
 public class MainActivity extends ComponentActivity {
 
+    public static final String EXTRA_OPEN_CAMPAIGN_ID =
+            "com.example.mydnd.extra.OPEN_CAMPAIGN_ID";
+
     private ImportanceFilter importanceFilter;
     private ChangeClassifier changeClassifier;
     private EntityExtractor entityExtractor;
@@ -63,10 +76,13 @@ public class MainActivity extends ComponentActivity {
     private CampaignMemory campaignMemory;
 
     private InventoryRepository inventoryRepository;
+    private CampaignPromptRepository campaignPromptRepository;
+    private SavedGameRepository savedGameRepository;
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
-    private Button loadGameButton;
+    private Button continueGameButton;
+    private Button loadGamesButton;
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
 
@@ -75,7 +91,9 @@ public class MainActivity extends ComponentActivity {
     private EditText inputEditText;
     private ScrollView chatScrollView;
     private Button sendButton;
+    private Button characterButton;
     private Button inventoryButton;
+    private Button journalButton;
 
     private LlmModelManager modelManager;
 
@@ -157,8 +175,20 @@ public class MainActivity extends ComponentActivity {
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
         inventoryRepository = new InventoryRepository(database);
+        campaignPromptRepository = new CampaignPromptRepository(database);
+        savedGameRepository = new SavedGameRepository(database);
 
-        initDefaultCampaign();
+        long requestedCampaignId =
+                getIntent().getLongExtra(
+                        EXTRA_OPEN_CAMPAIGN_ID,
+                        0L
+                );
+
+        if (requestedCampaignId > 0L) {
+            currentCampaignId = requestedCampaignId;
+        } else {
+            initLastCampaign();
+        }
 
 
         getOnBackPressedDispatcher().addCallback(
@@ -177,7 +207,8 @@ public class MainActivity extends ComponentActivity {
         );
 
         startGameButton = findViewById(R.id.startGameButton);
-        loadGameButton = findViewById(R.id.loadGameButton);
+        continueGameButton = findViewById(R.id.continueGameButton);
+        loadGamesButton = findViewById(R.id.loadGamesButton);
         settingsButton = findViewById(R.id.settingsButton);
 //        settingsButton.setEnabled(true);
 //        settingsButton.setText("ТЕСТ ФАКТОВ");
@@ -191,13 +222,23 @@ public class MainActivity extends ComponentActivity {
         inputEditText = findViewById(R.id.inputEditText);
         chatScrollView = findViewById(R.id.chatScrollView);
         sendButton = findViewById(R.id.sendButton);
+        characterButton = findViewById(R.id.characterButton);
         inventoryButton = findViewById(R.id.inventoryButton);
+        journalButton = findViewById(R.id.journalButton);
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
 
+        characterButton.setOnClickListener(v ->
+                showCharacterDialog()
+        );
+
         inventoryButton.setOnClickListener(v ->
                 showInventoryDialog()
+        );
+
+        journalButton.setOnClickListener(v ->
+                showJournalDialog()
         );
 
         File modelsDirectory =
@@ -253,16 +294,32 @@ public class MainActivity extends ComponentActivity {
         showWelcomeMenu();
 
         startGameButton.setOnClickListener(v -> {
-            showGameScreen();
-            createNewCampaignAndStart();
+            if (modelManager != null) {
+                modelManager.releaseAll();
+            }
+
+            startActivity(
+                    new Intent(
+                            MainActivity.this,
+                            NewGameActivity.class
+                    )
+            );
         });
 
-        loadGameButton.setOnClickListener(v -> {
-            showGameScreen();
-            loadCampaignOrStartFirstScene();
-        });
+        continueGameButton.setOnClickListener(v ->
+                continueLastCampaign()
+        );
+
+        loadGamesButton.setOnClickListener(v ->
+                showSavedGamesDialog()
+        );
 
         exitButton.setOnClickListener(v -> finish());
+
+        if (requestedCampaignId > 0L) {
+            showGameScreen();
+            loadCampaignOrStartFirstScene();
+        }
 
 
         sendButton.setOnClickListener(v -> {
@@ -633,21 +690,14 @@ public class MainActivity extends ComponentActivity {
             }
         }
     }
-    private void initDefaultCampaign() {
+    private void initLastCampaign() {
         DbExecutor.execute(() -> {
-            CampaignEntity lastCampaign = database.campaignDao().getLastCampaign();
+            CampaignEntity lastCampaign =
+                    database.campaignDao().getLastCampaign();
 
             if (lastCampaign != null) {
                 currentCampaignId = lastCampaign.id;
-                return;
             }
-
-            CampaignEntity campaign = new CampaignEntity();
-            campaign.title = "Первая кампания";
-            campaign.createdAt = System.currentTimeMillis();
-            campaign.updatedAt = campaign.createdAt;
-
-            currentCampaignId = database.campaignDao().insert(campaign);
         });
     }
     private void saveEventToDb(
@@ -697,6 +747,12 @@ public class MainActivity extends ComponentActivity {
 
                 database.gameEventDao()
                         .insert(entity);
+
+                database.campaignDao()
+                        .touchCampaign(
+                                currentCampaignId,
+                                System.currentTimeMillis()
+                        );
 
                 Log.d(
                         "MyDND_DB",
@@ -867,11 +923,17 @@ public class MainActivity extends ComponentActivity {
                                 playerText
                         );
 
+                CampaignPromptState campaignState =
+                        campaignPromptRepository.build(
+                                campaignId
+                        );
+
                 String rawPrompt =
                         promptBuilder.buildInventoryToolAwarePrompt(
                                 playerText,
                                 memoryContext,
-                                inventoryBefore
+                                inventoryBefore,
+                                campaignState
                         );
 
                 String preparedPrompt =
@@ -1410,6 +1472,437 @@ public class MainActivity extends ComponentActivity {
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
+    }
+
+
+    private void continueLastCampaign() {
+        DbExecutor.execute(() -> {
+            try {
+                CampaignEntity lastCampaign =
+                        database.campaignDao().getLastCampaign();
+
+                runOnUiThread(() -> {
+                    if (lastCampaign == null) {
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Сохранённой игры пока нет.",
+                                Toast.LENGTH_SHORT
+                        ).show();
+                        return;
+                    }
+
+                    openCampaignFromMenu(lastCampaign.id);
+                });
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_LOAD_GAME",
+                        "Failed to continue last campaign",
+                        throwable
+                );
+
+                runOnUiThread(() ->
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Не удалось открыть последнюю игру.",
+                                Toast.LENGTH_SHORT
+                        ).show()
+                );
+            }
+        });
+    }
+
+
+    private void showSavedGamesDialog() {
+        DbExecutor.execute(() -> {
+            try {
+                List<SavedGameSummary> savedGames =
+                        savedGameRepository.getSavedGames();
+
+                runOnUiThread(() -> {
+                    if (savedGames.isEmpty()) {
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Сохранённых игр пока нет.",
+                                Toast.LENGTH_SHORT
+                        ).show();
+                        return;
+                    }
+
+                    String[] labels =
+                            new String[savedGames.size()];
+
+                    for (int i = 0; i < savedGames.size(); i++) {
+                        labels[i] = formatSavedGameLabel(
+                                savedGames.get(i)
+                        );
+                    }
+
+                    new AlertDialog.Builder(
+                            MainActivity.this
+                    )
+                            .setTitle("Загрузить игру")
+                            .setItems(
+                                    labels,
+                                    (dialog, which) ->
+                                            openCampaignFromMenu(
+                                                    savedGames
+                                                            .get(which)
+                                                            .getCampaignId()
+                                            )
+                            )
+                            .setNegativeButton(
+                                    "Отмена",
+                                    null
+                            )
+                            .show();
+                });
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_LOAD_GAME",
+                        "Failed to load campaign list",
+                        throwable
+                );
+
+                runOnUiThread(() ->
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Не удалось загрузить список игр.",
+                                Toast.LENGTH_SHORT
+                        ).show()
+                );
+            }
+        });
+    }
+
+
+    private void openCampaignFromMenu(
+            long campaignId
+    ) {
+        if (campaignId <= 0L) {
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            database.campaignDao().touchCampaign(
+                    campaignId,
+                    System.currentTimeMillis()
+            );
+
+            runOnUiThread(() -> {
+                currentCampaignId = campaignId;
+                showGameScreen();
+                loadCampaignOrStartFirstScene();
+            });
+        });
+    }
+
+
+    private String formatSavedGameLabel(
+            SavedGameSummary savedGame
+    ) {
+        String title = valueOr(
+                savedGame.getTitle(),
+                "Кампания #" + savedGame.getCampaignId()
+        );
+
+        String world = valueOr(
+                savedGame.getWorldName(),
+                "без мира"
+        );
+
+        String character = valueOr(
+                savedGame.getCharacterName(),
+                "без героя"
+        );
+
+        StringBuilder label = new StringBuilder();
+        label.append(title);
+        label.append("\nМир: ").append(world);
+        label.append(" · Герой: ").append(character);
+
+        if (!savedGame.getSituationTitle().isEmpty()) {
+            label.append("\nСейчас: ")
+                    .append(savedGame.getSituationTitle());
+        }
+
+        if (savedGame.getUpdatedAt() > 0L) {
+            SimpleDateFormat dateFormat =
+                    new SimpleDateFormat(
+                            "dd.MM.yyyy HH:mm",
+                            Locale.getDefault()
+                    );
+
+            label.append("\nПоследняя игра: ")
+                    .append(
+                            dateFormat.format(
+                                    new Date(
+                                            savedGame.getUpdatedAt()
+                                    )
+                            )
+                    );
+        }
+
+        return label.toString();
+    }
+
+
+    private void showCharacterDialog() {
+        if (currentCampaignId <= 0L) {
+            return;
+        }
+
+        final long campaignId = currentCampaignId;
+
+        DbExecutor.execute(() -> {
+            try {
+                CampaignEntity campaign =
+                        database.campaignDao().getById(
+                                campaignId
+                        );
+
+                CharacterEntity character =
+                        campaign != null
+                                && campaign.characterId > 0L
+                                ? database.characterDao()
+                                        .getCharacter(
+                                                campaign.characterId
+                                        )
+                                : null;
+
+                String characterText =
+                        formatCharacterForDialog(
+                                character
+                        );
+
+                runOnUiThread(() ->
+                        new AlertDialog.Builder(
+                                MainActivity.this
+                        )
+                                .setTitle(
+                                        character == null
+                                                ? "Персонаж"
+                                                : character.name
+                                )
+                                .setMessage(characterText)
+                                .setPositiveButton(
+                                        "Закрыть",
+                                        null
+                                )
+                                .show()
+                );
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_CHARACTER_UI",
+                        "Failed to load character",
+                        throwable
+                );
+            }
+        });
+    }
+
+
+    private String formatCharacterForDialog(
+            CharacterEntity character
+    ) {
+        if (character == null) {
+            return "У этой кампании пока нет сохранённого персонажа.";
+        }
+
+        StringBuilder text = new StringBuilder();
+
+        appendDialogField(
+                text,
+                "Раса",
+                character.race
+        );
+
+        appendDialogField(
+                text,
+                "Класс",
+                character.className
+        );
+
+        appendDialogField(
+                text,
+                "Возраст",
+                character.age
+        );
+
+        appendDialogSection(
+                text,
+                "Описание",
+                character.description
+        );
+
+        appendDialogSection(
+                text,
+                "Предыстория",
+                character.background
+        );
+
+        appendDialogSection(
+                text,
+                "Характер",
+                character.personality
+        );
+
+        String result = text.toString().trim();
+
+        return result.isEmpty()
+                ? "Описание персонажа пока пусто."
+                : result;
+    }
+
+
+    private void showJournalDialog() {
+        if (currentCampaignId <= 0L) {
+            return;
+        }
+
+        final long campaignId = currentCampaignId;
+
+        DbExecutor.execute(() -> {
+            try {
+                List<GameEventEntity> events =
+                        database.gameEventDao()
+                                .getRecentJournalEvents(
+                                        campaignId,
+                                        80
+                                );
+
+                String journalText =
+                        formatJournalForDialog(
+                                events
+                        );
+
+                runOnUiThread(() ->
+                        new AlertDialog.Builder(
+                                MainActivity.this
+                        )
+                                .setTitle("Журнал")
+                                .setMessage(journalText)
+                                .setPositiveButton(
+                                        "Закрыть",
+                                        null
+                                )
+                                .show()
+                );
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_JOURNAL_UI",
+                        "Failed to load journal",
+                        throwable
+                );
+            }
+        });
+    }
+
+
+    private String formatJournalForDialog(
+            List<GameEventEntity> events
+    ) {
+        if (events == null || events.isEmpty()) {
+            return "Журнал пока пуст.";
+        }
+
+        StringBuilder text = new StringBuilder();
+
+        for (GameEventEntity event : events) {
+            if (event == null
+                    || event.text == null
+                    || event.text.trim().isEmpty()) {
+                continue;
+            }
+
+            if (text.length() > 0) {
+                text.append("\n\n");
+            }
+
+            text.append(getJournalSpeakerLabel(event.speaker));
+            text.append("\n");
+            text.append(event.text.trim());
+        }
+
+        return text.length() == 0
+                ? "Журнал пока пуст."
+                : text.toString();
+    }
+
+
+    private String getJournalSpeakerLabel(
+            String speaker
+    ) {
+        if ("PLAYER".equals(speaker)) {
+            return "Игрок";
+        }
+
+        if ("MASTER".equals(speaker)) {
+            return "Мастер";
+        }
+
+        return "Событие";
+    }
+
+
+    private void appendDialogField(
+            StringBuilder text,
+            String label,
+            String value
+    ) {
+        String safeValue = value == null
+                ? ""
+                : value.trim();
+
+        if (safeValue.isEmpty()) {
+            return;
+        }
+
+        if (text.length() > 0) {
+            text.append('\n');
+        }
+
+        text.append(label)
+                .append(": ")
+                .append(safeValue);
+    }
+
+
+    private void appendDialogSection(
+            StringBuilder text,
+            String title,
+            String value
+    ) {
+        String safeValue = value == null
+                ? ""
+                : value.trim();
+
+        if (safeValue.isEmpty()) {
+            return;
+        }
+
+        if (text.length() > 0) {
+            text.append("\n\n");
+        }
+
+        text.append(title)
+                .append(":\n")
+                .append(safeValue);
+    }
+
+
+    private String valueOr(
+            String value,
+            String fallback
+    ) {
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+
+        return value.trim();
     }
 
 

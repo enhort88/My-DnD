@@ -1,5 +1,6 @@
 package com.example.mydnd.prompt;
 
+import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.memory.MemoryContext;
 
@@ -11,6 +12,12 @@ public class PromptBuilder {
     private static final int MAX_SUMMARY_CHARS = 250;
     private static final int MAX_RECENT_EVENTS_CHARS = 350;
     private static final int MAX_RELEVANT_FACTS_CHARS = 450;
+
+    private static final int MAX_WORLD_CHARS = 220;
+    private static final int MAX_CHARACTER_CHARS = 180;
+    private static final int MAX_SITUATIONS_CHARS = 280;
+    private static final int MAX_NPCS_CHARS = 260;
+    private static final int MAX_SCENE_CHARS = 360;
 
 
     public String buildPrompt(
@@ -37,26 +44,41 @@ public class PromptBuilder {
                 memoryContext,
                 inventory,
                 inventoryUpdate,
-                false
+                false,
+                CampaignPromptState.empty()
         );
     }
 
 
-    /**
-     * Один MASTER-turn:
-     * prompt decode -> tool call -> Java/Room -> tool response -> narrative.
-     */
     public String buildInventoryToolAwarePrompt(
             String playerText,
             MemoryContext memoryContext,
             List<String> inventoryBefore
+    ) {
+        return buildInventoryToolAwarePrompt(
+                playerText,
+                memoryContext,
+                inventoryBefore,
+                CampaignPromptState.empty()
+        );
+    }
+
+
+    public String buildInventoryToolAwarePrompt(
+            String playerText,
+            MemoryContext memoryContext,
+            List<String> inventoryBefore,
+            CampaignPromptState campaignState
     ) {
         return buildPromptInternal(
                 playerText,
                 memoryContext,
                 inventoryBefore,
                 "",
-                true
+                true,
+                campaignState == null
+                        ? CampaignPromptState.empty()
+                        : campaignState
         );
     }
 
@@ -66,7 +88,8 @@ public class PromptBuilder {
             MemoryContext memoryContext,
             List<String> inventory,
             String inventoryUpdate,
-            boolean toolAwareInventory
+            boolean toolAwareInventory,
+            CampaignPromptState campaignState
     ) {
         String summary =
                 memoryContext.hasSummary()
@@ -114,28 +137,49 @@ public class PromptBuilder {
             appendCompactNarrativeSystem(prompt);
         }
 
-        /*
-         * prepareMasterPrompt() делит prompt по CURRENT_SCENE:
-         * всё выше -> system turn,
-         * всё отсюда -> user turn.
-         */
-        prompt.append("\n\nCURRENT_SCENE:");
-        prompt.append("\nСтарая придорожная таверна. Ночь, дождь, внутри тихо и тревожно.");
-
+        prompt.append("\n\nCURRENT_SCENE:\n");
         prompt.append(
-                toolAwareInventory
-                        ? "\n\nINVENTORY BEFORE:"
-                        : "\n\nINVENTORY:"
+                limitFromStart(
+                        campaignState.getCurrentScene(),
+                        MAX_SCENE_CHARS
+                )
         );
 
-        appendInventory(prompt, safeInventory);
+        appendOptionalBlock(
+                prompt,
+                "WORLD",
+                limitFromStart(
+                        campaignState.getWorld(),
+                        MAX_WORLD_CHARS
+                )
+        );
 
-        if (!toolAwareInventory
-                && !safeInventoryUpdate.isEmpty()) {
+        appendOptionalBlock(
+                prompt,
+                "CHARACTER",
+                limitFromStart(
+                        campaignState.getCharacter(),
+                        MAX_CHARACTER_CHARS
+                )
+        );
 
-            prompt.append("\n\nINVENTORY_UPDATE:\n");
-            prompt.append(safeInventoryUpdate);
-        }
+        appendOptionalBlock(
+                prompt,
+                "ACTIVE_SITUATIONS",
+                limitFromStart(
+                        campaignState.getActiveSituations(),
+                        MAX_SITUATIONS_CHARS
+                )
+        );
+
+        appendOptionalBlock(
+                prompt,
+                "ACTIVE_NPCS",
+                limitFromStart(
+                        campaignState.getActiveNpcs(),
+                        MAX_NPCS_CHARS
+                )
+        );
 
         if (!summary.isEmpty()) {
             prompt.append("\n\nSUMMARY:\n");
@@ -152,6 +196,21 @@ public class PromptBuilder {
             prompt.append(relevantFacts);
         }
 
+        prompt.append(
+                toolAwareInventory
+                        ? "\n\nINVENTORY BEFORE:"
+                        : "\n\nINVENTORY:"
+        );
+
+        appendInventory(prompt, safeInventory);
+
+        if (!toolAwareInventory
+                && !safeInventoryUpdate.isEmpty()) {
+
+            prompt.append("\n\nINVENTORY_UPDATE:\n");
+            prompt.append(safeInventoryUpdate);
+        }
+
         prompt.append("\n\nPLAYER_ACTION:\n");
         prompt.append(safePlayerText);
 
@@ -164,6 +223,7 @@ public class PromptBuilder {
     ) {
         prompt.append("\nТы мастер мрачной RPG.");
         prompt.append("\nПеред ответом определи итог инвентаря и вызови один tool.");
+        prompt.append("\nДля выбора tool используй INVENTORY BEFORE и PLAYER_ACTION.");
         prompt.append("\nINVENTORY BEFORE — истина. Считай PLAYER_ACTION выполненным.");
         prompt.append("\nADD: предмета не было, после действия он у игрока.");
         prompt.append("\nREMOVE: предмет был, после действия его нет.");
@@ -172,6 +232,7 @@ public class PromptBuilder {
         prompt.append("\nREMOVE — точное имя из INVENTORY BEFORE.");
         prompt.append("\nADD — естественное имя из PLAYER_ACTION.");
         prompt.append("\nПосле tool response кратко продолжи сцену по-русски и не противоречь результату.");
+        prompt.append("\nНе печатай служебные блоки и список инвентаря.");
         prompt.append("\nНе решай за игрока. Кубики не бросай. Рискованное действие требует проверки.");
         prompt.append("\nМрачно, атмосферно, без лишнего пафоса.");
     }
@@ -242,6 +303,22 @@ public class PromptBuilder {
         if (!hasItems) {
             prompt.append("\n(пусто)");
         }
+    }
+
+
+    private void appendOptionalBlock(
+            StringBuilder prompt,
+            String title,
+            String value
+    ) {
+        if (value == null || value.trim().isEmpty()) {
+            return;
+        }
+
+        prompt.append("\n\n")
+                .append(title)
+                .append(":\n")
+                .append(value.trim());
     }
 
 

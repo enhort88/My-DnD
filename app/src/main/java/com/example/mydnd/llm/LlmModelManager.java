@@ -289,6 +289,20 @@ public class LlmModelManager {
     }
 
 
+    public void releaseAll() {
+        synchronized (lock) {
+            if (busy) {
+                return;
+            }
+
+            masterEngine.release();
+            serviceEngine.release();
+            activeEngine = null;
+            activeRole = null;
+        }
+    }
+
+
     private void finishGeneration() {
         synchronized (lock) {
             busy = false;
