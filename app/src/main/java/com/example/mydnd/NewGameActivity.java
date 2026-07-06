@@ -29,6 +29,7 @@ import com.example.mydnd.llm.LlmModelManager;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import com.example.mydnd.util.MusicManager;
 
 public class NewGameActivity extends ComponentActivity {
 
@@ -85,6 +86,10 @@ public class NewGameActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_new_game);
+        MusicManager.play(
+                this,
+                R.raw.menu_theme
+        );
 
         bindViews();
         initDependencies();

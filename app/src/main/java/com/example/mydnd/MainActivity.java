@@ -57,6 +57,7 @@ import com.example.mydnd.memory.ImportanceFilter;
 import com.example.mydnd.memory.ChangeClassifier;
 import com.example.mydnd.memory.ChangeOperationClassifier;
 import com.example.mydnd.memory.EntityExtractor;
+import com.example.mydnd.util.MusicManager;
 
 public class MainActivity extends ComponentActivity {
 
@@ -202,6 +203,7 @@ public class MainActivity extends ComponentActivity {
                         if (gameLayout.getVisibility() == View.VISIBLE) {
                             showWelcomeScreen();
                         } else {
+                            MusicManager.stop();
                             setEnabled(false);
                             getOnBackPressedDispatcher().onBackPressed();
                         }
@@ -317,7 +319,10 @@ public class MainActivity extends ComponentActivity {
                 showSavedGamesDialog()
         );
 
-        exitButton.setOnClickListener(v -> finish());
+        exitButton.setOnClickListener(v -> {
+            MusicManager.stop();
+            finish();
+        });
 
         if (requestedCampaignId > 0L) {
             showGameScreen();
@@ -509,6 +514,10 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void showWelcomeMenu() {
+        MusicManager.play(
+                this,
+                R.raw.menu_theme
+        );
         welcomeBackground.setVisibility(View.VISIBLE);
         gameBackground.setVisibility(View.GONE);
 
@@ -517,6 +526,10 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void showGameScreen() {
+        MusicManager.play(
+                this,
+                R.raw.game_theme
+        );
 
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
 
@@ -542,6 +555,10 @@ public class MainActivity extends ComponentActivity {
 
 
     private void showWelcomeScreen() {
+        MusicManager.play(
+                this,
+                R.raw.menu_theme
+        );
         welcomeBackground.setVisibility(View.VISIBLE);
         gameBackground.setVisibility(View.GONE);
         welcomeLayout.setAlpha(0f);
