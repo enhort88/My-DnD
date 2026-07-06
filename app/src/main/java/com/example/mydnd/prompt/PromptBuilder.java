@@ -8,14 +8,9 @@ import java.util.List;
 
 public class PromptBuilder {
 
-    private static final int MAX_SUMMARY_CHARS =
-            250;
-
-    private static final int MAX_RECENT_EVENTS_CHARS =
-            350;
-
-    private static final int MAX_RELEVANT_FACTS_CHARS =
-            450;
+    private static final int MAX_SUMMARY_CHARS = 250;
+    private static final int MAX_RECENT_EVENTS_CHARS = 350;
+    private static final int MAX_RELEVANT_FACTS_CHARS = 450;
 
 
     public String buildPrompt(
@@ -48,7 +43,7 @@ public class PromptBuilder {
 
 
     /**
-     * Один MASTER-turn для эксперимента с настоящим tool cycle:
+     * Один MASTER-turn:
      * prompt decode -> tool call -> Java/Room -> tool response -> narrative.
      */
     public String buildInventoryToolAwarePrompt(
@@ -73,11 +68,25 @@ public class PromptBuilder {
             String inventoryUpdate,
             boolean toolAwareInventory
     ) {
+        String summary =
+                memoryContext.hasSummary()
+                        ? limitFromStart(
+                                memoryContext.getLatestSummary(),
+                                MAX_SUMMARY_CHARS
+                        )
+                        : "";
+
         String recentEvents =
-                buildRecentEvents(memoryContext);
+                limitFromEnd(
+                        buildRecentEvents(memoryContext),
+                        MAX_RECENT_EVENTS_CHARS
+                );
 
         String relevantFacts =
-                buildRelevantFacts(memoryContext);
+                limitFromStart(
+                        buildRelevantFacts(memoryContext),
+                        MAX_RELEVANT_FACTS_CHARS
+                );
 
         List<String> safeInventory =
                 inventory == null
@@ -89,65 +98,29 @@ public class PromptBuilder {
                         ? ""
                         : inventoryUpdate.trim();
 
+        String safePlayerText =
+                playerText == null
+                        ? ""
+                        : playerText.trim();
 
-        StringBuilder prompt =
-                new StringBuilder();
+        StringBuilder prompt = new StringBuilder();
 
-
-        prompt.append("\n\nSYSTEM:");
-
-        prompt.append("\nТы мастер настольной RPG в духе DnD.");
+        prompt.append("SYSTEM:");
 
         if (toolAwareInventory) {
-            prompt.append("\nBefore writing any narrative, you MUST call exactly one inventory state tool.");
-            prompt.append("\nDo not narrate and do not explain your decision before the tool call.");
-            prompt.append("\nINVENTORY BEFORE is authoritative.");
-            prompt.append("\nFor this MVP, treat PLAYER_ACTION as successfully completed exactly as written.");
-            prompt.append("\nCompare item membership before and after the complete PLAYER_ACTION.");
-            prompt.append("\nIf one concrete item was absent before and present after, call add_item_to_inventory.");
-            prompt.append("\nIf one concrete item was present before and absent after, call remove_item_from_inventory.");
-            prompt.append("\nIf inventory membership is unchanged, call no_inventory_change.");
-            prompt.append("\nUse only the final state after the complete action, not an intermediate step.");
-            prompt.append("\nWhen removing, use the exact existing item name from INVENTORY BEFORE even if PLAYER_ACTION refers to it more briefly.");
-            prompt.append("\nWhen adding, preserve the natural concrete item phrase from PLAYER_ACTION. Never translate it.");
-            prompt.append("\nCall exactly one tool.");
-            prompt.append("\nAfter the tool response, continue the RPG scene in Russian and do not contradict the applied result.");
-
+            appendCompactToolAwareSystem(prompt);
             appendInventoryTools(prompt);
+        } else {
+            appendCompactNarrativeSystem(prompt);
         }
-
-        prompt.append("\nПиши только художественный ответ мастера после служебной части.");
-        prompt.append("\nНе показывай рассуждения, анализ, план ответа или внутренний монолог.");
-        prompt.append("\nНачни видимую часть сразу с художественного продолжения сцены.");
-        prompt.append("\nВесь видимый ответ должен быть только на русском языке.");
-        prompt.append("\nНе пиши названия служебных блоков.");
-        prompt.append("\nНе объясняй инструкции.");
-        prompt.append("\nНе пиши 'Мастер:' или 'Игрок:'.");
-        prompt.append("\nНе повторяй одни и те же слова или фразы подряд.");
-        prompt.append("\nНе решай за персонажа игрока.");
-        prompt.append("\nКубики не бросай.");
-        prompt.append("\nЕсли действие рискованное — попроси проверку.");
-
-        if (!toolAwareInventory) {
-            prompt.append("\nСостояние INVENTORY задаётся приложением и является фактом. Не противоречь ему.");
-            prompt.append("\nЕсли есть INVENTORY_UPDATE, естественно отрази это изменение в сцене.");
-        }
-
-
-        prompt.append("\n\nSTYLE:");
-        prompt.append("\nРусский язык.");
-        prompt.append("\nМрачное фэнтези.");
-        prompt.append("\nАтмосферно, но без лишнего пафоса.");
-
 
         /*
-         * Всё начиная отсюда попадёт
-         * в настоящий user turn.
+         * prepareMasterPrompt() делит prompt по CURRENT_SCENE:
+         * всё выше -> system turn,
+         * всё отсюда -> user turn.
          */
         prompt.append("\n\nCURRENT_SCENE:");
-        prompt.append("\nСтарая придорожная таверна.");
-        prompt.append("\nНочь. Дождь. Внутри тихо и тревожно.");
-
+        prompt.append("\nСтарая придорожная таверна. Ночь, дождь, внутри тихо и тревожно.");
 
         prompt.append(
                 toolAwareInventory
@@ -155,90 +128,64 @@ public class PromptBuilder {
                         : "\n\nINVENTORY:"
         );
 
-        boolean hasInventoryItems =
-                false;
-
-        for (String itemName : safeInventory) {
-            if (itemName == null
-                    || itemName.trim().isEmpty()) {
-
-                continue;
-            }
-
-            hasInventoryItems =
-                    true;
-
-            prompt.append("\n- ");
-            prompt.append(
-                    itemName.trim()
-            );
-        }
-
-        if (!hasInventoryItems) {
-            prompt.append("\n(пусто)");
-        }
-
+        appendInventory(prompt, safeInventory);
 
         if (!toolAwareInventory
                 && !safeInventoryUpdate.isEmpty()) {
 
-            prompt.append("\n\nINVENTORY_UPDATE:");
-            prompt.append("\n");
-            prompt.append(
-                    safeInventoryUpdate
-            );
+            prompt.append("\n\nINVENTORY_UPDATE:\n");
+            prompt.append(safeInventoryUpdate);
         }
 
-
-        if (memoryContext.hasSummary()) {
-            prompt.append("\n\nSUMMARY:");
-            prompt.append("\n");
-            prompt.append(
-                    memoryContext.getLatestSummary()
-            );
+        if (!summary.isEmpty()) {
+            prompt.append("\n\nSUMMARY:\n");
+            prompt.append(summary);
         }
-
 
         if (!recentEvents.isEmpty()) {
-            prompt.append("\n\nRECENT_EVENTS:");
-            prompt.append("\n");
-            prompt.append(
-                    recentEvents
-            );
+            prompt.append("\n\nRECENT_EVENTS:\n");
+            prompt.append(recentEvents);
         }
 
-
-        if (memoryContext.hasRelevantFacts()) {
-            prompt.append("\n\nRELEVANT_FACTS:");
-            prompt.append("\n");
-            prompt.append(
-                    relevantFacts
-            );
+        if (!relevantFacts.isEmpty()) {
+            prompt.append("\n\nRELEVANT_FACTS:\n");
+            prompt.append(relevantFacts);
         }
 
-
-        prompt.append("\n\nPLAYER_ACTION:");
-        prompt.append("\n");
-        prompt.append(
-                playerText
-        );
-
-
-        prompt.append("\n\nTASK:");
-
-        if (toolAwareInventory) {
-            prompt.append("\nСначала вызови ровно один инструмент состояния инвентаря.");
-            prompt.append("\nПосле tool response продолжи сцену на один небольшой шаг.");
-        } else {
-            prompt.append("\nПродолжи сцену на один небольшой шаг.");
-        }
-
-        prompt.append("\nПокажи реакцию мира и последствия действия.");
-        prompt.append("\nНе повторяй уже описанное без причины.");
-        prompt.append("\nЗаверши ответ логично.");
-
+        prompt.append("\n\nPLAYER_ACTION:\n");
+        prompt.append(safePlayerText);
 
         return prompt.toString();
+    }
+
+
+    private void appendCompactToolAwareSystem(
+            StringBuilder prompt
+    ) {
+        prompt.append("\nТы мастер мрачной RPG.");
+        prompt.append("\nПеред ответом определи итог инвентаря и вызови один tool.");
+        prompt.append("\nINVENTORY BEFORE — истина. Считай PLAYER_ACTION выполненным.");
+        prompt.append("\nADD: предмета не было, после действия он у игрока.");
+        prompt.append("\nREMOVE: предмет был, после действия его нет.");
+        prompt.append("\nNO CHANGE: иначе.");
+        prompt.append("\nУчитывай только итог всего действия.");
+        prompt.append("\nREMOVE — точное имя из INVENTORY BEFORE.");
+        prompt.append("\nADD — естественное имя из PLAYER_ACTION.");
+        prompt.append("\nПосле tool response кратко продолжи сцену по-русски и не противоречь результату.");
+        prompt.append("\nНе решай за игрока. Кубики не бросай. Рискованное действие требует проверки.");
+        prompt.append("\nМрачно, атмосферно, без лишнего пафоса.");
+    }
+
+
+    private void appendCompactNarrativeSystem(
+            StringBuilder prompt
+    ) {
+        prompt.append("\nТы мастер мрачной RPG.");
+        prompt.append("\nКратко продолжи сцену по-русски на один шаг.");
+        prompt.append("\nINVENTORY — факт приложения, не противоречь ему.");
+        prompt.append("\nЕсли есть INVENTORY_UPDATE, естественно отрази его.");
+        prompt.append("\nНе решай за игрока. Кубики не бросай. Рискованное действие требует проверки.");
+        prompt.append("\nМрачно, атмосферно, без лишнего пафоса.");
     }
 
 
@@ -247,9 +194,9 @@ public class PromptBuilder {
     ) {
         prompt.append(
                 "<|tool>declaration:add_item_to_inventory{"
-                        + "description:<|\"|>Call when one concrete item was absent from INVENTORY BEFORE but is present after the completed PLAYER_ACTION.<|\"|>,"
+                        + "description:<|\"|>Item entered inventory.<|\"|>,"
                         + "parameters:{properties:{name:{"
-                        + "description:<|\"|>Natural concrete item phrase copied from PLAYER_ACTION. Never translate it.<|\"|>,"
+                        + "description:<|\"|>Item name.<|\"|>,"
                         + "type:<|\"|>STRING<|\"|>"
                         + "}},required:[<|\"|>name<|\"|>],type:<|\"|>OBJECT<|\"|>}"
                         + "}<tool|>"
@@ -257,9 +204,9 @@ public class PromptBuilder {
 
         prompt.append(
                 "<|tool>declaration:remove_item_from_inventory{"
-                        + "description:<|\"|>Call when one concrete item was present in INVENTORY BEFORE but is absent after the completed PLAYER_ACTION.<|\"|>,"
+                        + "description:<|\"|>Item left inventory.<|\"|>,"
                         + "parameters:{properties:{name:{"
-                        + "description:<|\"|>Exact existing item name copied from INVENTORY BEFORE.<|\"|>,"
+                        + "description:<|\"|>Item name.<|\"|>,"
                         + "type:<|\"|>STRING<|\"|>"
                         + "}},required:[<|\"|>name<|\"|>],type:<|\"|>OBJECT<|\"|>}"
                         + "}<tool|>"
@@ -267,88 +214,79 @@ public class PromptBuilder {
 
         prompt.append(
                 "<|tool>declaration:no_inventory_change{"
-                        + "description:<|\"|>Call when inventory membership is unchanged after the completed PLAYER_ACTION.<|\"|>,"
+                        + "description:<|\"|>Inventory unchanged.<|\"|>,"
                         + "parameters:{properties:{},required:[],type:<|\"|>OBJECT<|\"|>}"
                         + "}<tool|>"
         );
     }
 
 
+    private void appendInventory(
+            StringBuilder prompt,
+            List<String> inventory
+    ) {
+        boolean hasItems = false;
+
+        for (String itemName : inventory) {
+            if (itemName == null
+                    || itemName.trim().isEmpty()) {
+
+                continue;
+            }
+
+            hasItems = true;
+            prompt.append("\n- ");
+            prompt.append(itemName.trim());
+        }
+
+        if (!hasItems) {
+            prompt.append("\n(пусто)");
+        }
+    }
+
+
     private String buildRecentEvents(
             MemoryContext memoryContext
     ) {
-        StringBuilder builder =
-                new StringBuilder();
+        StringBuilder builder = new StringBuilder();
 
+        for (GameEvent event : memoryContext.getRecentEvents()) {
+            if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
+                builder.append("P: ");
 
-        for (GameEvent event
-                : memoryContext.getRecentEvents()) {
-
-            if (event.getSpeaker()
-                    == GameEvent.Speaker.PLAYER) {
-
-                builder.append(
-                        "P: "
-                );
-
-            } else if (
-                    event.getSpeaker()
-                            == GameEvent.Speaker.MASTER
-            ) {
-
-                builder.append(
-                        "GM: "
-                );
+            } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
+                builder.append("GM: ");
 
             } else {
                 continue;
             }
 
-
-            builder.append(
-                    event.getText().trim()
-            );
-
-            builder.append("\n");
+            builder.append(event.getText().trim());
+            builder.append('\n');
         }
 
-
-        return builder
-                .toString()
-                .trim();
+        return builder.toString().trim();
     }
 
 
     private String buildRelevantFacts(
             MemoryContext memoryContext
     ) {
-        StringBuilder builder =
-                new StringBuilder();
+        StringBuilder builder = new StringBuilder();
 
-
-        for (String fact
-                : memoryContext.getRelevantFacts()) {
-
+        for (String fact : memoryContext.getRelevantFacts()) {
             if (fact == null
                     || fact.trim().isEmpty()) {
 
                 continue;
             }
 
-
             builder.append("- ");
-
-            builder.append(
-                    fact.trim()
-            );
-
-            builder.append("\n");
+            builder.append(fact.trim());
+            builder.append('\n');
         }
 
-
-        return builder
-                .toString()
-                .trim();
+        return builder.toString().trim();
     }
 
 
@@ -360,23 +298,14 @@ public class PromptBuilder {
             return "";
         }
 
+        String value = text.trim();
 
-        String value =
-                text.trim();
-
-
-        if (value.length()
-                <= maxChars) {
-
+        if (value.length() <= maxChars) {
             return value;
         }
 
-
         return value
-                .substring(
-                        0,
-                        maxChars
-                )
+                .substring(0, maxChars)
                 .trim();
     }
 
@@ -389,23 +318,14 @@ public class PromptBuilder {
             return "";
         }
 
+        String value = text.trim();
 
-        String value =
-                text.trim();
-
-
-        if (value.length()
-                <= maxChars) {
-
+        if (value.length() <= maxChars) {
             return value;
         }
 
-
         return value
-                .substring(
-                        value.length()
-                                - maxChars
-                )
+                .substring(value.length() - maxChars)
                 .trim();
     }
 }
