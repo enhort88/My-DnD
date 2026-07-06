@@ -47,11 +47,19 @@
             android:textColorHint="#777777" />
 
         <Button
-            android:id="@+id/newGameGenerateButton"
+            android:id="@+id/newGameExistingWorldButton"
             style="@style/FantasyButton"
             android:layout_width="match_parent"
             android:layout_height="54dp"
             android:layout_marginTop="14dp"
+            android:text="ИГРАТЬ В СУЩЕСТВУЮЩЕМ МИРЕ" />
+
+        <Button
+            android:id="@+id/newGameGenerateButton"
+            style="@style/FantasyButton"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:layout_marginTop="10dp"
             android:text="СГЕНЕРИРОВАТЬ" />
 
         <TextView

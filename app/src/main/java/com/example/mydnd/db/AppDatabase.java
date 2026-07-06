@@ -18,6 +18,8 @@ import com.example.mydnd.db.dao.NpcDao;
 import com.example.mydnd.db.dao.SituationDao;
 import com.example.mydnd.db.dao.SummaryDao;
 import com.example.mydnd.db.dao.WorldDao;
+import com.example.mydnd.db.dao.WorldEventDao;
+import com.example.mydnd.db.dao.WorldTimelineDao;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.CharacterEntity;
 import com.example.mydnd.db.entity.CharacterStartingItemEntity;
@@ -28,6 +30,8 @@ import com.example.mydnd.db.entity.NpcEntity;
 import com.example.mydnd.db.entity.SituationEntity;
 import com.example.mydnd.db.entity.SummaryEntity;
 import com.example.mydnd.db.entity.WorldEntity;
+import com.example.mydnd.db.entity.WorldEventEntity;
+import com.example.mydnd.db.entity.WorldTimelineEntity;
 import com.example.mydnd.db.entity.WorldRaceEntity;
 
 @Database(
@@ -42,9 +46,11 @@ import com.example.mydnd.db.entity.WorldRaceEntity;
                 CharacterEntity.class,
                 CharacterStartingItemEntity.class,
                 NpcEntity.class,
-                SituationEntity.class
+                SituationEntity.class,
+                WorldTimelineEntity.class,
+                WorldEventEntity.class
         },
-        version = 4,
+        version = 5,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
@@ -62,6 +68,10 @@ public abstract class AppDatabase extends RoomDatabase {
     public abstract InventoryItemDao inventoryItemDao();
 
     public abstract WorldDao worldDao();
+
+    public abstract WorldTimelineDao worldTimelineDao();
+
+    public abstract WorldEventDao worldEventDao();
 
     public abstract CharacterDao characterDao();
 
@@ -279,6 +289,107 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+    private static final Migration MIGRATION_4_5 =
+            new Migration(4, 5) {
+                @Override
+                public void migrate(@NonNull SupportSQLiteDatabase database) {
+
+                    database.execSQL(
+                            "ALTER TABLE campaigns ADD COLUMN world_timeline_id INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN world_timeline_id INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE situations ADD COLUMN world_timeline_id INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS world_timelines (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "world_id INTEGER NOT NULL, " +
+                                    "name TEXT NOT NULL, " +
+                                    "state_summary TEXT NOT NULL, " +
+                                    "created_at INTEGER NOT NULL, " +
+                                    "updated_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_world_timelines_world_id " +
+                                    "ON world_timelines(world_id)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_world_timelines_updated_at " +
+                                    "ON world_timelines(updated_at)"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS world_events (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "world_timeline_id INTEGER NOT NULL, " +
+                                    "text TEXT NOT NULL, " +
+                                    "created_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_world_events_world_timeline_id " +
+                                    "ON world_events(world_timeline_id)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_world_events_created_at " +
+                                    "ON world_events(created_at)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_npcs_world_timeline_id " +
+                                    "ON npcs(world_timeline_id)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_situations_world_timeline_id " +
+                                    "ON situations(world_timeline_id)"
+                    );
+
+                    database.execSQL(
+                            "INSERT INTO world_timelines " +
+                                    "(world_id, name, state_summary, created_at, updated_at) " +
+                                    "SELECT w.id, 'Основная история', substr(w.description, 1, 350), " +
+                                    "w.created_at, w.created_at FROM worlds w " +
+                                    "WHERE NOT EXISTS (" +
+                                    "SELECT 1 FROM world_timelines wt WHERE wt.world_id = w.id" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "UPDATE campaigns SET world_timeline_id = COALESCE((" +
+                                    "SELECT wt.id FROM world_timelines wt " +
+                                    "WHERE wt.world_id = campaigns.world_id " +
+                                    "ORDER BY wt.id ASC LIMIT 1" +
+                                    "), 0)"
+                    );
+
+                    database.execSQL(
+                            "UPDATE npcs SET world_timeline_id = COALESCE((" +
+                                    "SELECT c.world_timeline_id FROM campaigns c " +
+                                    "WHERE c.id = npcs.campaign_id" +
+                                    "), 0)"
+                    );
+
+                    database.execSQL(
+                            "UPDATE situations SET world_timeline_id = COALESCE((" +
+                                    "SELECT c.world_timeline_id FROM campaigns c " +
+                                    "WHERE c.id = situations.campaign_id" +
+                                    "), 0)"
+                    );
+                }
+            };
+
     public static AppDatabase getInstance(Context context) {
         if (instance == null) {
             synchronized (AppDatabase.class) {
@@ -291,7 +402,8 @@ public abstract class AppDatabase extends RoomDatabase {
                             .addMigrations(
                                     MIGRATION_1_2,
                                     MIGRATION_2_3,
-                                    MIGRATION_3_4
+                                    MIGRATION_3_4,
+                                    MIGRATION_4_5
                             )
                             .build();
                 }

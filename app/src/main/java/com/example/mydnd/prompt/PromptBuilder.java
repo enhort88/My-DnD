@@ -15,8 +15,9 @@ public class PromptBuilder {
 
     private static final int MAX_WORLD_CHARS = 220;
     private static final int MAX_CHARACTER_CHARS = 180;
-    private static final int MAX_SITUATIONS_CHARS = 280;
-    private static final int MAX_NPCS_CHARS = 260;
+    private static final int MAX_WORLD_CHANGES_CHARS = 220;
+    private static final int MAX_SITUATIONS_CHARS = 180;
+    private static final int MAX_NPCS_CHARS = 180;
     private static final int MAX_SCENE_CHARS = 360;
 
 
@@ -160,6 +161,15 @@ public class PromptBuilder {
                 limitFromStart(
                         campaignState.getCharacter(),
                         MAX_CHARACTER_CHARS
+                )
+        );
+
+        appendOptionalBlock(
+                prompt,
+                "WORLD_CHANGES",
+                limitFromStart(
+                        campaignState.getWorldChanges(),
+                        MAX_WORLD_CHANGES_CHARS
                 )
         );
 

@@ -35,12 +35,12 @@ public class NewGameDraftGenerator {
     }
 
     public void generateCharacter(
-            WorldData worldData,
+            LivingWorldData livingWorld,
             String userRequest,
             Listener<CharacterDraft> listener
     ) {
         String prompt = promptBuilder.buildCharacterPrompt(
-                worldData,
+                livingWorld,
                 userRequest
         );
 
@@ -53,13 +53,13 @@ public class NewGameDraftGenerator {
     }
 
     public void generateSituation(
-            WorldData worldData,
+            LivingWorldData livingWorld,
             CharacterData characterData,
             String userRequest,
             Listener<StartingSituationDraft> listener
     ) {
         String prompt = promptBuilder.buildSituationPrompt(
-                worldData,
+                livingWorld,
                 characterData,
                 userRequest
         );

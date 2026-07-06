@@ -6,13 +6,16 @@ import com.example.mydnd.db.entity.CharacterEntity;
 import com.example.mydnd.db.entity.NpcEntity;
 import com.example.mydnd.db.entity.SituationEntity;
 import com.example.mydnd.db.entity.WorldEntity;
+import com.example.mydnd.db.entity.WorldEventEntity;
+import com.example.mydnd.db.entity.WorldTimelineEntity;
 
 import java.util.List;
 
 public class CampaignPromptRepository {
 
-    private static final int ACTIVE_SITUATIONS_LIMIT = 3;
-    private static final int ACTIVE_NPCS_LIMIT = 4;
+    private static final int ACTIVE_SITUATIONS_LIMIT = 2;
+    private static final int ACTIVE_NPCS_LIMIT = 2;
+    private static final int WORLD_EVENTS_LIMIT = 3;
 
     private final AppDatabase database;
 
@@ -35,17 +38,45 @@ public class CampaignPromptRepository {
                 ? database.characterDao().getCharacter(campaign.characterId)
                 : null;
 
-        List<SituationEntity> situations =
-                database.situationDao().getActiveForCampaign(
-                        campaignId,
-                        ACTIVE_SITUATIONS_LIMIT
-                );
+        WorldTimelineEntity timeline = campaign.worldTimelineId > 0L
+                ? database.worldTimelineDao().getById(campaign.worldTimelineId)
+                : null;
 
-        List<NpcEntity> npcs =
-                database.npcDao().getActiveForCampaign(
-                        campaignId,
-                        ACTIVE_NPCS_LIMIT
-                );
+        List<SituationEntity> situations;
+        List<NpcEntity> npcs;
+        List<WorldEventEntity> worldEvents;
+
+        if (campaign.worldTimelineId > 0L) {
+            situations = database.situationDao().getActiveForContext(
+                    campaign.worldTimelineId,
+                    campaignId,
+                    ACTIVE_SITUATIONS_LIMIT
+            );
+
+            npcs = database.npcDao().getActiveForContext(
+                    campaign.worldTimelineId,
+                    campaignId,
+                    ACTIVE_NPCS_LIMIT
+            );
+
+            worldEvents = database.worldEventDao().getRecent(
+                    campaign.worldTimelineId,
+                    WORLD_EVENTS_LIMIT
+            );
+
+        } else {
+            situations = database.situationDao().getActiveForCampaign(
+                    campaignId,
+                    ACTIVE_SITUATIONS_LIMIT
+            );
+
+            npcs = database.npcDao().getActiveForCampaign(
+                    campaignId,
+                    ACTIVE_NPCS_LIMIT
+            );
+
+            worldEvents = java.util.Collections.emptyList();
+        }
 
         String currentScene = buildCurrentScene(
                 campaign,
@@ -54,8 +85,9 @@ public class CampaignPromptRepository {
 
         return new CampaignPromptState(
                 currentScene,
-                buildWorld(world),
+                buildWorld(world, timeline),
                 buildCharacter(character),
+                buildWorldEvents(worldEvents),
                 buildSituations(situations),
                 buildNpcs(npcs)
         );
@@ -83,7 +115,10 @@ public class CampaignPromptRepository {
         return "Сцена не задана.";
     }
 
-    private String buildWorld(WorldEntity world) {
+    private String buildWorld(
+            WorldEntity world,
+            WorldTimelineEntity timeline
+    ) {
         if (world == null) {
             return "";
         }
@@ -92,11 +127,12 @@ public class CampaignPromptRepository {
         text.append(world.name);
 
         if (!world.genre.isEmpty()) {
-            text.append("; жанр: ").append(world.genre);
+            text.append("; ").append(world.genre);
         }
 
-        if (!world.rules.isEmpty()) {
-            text.append("; правила: ").append(world.rules);
+        if (timeline != null && !timeline.stateSummary.isEmpty()) {
+            text.append("; сейчас: ")
+                    .append(limit(timeline.stateSummary, 180));
         }
 
         return text.toString();
@@ -115,8 +151,31 @@ public class CampaignPromptRepository {
                 .append(character.className);
 
         if (!character.personality.isEmpty()) {
-            text.append("; характер: ")
-                    .append(character.personality);
+            text.append("; ")
+                    .append(limit(character.personality, 100));
+        }
+
+        return text.toString();
+    }
+
+    private String buildWorldEvents(List<WorldEventEntity> events) {
+        if (events == null || events.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder text = new StringBuilder();
+
+        for (WorldEventEntity event : events) {
+            if (event == null || event.text == null || event.text.trim().isEmpty()) {
+                continue;
+            }
+
+            if (text.length() > 0) {
+                text.append('\n');
+            }
+
+            text.append("- ")
+                    .append(limit(event.text, 120));
         }
 
         return text.toString();
@@ -137,7 +196,7 @@ public class CampaignPromptRepository {
             text.append("- ")
                     .append(situation.title)
                     .append(": ")
-                    .append(situation.stateSummary);
+                    .append(limit(situation.stateSummary, 110));
         }
 
         return text.toString();
@@ -158,9 +217,23 @@ public class CampaignPromptRepository {
             text.append("- ")
                     .append(npc.name)
                     .append(": ")
-                    .append(npc.stateSummary);
+                    .append(limit(npc.stateSummary, 100));
         }
 
         return text.toString();
+    }
+
+    private String limit(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+
+        String safe = value.trim();
+
+        if (safe.length() <= maxChars) {
+            return safe;
+        }
+
+        return safe.substring(0, maxChars).trim();
     }
 }

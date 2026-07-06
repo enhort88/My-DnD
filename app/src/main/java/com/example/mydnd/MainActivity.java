@@ -14,6 +14,7 @@ import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.save.SavedGameRepository;
+import com.example.mydnd.game.world.WorldMemoryRepository;
 import com.example.mydnd.game.save.SavedGameSummary;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
@@ -78,6 +79,7 @@ public class MainActivity extends ComponentActivity {
     private InventoryRepository inventoryRepository;
     private CampaignPromptRepository campaignPromptRepository;
     private SavedGameRepository savedGameRepository;
+    private WorldMemoryRepository worldMemoryRepository;
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
@@ -177,6 +179,7 @@ public class MainActivity extends ComponentActivity {
         inventoryRepository = new InventoryRepository(database);
         campaignPromptRepository = new CampaignPromptRepository(database);
         savedGameRepository = new SavedGameRepository(database);
+        worldMemoryRepository = new WorldMemoryRepository(database);
 
         long requestedCampaignId =
                 getIntent().getLongExtra(
@@ -1043,6 +1046,32 @@ public class MainActivity extends ComponentActivity {
 
             String functionName =
                     result.getFunctionName();
+
+            if ("remember_world_event".equals(functionName)) {
+                boolean stored = worldMemoryRepository.rememberForCampaign(
+                        campaignId,
+                        result.getWorldEventText()
+                );
+
+                Log.d(
+                        "MyDND_WORLD_MEMORY",
+                        (stored ? "STORED: " : "SKIPPED: ")
+                                + result.getWorldEventText()
+                );
+
+                return "<|tool_response>response:remember_world_event{status:<|\"|>"
+                        + (stored ? "STORED" : "SKIPPED")
+                        + "<|\"|>}<tool_response|>";
+            }
+
+            if ("no_world_event".equals(functionName)) {
+                Log.d(
+                        "MyDND_WORLD_MEMORY",
+                        "NO WORLD EVENT"
+                );
+
+                return "<|tool_response>response:no_world_event{status:<|\"|>OK<|\"|>}<tool_response|>";
+            }
 
             if ("no_inventory_change".equals(
                     functionName

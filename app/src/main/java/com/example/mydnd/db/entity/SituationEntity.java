@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey;
         tableName = "situations",
         indices = {
                 @Index(value = "campaign_id"),
+                @Index(value = "world_timeline_id"),
                 @Index(value = "status")
         }
 )
@@ -20,6 +21,9 @@ public class SituationEntity {
 
     @ColumnInfo(name = "campaign_id")
     public long campaignId;
+
+    @ColumnInfo(name = "world_timeline_id", defaultValue = "0")
+    public long worldTimelineId;
 
     @NonNull
     @ColumnInfo(name = "scope")

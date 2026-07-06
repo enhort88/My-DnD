@@ -21,7 +21,7 @@ public class CampaignSetupRepository {
     }
 
     public long createCampaign(
-            WorldData worldData,
+            LivingWorldData livingWorld,
             CharacterData characterData,
             StartingSituationDraft situationDraft
     ) {
@@ -30,13 +30,15 @@ public class CampaignSetupRepository {
         database.runInTransaction(() -> {
             long now = System.currentTimeMillis();
 
-            WorldEntity world = worldData.getWorld();
+            WorldEntity world = livingWorld.getWorldData().getWorld();
+            long timelineId = livingWorld.getTimeline().id;
 
             CampaignEntity campaign = new CampaignEntity();
             campaign.title = characterData.getCharacter().name
                     + " — "
                     + world.name;
             campaign.worldId = world.id;
+            campaign.worldTimelineId = timelineId;
             campaign.characterId = characterData.getCharacter().id;
             campaign.currentSituationId = 0L;
             campaign.createdAt = now;
@@ -46,8 +48,9 @@ public class CampaignSetupRepository {
 
             SituationEntity situation = new SituationEntity();
             situation.campaignId = campaignId;
-            situation.scope = "WORLD";
-            situation.subjectId = 0L;
+            situation.worldTimelineId = timelineId;
+            situation.scope = "CAMPAIGN";
+            situation.subjectId = campaignId;
             situation.title = situationDraft.getTitle();
             situation.stateSummary = situationDraft.getStateSummary();
             situation.status = "ACTIVE";
@@ -70,6 +73,7 @@ public class CampaignSetupRepository {
 
                 NpcEntity npc = new NpcEntity();
                 npc.campaignId = campaignId;
+                npc.worldTimelineId = timelineId;
                 npc.name = npcDraft.getName();
                 npc.description = npcDraft.getDescription();
                 npc.stateSummary = npcDraft.getStateSummary();
@@ -105,6 +109,11 @@ public class CampaignSetupRepository {
             firstScene.createdAt = now;
 
             database.gameEventDao().insert(firstScene);
+
+            database.worldTimelineDao().touch(
+                    timelineId,
+                    now
+            );
 
             result[0] = campaignId;
         });

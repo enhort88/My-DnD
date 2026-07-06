@@ -1,11 +1,16 @@
 package com.example.mydnd.prompt;
 
 import com.example.mydnd.db.entity.CharacterStartingItemEntity;
+import com.example.mydnd.db.entity.WorldEventEntity;
 import com.example.mydnd.db.entity.WorldRaceEntity;
 import com.example.mydnd.game.setup.CharacterData;
+import com.example.mydnd.game.setup.LivingWorldData;
 import com.example.mydnd.game.setup.WorldData;
 
 public class NewGamePromptBuilder {
+
+    private static final int MAX_LIVING_STATE_CHARS = 260;
+    private static final int MAX_WORLD_EVENTS_CHARS = 260;
 
     public String buildWorldPrompt(String userRequest) {
         String system =
@@ -29,9 +34,10 @@ public class NewGamePromptBuilder {
     }
 
     public String buildCharacterPrompt(
-            WorldData worldData,
+            LivingWorldData livingWorld,
             String userRequest
     ) {
+        WorldData worldData = livingWorld.getWorldData();
         StringBuilder races = new StringBuilder();
 
         for (WorldRaceEntity race : worldData.getRaces()) {
@@ -51,24 +57,27 @@ public class NewGamePromptBuilder {
                         + "personality: одна короткая строка. "
                         + "startingItems: 2-5 конкретных предметов. "
                         + "Герой обычно подходит миру, но пользователь может попросить чужака или попаданца. "
-                        + "Не добавляй современные вещи, если мир их не допускает. "
-                        + "Все значения на русском. "
-                        + "Обязательно полностью закрой JSON символом }.";
+                        + "Учитывай текущее состояние живого мира. "
+                        + "Все значения на русском. Полностью закрой JSON символом }.";
 
         String user =
                 "МИР: " + worldData.getWorld().name + "\n"
                         + "ЖАНР: " + worldData.getWorld().genre + "\n"
-                        + "ОПИСАНИЕ: " + limit(worldData.getWorld().description, 900) + "\n"
-                        + "ПРАВИЛА: " + limit(worldData.getWorld().rules, 450) + "\n"
-                        + "РАСЫ: " + races + "\n\n"
-                        + "ПОЖЕЛАНИЕ:\n"
+                        + "ПРАВИЛА: " + limit(worldData.getWorld().rules, 350) + "\n"
+                        + "РАСЫ: " + races + "\n"
+                        + "СОСТОЯНИЕ: "
+                        + limit(livingWorld.getTimeline().stateSummary, MAX_LIVING_STATE_CHARS)
+                        + "\n"
+                        + "ИЗМЕНЕНИЯ: "
+                        + buildRecentWorldEvents(livingWorld, MAX_WORLD_EVENTS_CHARS)
+                        + "\n\nПОЖЕЛАНИЕ:\n"
                         + safe(userRequest);
 
         return wrap(system, user);
     }
 
     public String buildSituationPrompt(
-            WorldData worldData,
+            LivingWorldData livingWorld,
             CharacterData characterData,
             String userRequest
     ) {
@@ -82,31 +91,66 @@ public class NewGamePromptBuilder {
             items.append(item.name);
         }
 
+        WorldData worldData = livingWorld.getWorldData();
+
         String system =
                 "Создай стартовую ситуацию для RPG. "
                         + "Верни только один валидный JSON без Markdown и пояснений. "
                         + "Поля: title, stateSummary, npcs. "
                         + "stateSummary: 4-6 коротких предложений; это стартовая сцена и текущее состояние. "
                         + "npcs: 0-3 объекта с полями name, description, stateSummary. "
-                        + "NPC должны присутствовать или немедленно влиять на сцену. "
-                        + "stateSummary NPC кратко хранит отношение, цель или важное состояние. "
-                        + "Не решай за героя. Все значения на русском. "
-                        + "Обязательно полностью закрой JSON символом }.";
+                        + "Не отменяй факты живого мира. Не решай за героя. "
+                        + "Все значения на русском. Полностью закрой JSON символом }.";
 
         String user =
                 "МИР: " + worldData.getWorld().name + "\n"
-                        + "ЖАНР: " + worldData.getWorld().genre + "\n"
-                        + "ПРАВИЛА: " + limit(worldData.getWorld().rules, 450) + "\n"
+                        + "ПРАВИЛА: " + limit(worldData.getWorld().rules, 350) + "\n"
+                        + "СОСТОЯНИЕ: "
+                        + limit(livingWorld.getTimeline().stateSummary, MAX_LIVING_STATE_CHARS)
+                        + "\n"
+                        + "ИЗМЕНЕНИЯ: "
+                        + buildRecentWorldEvents(livingWorld, MAX_WORLD_EVENTS_CHARS)
+                        + "\n"
                         + "ГЕРОЙ: " + characterData.getCharacter().name
                         + ", " + characterData.getCharacter().race
                         + ", " + characterData.getCharacter().className + "\n"
-                        + "ХАРАКТЕР: " + limit(characterData.getCharacter().personality, 350) + "\n"
-                        + "ПРЕДЫСТОРИЯ: " + limit(characterData.getCharacter().background, 700) + "\n"
+                        + "ХАРАКТЕР: " + limit(characterData.getCharacter().personality, 250) + "\n"
                         + "ВЕЩИ: " + items + "\n\n"
                         + "ПОЖЕЛАНИЕ К СТАРТУ:\n"
                         + safe(userRequest);
 
         return wrap(system, user);
+    }
+
+    private String buildRecentWorldEvents(
+            LivingWorldData livingWorld,
+            int maxChars
+    ) {
+        StringBuilder result = new StringBuilder();
+
+        for (WorldEventEntity event : livingWorld.getRecentEvents()) {
+            if (event == null || event.text == null || event.text.trim().isEmpty()) {
+                continue;
+            }
+
+            if (result.length() > 0) {
+                result.append("; ");
+            }
+
+            result.append(event.text.trim());
+
+            if (result.length() >= maxChars) {
+                break;
+            }
+        }
+
+        String text = result.toString();
+
+        if (text.isEmpty()) {
+            return "нет";
+        }
+
+        return limit(text, maxChars);
     }
 
     private String wrap(

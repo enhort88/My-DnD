@@ -9,21 +9,26 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.ComponentActivity;
+import androidx.appcompat.app.AlertDialog;
 
 import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
+import com.example.mydnd.db.entity.WorldEventEntity;
 import com.example.mydnd.draft.CharacterDraft;
 import com.example.mydnd.draft.StartingSituationDraft;
 import com.example.mydnd.draft.WorldDraft;
 import com.example.mydnd.game.setup.CampaignSetupRepository;
 import com.example.mydnd.game.setup.CharacterData;
 import com.example.mydnd.game.setup.CharacterRepository;
+import com.example.mydnd.game.setup.LivingWorldData;
 import com.example.mydnd.game.setup.NewGameDraftGenerator;
 import com.example.mydnd.game.setup.WorldData;
 import com.example.mydnd.game.setup.WorldRepository;
 import com.example.mydnd.llm.LlmModelManager;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 public class NewGameActivity extends ComponentActivity {
 
@@ -40,6 +45,7 @@ public class NewGameActivity extends ComponentActivity {
     private TextView stageText;
     private TextView helpText;
     private EditText requestEditText;
+    private Button existingWorldButton;
     private Button generateButton;
     private TextView statusText;
     private TextView previewText;
@@ -64,8 +70,10 @@ public class NewGameActivity extends ComponentActivity {
     private String situationRequest = "";
 
     private long worldId = 0L;
+    private long worldTimelineId = 0L;
     private long characterId = 0L;
 
+    private LivingWorldData livingWorldData;
     private WorldData worldData;
     private CharacterData characterData;
 
@@ -82,6 +90,7 @@ public class NewGameActivity extends ComponentActivity {
         initDependencies();
         showWorldStage();
 
+        existingWorldButton.setOnClickListener(v -> showExistingWorlds());
         generateButton.setOnClickListener(v -> generateCurrentStage());
         regenerateButton.setOnClickListener(v -> generateCurrentStage());
         confirmButton.setOnClickListener(v -> confirmCurrentStage());
@@ -96,6 +105,7 @@ public class NewGameActivity extends ComponentActivity {
         stageText = findViewById(R.id.newGameStageText);
         helpText = findViewById(R.id.newGameHelpText);
         requestEditText = findViewById(R.id.newGameRequestEditText);
+        existingWorldButton = findViewById(R.id.newGameExistingWorldButton);
         generateButton = findViewById(R.id.newGameGenerateButton);
         statusText = findViewById(R.id.newGameStatusText);
         previewText = findViewById(R.id.newGamePreviewText);
@@ -131,6 +141,92 @@ public class NewGameActivity extends ComponentActivity {
         draftGenerator = new NewGameDraftGenerator(modelManager);
     }
 
+    private void showExistingWorlds() {
+        if (busy) {
+            return;
+        }
+
+        setBusy(true, "Загружаю живые миры...");
+
+        DbExecutor.execute(() -> {
+            List<LivingWorldData> worlds = worldRepository.getAllLivingWorlds();
+
+            runOnUiThread(() -> {
+                setBusy(false, "");
+
+                if (worlds.isEmpty()) {
+                    Toast.makeText(
+                            this,
+                            "Сохранённых миров пока нет.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                    return;
+                }
+
+                String[] labels = new String[worlds.size()];
+
+                for (int i = 0; i < worlds.size(); i++) {
+                    labels[i] = buildLivingWorldLabel(worlds.get(i));
+                }
+
+                new AlertDialog.Builder(this)
+                        .setTitle("Выберите живой мир")
+                        .setItems(labels, (dialog, which) -> {
+                            if (which < 0 || which >= worlds.size()) {
+                                return;
+                            }
+
+                            selectExistingWorld(worlds.get(which));
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show();
+            });
+        });
+    }
+
+    private String buildLivingWorldLabel(LivingWorldData data) {
+        StringBuilder text = new StringBuilder();
+        text.append(data.getWorldData().getWorld().name);
+
+        if (!data.getTimeline().name.isEmpty()) {
+            text.append(" — ").append(data.getTimeline().name);
+        }
+
+        String state = limit(data.getTimeline().stateSummary, 140);
+
+        if (!state.isEmpty()) {
+            text.append("\n").append(state);
+        }
+
+        List<String> changes = new ArrayList<>();
+
+        for (WorldEventEntity event : data.getRecentEvents()) {
+            if (event != null && event.text != null && !event.text.trim().isEmpty()) {
+                changes.add(event.text.trim());
+            }
+
+            if (changes.size() >= 2) {
+                break;
+            }
+        }
+
+        if (!changes.isEmpty()) {
+            text.append("\nИзменения: ").append(String.join("; ", changes));
+        }
+
+        return limit(text.toString(), 420);
+    }
+
+    private void selectExistingWorld(LivingWorldData selected) {
+        livingWorldData = selected;
+        worldData = selected.getWorldData();
+        worldId = worldData.getWorld().id;
+        worldTimelineId = selected.getTimeline().id;
+        worldDraft = null;
+
+        showCharacterStage();
+    }
+
     private void generateCurrentStage() {
         if (busy) {
             return;
@@ -148,7 +244,7 @@ public class NewGameActivity extends ComponentActivity {
         }
 
         hideDraft();
-        setBusy(true, "Gemma создаёт черновик...");
+        setBusy(true, "GM создаёт черновик...");
 
         if (stage == STAGE_WORLD) {
             worldRequest = request;
@@ -175,7 +271,7 @@ public class NewGameActivity extends ComponentActivity {
             characterRequest = request;
 
             draftGenerator.generateCharacter(
-                    worldData,
+                    livingWorldData,
                     request,
                     new NewGameDraftGenerator.Listener<CharacterDraft>() {
                         @Override
@@ -196,7 +292,7 @@ public class NewGameActivity extends ComponentActivity {
         situationRequest = request;
 
         draftGenerator.generateSituation(
-                worldData,
+                livingWorldData,
                 characterData,
                 request,
                 new NewGameDraftGenerator.Listener<StartingSituationDraft>() {
@@ -226,12 +322,14 @@ public class NewGameActivity extends ComponentActivity {
             setBusy(true, "Сохраняю мир...");
 
             DbExecutor.execute(() -> {
-                worldId = worldRepository.createWorld(
+                livingWorldData = worldRepository.createWorld(
                         worldDraft,
                         worldRequest
                 );
 
-                worldData = worldRepository.getWorldData(worldId);
+                worldData = livingWorldData.getWorldData();
+                worldId = worldData.getWorld().id;
+                worldTimelineId = livingWorldData.getTimeline().id;
 
                 runOnUiThread(this::showCharacterStage);
             });
@@ -269,7 +367,7 @@ public class NewGameActivity extends ComponentActivity {
 
         DbExecutor.execute(() -> {
             long campaignId = campaignSetupRepository.createCampaign(
-                    worldData,
+                    livingWorldData,
                     characterData,
                     situationDraft
             );
@@ -282,14 +380,15 @@ public class NewGameActivity extends ComponentActivity {
         stage = STAGE_WORLD;
         stageText.setText("1 из 3 — Мир");
         helpText.setText(
-                "Опишите мир. Gemma предложит черновик с жанром, правилами и расами. "
-                        + "В Room мир попадёт только после подтверждения."
+                "Создайте новый мир или войдите в уже существующий. "
+                        + "События такого мира переживают отдельных героев."
         );
         requestEditText.setHint(
                 "Мрачное фэнтези после гражданской войны. Магия опасна, есть люди, эльфы и гномы..."
         );
         requestEditText.setText(worldRequest);
-        generateButton.setText("СГЕНЕРИРОВАТЬ МИР");
+        existingWorldButton.setVisibility(View.VISIBLE);
+        generateButton.setText("СГЕНЕРИРОВАТЬ НОВЫЙ МИР");
         confirmButton.setText("ПОДТВЕРДИТЬ МИР");
         hideDraft();
         setBusy(false, "");
@@ -297,10 +396,11 @@ public class NewGameActivity extends ComponentActivity {
 
     private void showCharacterStage() {
         stage = STAGE_CHARACTER;
+        existingWorldButton.setVisibility(View.GONE);
         stageText.setText("2 из 3 — Герой");
         helpText.setText(
-                "Мир сохранён: " + worldData.getWorld().name
-                        + ". Опишите героя. Расы мира будут подсказкой, но не жёстким запретом."
+                "Живой мир: " + worldData.getWorld().name
+                        + ". Герой будет создан уже с учётом его текущего состояния."
         );
         requestEditText.setHint(
                 "Молодой жадный вор. Не злой, но ради денег готов рисковать..."
@@ -314,10 +414,11 @@ public class NewGameActivity extends ComponentActivity {
 
     private void showSituationStage() {
         stage = STAGE_SITUATION;
+        existingWorldButton.setVisibility(View.GONE);
         stageText.setText("3 из 3 — Старт");
         helpText.setText(
                 "Герой сохранён: " + characterData.getCharacter().name
-                        + ". Можно задать пожелание к первой ситуации или оставить поле пустым."
+                        + ". Стартовая ситуация не отменит уже произошедшие события мира."
         );
         requestEditText.setHint(
                 "Например: начать в дороге, без немедленной драки, но с тревожной загадкой..."
@@ -389,6 +490,7 @@ public class NewGameActivity extends ComponentActivity {
             String status
     ) {
         this.busy = busy;
+        existingWorldButton.setEnabled(!busy);
         generateButton.setEnabled(!busy);
         confirmButton.setEnabled(!busy);
         regenerateButton.setEnabled(!busy);
@@ -397,14 +499,22 @@ public class NewGameActivity extends ComponentActivity {
         statusText.setText(status);
     }
 
+    private String limit(String value, int maxChars) {
+        String safeValue = value == null ? "" : value.trim();
+
+        if (safeValue.length() <= maxChars) {
+            return safeValue;
+        }
+
+        return safeValue.substring(0, maxChars).trim();
+    }
+
     private void openCampaign(long campaignId) {
         modelManager.releaseAll();
 
         Intent intent = new Intent(this, MainActivity.class);
         intent.putExtra(MainActivity.EXTRA_OPEN_CAMPAIGN_ID, campaignId);
-        intent.addFlags(
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
-        );
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
         startActivity(intent);
         finish();

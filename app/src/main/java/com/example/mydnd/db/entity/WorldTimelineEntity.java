@@ -7,37 +7,27 @@ import androidx.room.Index;
 import androidx.room.PrimaryKey;
 
 @Entity(
-        tableName = "npcs",
+        tableName = "world_timelines",
         indices = {
-                @Index(value = "campaign_id"),
-                @Index(value = "world_timeline_id")
+                @Index(value = "world_id"),
+                @Index(value = "updated_at")
         }
 )
-public class NpcEntity {
+public class WorldTimelineEntity {
 
     @PrimaryKey(autoGenerate = true)
     public long id;
 
-    @ColumnInfo(name = "campaign_id")
-    public long campaignId;
-
-    @ColumnInfo(name = "world_timeline_id", defaultValue = "0")
-    public long worldTimelineId;
+    @ColumnInfo(name = "world_id")
+    public long worldId;
 
     @NonNull
     @ColumnInfo(name = "name")
-    public String name = "";
-
-    @NonNull
-    @ColumnInfo(name = "description")
-    public String description = "";
+    public String name = "Основная история";
 
     @NonNull
     @ColumnInfo(name = "state_summary")
     public String stateSummary = "";
-
-    @ColumnInfo(name = "active")
-    public boolean active;
 
     @ColumnInfo(name = "created_at")
     public long createdAt;

@@ -23,4 +23,17 @@ public interface SituationDao {
                     + "ORDER BY updated_at DESC LIMIT :limit"
     )
     List<SituationEntity> getActiveForCampaign(long campaignId, int limit);
+
+    @Query(
+            "SELECT * FROM situations "
+                    + "WHERE world_timeline_id = :timelineId "
+                    + "AND status = 'ACTIVE' "
+                    + "AND (scope != 'CAMPAIGN' OR subject_id = :campaignId) "
+                    + "ORDER BY updated_at DESC LIMIT :limit"
+    )
+    List<SituationEntity> getActiveForContext(
+            long timelineId,
+            long campaignId,
+            int limit
+    );
 }

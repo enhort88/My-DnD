@@ -128,6 +128,10 @@ static bool is_complete_inventory_tool_call(
             || text.find("remove_item_from_inventory{")
                     != std::string::npos
             || text.find("no_inventory_change{")
+                    != std::string::npos
+            || text.find("remember_world_event{")
+                    != std::string::npos
+            || text.find("no_world_event{")
                     != std::string::npos;
 
     if (!known_short_call) {
@@ -463,6 +467,112 @@ static llama_sampler * create_inventory_decision_sampler(
     return sampler;
 }
 
+
+static std::string build_world_event_grammar(
+        const llama_vocab * vocab
+) {
+    llama_token tool_call_open = 0;
+    llama_token tool_call_close = 0;
+    llama_token tool_string_quote = 0;
+
+    if (!get_single_special_token(vocab, "<|tool_call>", tool_call_open)
+        || !get_single_special_token(vocab, "<tool_call|>", tool_call_close)
+        || !get_single_special_token(vocab, "<|\"|>", tool_string_quote)) {
+
+        return "";
+    }
+
+    const std::string open =
+            "<[" + std::to_string(tool_call_open) + "]>";
+
+    const std::string close =
+            "<[" + std::to_string(tool_call_close) + "]>";
+
+    const std::string quote =
+            "<[" + std::to_string(tool_string_quote) + "]>";
+
+    std::string grammar;
+
+    grammar += "root ::= remember | no-event\n\n";
+
+    grammar += "remember ::= ";
+    grammar += open;
+    grammar += " \"call:remember_world_event{text:\" ";
+    grammar += quote;
+    grammar += " event-text ";
+    grammar += quote;
+    grammar += " \"}\" ";
+    grammar += close;
+    grammar += "\n\n";
+
+    grammar += "no-event ::= ";
+    grammar += open;
+    grammar += " \"call:no_world_event{}\" ";
+    grammar += close;
+    grammar += "\n\n";
+
+    grammar += "event-text ::= [^<>{}\\r\\n]{1,180}\n";
+
+    return grammar;
+}
+
+
+static llama_sampler * create_world_event_sampler(
+        const llama_vocab * vocab
+) {
+    std::string grammar = build_world_event_grammar(vocab);
+
+    if (grammar.empty()) {
+        MYDND_LOGE(
+                "create_world_event_sampler: Gemma tool special tokens are not single tokens"
+        );
+
+        return nullptr;
+    }
+
+    llama_sampler_chain_params sampler_params =
+            llama_sampler_chain_default_params();
+
+    sampler_params.no_perf = true;
+
+    llama_sampler * sampler =
+            llama_sampler_chain_init(sampler_params);
+
+    llama_sampler * grammar_sampler =
+            llama_sampler_init_grammar(
+                    vocab,
+                    grammar.c_str(),
+                    "root"
+            );
+
+    if (grammar_sampler == nullptr) {
+        llama_sampler_free(sampler);
+        return nullptr;
+    }
+
+    llama_sampler_chain_add(sampler, grammar_sampler);
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_k(20)
+    );
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_p(0.80f, 1)
+    );
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_temp(0.10f)
+    );
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_dist(
+                    static_cast<uint32_t>(time(nullptr))
+            )
+    );
+
+    return sampler;
+}
+
 static bool g_backend_initialized = false;
 static std::mutex g_backend_mutex;
 
@@ -740,7 +850,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
         // Для телефона сначала скромный контекст.
         ctx_params.n_ctx = 2048;
         ctx_params.n_batch = 512;
-        ctx_params.n_ubatch = 512;
+        ctx_params.n_ubatch = 128;
         ctx_params.n_threads = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.no_perf = true;
@@ -1146,7 +1256,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         auto prompt_decode_start =
                 std::chrono::steady_clock::now();
 
-        const int prompt_chunk_size = 512;
+        const int prompt_chunk_size = 64;
 
         for (int pos = 0; pos < tokenized; pos += prompt_chunk_size) {
             if (handle->cancel_requested.load()) {
@@ -1827,6 +1937,12 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         const int tool_response_reserve =
                 192;
 
+        const int world_event_instruction_reserve =
+                128;
+
+        const int world_event_max_tokens =
+                64;
+
         const float safe_temperature =
                 temperature > 0.0f
                         ? temperature
@@ -1885,6 +2001,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     + decision_max_tokens
                     + tool_response_reserve
                     + narrative_hard_max
+                    + world_event_instruction_reserve
+                    + world_event_max_tokens
             ) >= n_ctx) {
 
             MYDND_LOGE(
@@ -2580,6 +2698,234 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 narrative_tokens,
                 tokens_per_second
         );
+
+        /*
+         * Фаза 4: короткая память живого мира ПОСЛЕ завершённого narrative.
+         * Полный prompt заново не декодируем: добавляем только маленькую
+         * служебную инструкцию в тот же llama_context.
+         */
+        if (!handle->cancel_requested.load()) {
+            const std::string world_event_instruction =
+                    "<turn|>\n<|turn>user\n"
+                    "Служебно: оцени завершённый ход выше. "
+                    "Если появился один долговечный факт общего мира "
+                    "(смерть, власть, война, разрушение, устойчивое изменение NPC или места), "
+                    "вызови remember_world_event. "
+                    "Не сохраняй инвентарь, обычное движение и атмосферу. "
+                    "Иначе вызови no_world_event."
+                    "<turn|>\n<|turn>model\n";
+
+            int event_instruction_count =
+                    -llama_tokenize(
+                            handle->vocab,
+                            world_event_instruction.c_str(),
+                            static_cast<int32_t>(world_event_instruction.size()),
+                            nullptr,
+                            0,
+                            false,
+                            true
+                    );
+
+            if (event_instruction_count > 0
+                && static_cast<uint32_t>(event_instruction_count + world_event_max_tokens)
+                   < n_ctx) {
+
+                std::vector<llama_token> event_instruction_tokens(
+                        event_instruction_count
+                );
+
+                int event_instruction_tokenized =
+                        llama_tokenize(
+                                handle->vocab,
+                                world_event_instruction.c_str(),
+                                static_cast<int32_t>(world_event_instruction.size()),
+                                event_instruction_tokens.data(),
+                                static_cast<int32_t>(event_instruction_tokens.size()),
+                                false,
+                                true
+                        );
+
+                bool event_instruction_ok =
+                        event_instruction_tokenized > 0;
+
+                auto event_phase_start =
+                        std::chrono::steady_clock::now();
+
+                for (
+                        int pos = 0;
+                        event_instruction_ok && pos < event_instruction_tokenized;
+                        pos += prompt_chunk_size
+                        ) {
+
+                    int chunk_size = prompt_chunk_size;
+
+                    if (pos + chunk_size > event_instruction_tokenized) {
+                        chunk_size = event_instruction_tokenized - pos;
+                    }
+
+                    llama_batch event_instruction_batch =
+                            llama_batch_get_one(
+                                    event_instruction_tokens.data() + pos,
+                                    chunk_size
+                            );
+
+                    if (llama_decode(
+                            handle->ctx,
+                            event_instruction_batch
+                    ) != 0) {
+
+                        event_instruction_ok = false;
+
+                        MYDND_LOGE(
+                                "nativeGenerateInventoryToolAwareStream: world event instruction decode failed, pos=%d",
+                                pos
+                        );
+                    }
+                }
+
+                if (event_instruction_ok
+                    && !handle->cancel_requested.load()) {
+
+                    llama_sampler * world_event_sampler =
+                            create_world_event_sampler(
+                                    handle->vocab
+                            );
+
+                    if (world_event_sampler != nullptr) {
+                        std::string world_event_output;
+                        bool world_event_complete = false;
+                        int world_event_tokens = 0;
+
+                        for (
+                                int i = 0;
+                                i < world_event_max_tokens;
+                                i++
+                                ) {
+
+                            if (handle->cancel_requested.load()) {
+                                break;
+                            }
+
+                            llama_token event_token =
+                                    llama_sampler_sample(
+                                            world_event_sampler,
+                                            handle->ctx,
+                                            -1
+                                    );
+
+                            if (llama_vocab_is_eog(
+                                    handle->vocab,
+                                    event_token
+                            )) {
+                                break;
+                            }
+
+                            world_event_tokens++;
+
+                            char event_buffer[256];
+
+                            int event_piece_length =
+                                    llama_token_to_piece(
+                                            handle->vocab,
+                                            event_token,
+                                            event_buffer,
+                                            sizeof(event_buffer),
+                                            0,
+                                            true
+                                    );
+
+                            if (event_piece_length > 0) {
+                                world_event_output.append(
+                                        event_buffer,
+                                        event_piece_length
+                                );
+                            }
+
+                            llama_batch event_token_batch =
+                                    llama_batch_get_one(
+                                            &event_token,
+                                            1
+                                    );
+
+                            if (llama_decode(
+                                    handle->ctx,
+                                    event_token_batch
+                            ) != 0) {
+
+                                MYDND_LOGE(
+                                        "nativeGenerateInventoryToolAwareStream: world event token decode failed"
+                                );
+
+                                break;
+                            }
+
+                            if (is_complete_inventory_tool_call(
+                                    world_event_output
+                            )) {
+                                world_event_complete = true;
+                                break;
+                            }
+                        }
+
+                        llama_sampler_free(
+                                world_event_sampler
+                        );
+
+                        auto event_phase_end =
+                                std::chrono::steady_clock::now();
+
+                        auto event_phase_ms =
+                                std::chrono::duration_cast<
+                                        std::chrono::milliseconds
+                                >(
+                                        event_phase_end
+                                        - event_phase_start
+                                ).count();
+
+                        MYDND_LOGI(
+                                "nativeGenerateInventoryToolAwareStream: WORLD EVENT = %lld ms, tokens=%d, complete=%s, raw=%s",
+                                static_cast<long long>(event_phase_ms),
+                                world_event_tokens,
+                                world_event_complete ? "YES" : "NO",
+                                world_event_output.c_str()
+                        );
+
+                        if (world_event_complete
+                            && !world_event_output.empty()
+                            && !handle->cancel_requested.load()) {
+
+                            jstring jWorldEventCall =
+                                    string_to_jstring(
+                                            env,
+                                            world_event_output
+                                    );
+
+                            jobject ignoredResponse =
+                                    env->CallObjectMethod(
+                                            toolCallbackObject,
+                                            onToolCallMethod,
+                                            jWorldEventCall
+                                    );
+
+                            env->DeleteLocalRef(
+                                    jWorldEventCall
+                            );
+
+                            if (ignoredResponse != nullptr) {
+                                env->DeleteLocalRef(
+                                        ignoredResponse
+                                );
+                            }
+
+                            if (env->ExceptionCheck()) {
+                                env->ExceptionDescribe();
+                                env->ExceptionClear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         MYDND_LOGI(
                 "nativeGenerateInventoryToolAwareStream: FINISH, narrative length=%zu",

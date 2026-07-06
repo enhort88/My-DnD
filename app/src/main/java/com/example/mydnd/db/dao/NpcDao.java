@@ -20,4 +20,17 @@ public interface NpcDao {
                     + "ORDER BY updated_at DESC LIMIT :limit"
     )
     List<NpcEntity> getActiveForCampaign(long campaignId, int limit);
+
+    @Query(
+            "SELECT * FROM npcs "
+                    + "WHERE world_timeline_id = :timelineId "
+                    + "AND campaign_id = :campaignId "
+                    + "AND active = 1 "
+                    + "ORDER BY updated_at DESC LIMIT :limit"
+    )
+    List<NpcEntity> getActiveForContext(
+            long timelineId,
+            long campaignId,
+            int limit
+    );
 }

@@ -13,18 +13,6 @@ public class GemmaToolCallParser {
                     Pattern.DOTALL
             );
 
-    private static final Pattern NAME_STRING_PATTERN =
-            Pattern.compile(
-                    "(?:^|,)\\s*name\\s*:\\s*<\\|\"\\|>(.*?)<\\|\"\\|>",
-                    Pattern.DOTALL
-            );
-
-    private static final Pattern NAME_FALLBACK_PATTERN =
-            Pattern.compile(
-                    "(?:^|,)\\s*name\\s*:\\s*([^,}]*)",
-                    Pattern.DOTALL
-            );
-
 
     public Result parse(
             String rawText
@@ -35,68 +23,56 @@ public class GemmaToolCallParser {
                         : rawText.trim();
 
         if (safeRaw.equalsIgnoreCase("NONE")) {
-            return Result.noCall(
-                    safeRaw
-            );
+            return Result.noCall(safeRaw);
         }
 
         Matcher callMatcher =
-                TOOL_CALL_PATTERN.matcher(
-                        safeRaw
-                );
+                TOOL_CALL_PATTERN.matcher(safeRaw);
 
         if (!callMatcher.find()) {
-            return Result.noCall(
-                    safeRaw
-            );
+            return Result.noCall(safeRaw);
         }
 
-        String functionName =
-                callMatcher
-                        .group(1)
-                        .trim();
-
-        String arguments =
-                callMatcher
-                        .group(2)
-                        .trim();
-
-        String itemName =
-                extractName(
-                        arguments
-                );
+        String functionName = callMatcher.group(1).trim();
+        String arguments = callMatcher.group(2).trim();
 
         return Result.toolCall(
                 functionName,
-                itemName,
+                extractStringArgument(arguments, "name"),
+                extractStringArgument(arguments, "text"),
                 safeRaw
         );
     }
 
 
-    private String extractName(
-            String arguments
+    private String extractStringArgument(
+            String arguments,
+            String key
     ) {
-        Matcher stringMatcher =
-                NAME_STRING_PATTERN.matcher(
-                        arguments
-                );
+        Pattern quotedPattern = Pattern.compile(
+                "(?:^|,)\\s*"
+                        + Pattern.quote(key)
+                        + "\\s*:\\s*<\\|\"\\|>(.*?)<\\|\"\\|>",
+                Pattern.DOTALL
+        );
 
-        if (stringMatcher.find()) {
-            return stringMatcher
-                    .group(1)
-                    .trim();
+        Matcher quotedMatcher = quotedPattern.matcher(arguments);
+
+        if (quotedMatcher.find()) {
+            return quotedMatcher.group(1).trim();
         }
 
-        Matcher fallbackMatcher =
-                NAME_FALLBACK_PATTERN.matcher(
-                        arguments
-                );
+        Pattern fallbackPattern = Pattern.compile(
+                "(?:^|,)\\s*"
+                        + Pattern.quote(key)
+                        + "\\s*:\\s*([^,}]*)",
+                Pattern.DOTALL
+        );
+
+        Matcher fallbackMatcher = fallbackPattern.matcher(arguments);
 
         if (fallbackMatcher.find()) {
-            return fallbackMatcher
-                    .group(1)
-                    .trim();
+            return fallbackMatcher.group(1).trim();
         }
 
         return "";
@@ -107,28 +83,30 @@ public class GemmaToolCallParser {
 
         private final boolean toolCall;
         private final String functionName;
-        private final String fact;
+        private final String itemName;
+        private final String worldEventText;
         private final String rawText;
 
 
         private Result(
                 boolean toolCall,
                 String functionName,
-                String fact,
+                String itemName,
+                String worldEventText,
                 String rawText
         ) {
             this.toolCall = toolCall;
             this.functionName = functionName;
-            this.fact = fact;
+            this.itemName = itemName;
+            this.worldEventText = worldEventText;
             this.rawText = rawText;
         }
 
 
-        public static Result noCall(
-                String rawText
-        ) {
+        public static Result noCall(String rawText) {
             return new Result(
                     false,
+                    "",
                     "",
                     "",
                     rawText
@@ -138,13 +116,15 @@ public class GemmaToolCallParser {
 
         public static Result toolCall(
                 String functionName,
-                String fact,
+                String itemName,
+                String worldEventText,
                 String rawText
         ) {
             return new Result(
                     true,
                     functionName,
-                    fact,
+                    itemName,
+                    worldEventText,
                     rawText
             );
         }
@@ -160,12 +140,13 @@ public class GemmaToolCallParser {
         }
 
 
-        /**
-         * Kept for compatibility with the current MainActivity test UI.
-         * For inventory tools this value is the item name.
-         */
         public String getItemName() {
-            return fact;
+            return itemName;
+        }
+
+
+        public String getWorldEventText() {
+            return worldEventText;
         }
 
 

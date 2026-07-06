@@ -19,6 +19,9 @@ public class CampaignEntity {
     @ColumnInfo(name = "character_id", defaultValue = "0")
     public long characterId;
 
+    @ColumnInfo(name = "world_timeline_id", defaultValue = "0")
+    public long worldTimelineId;
+
     @ColumnInfo(name = "current_situation_id", defaultValue = "0")
     public long currentSituationId;
 
