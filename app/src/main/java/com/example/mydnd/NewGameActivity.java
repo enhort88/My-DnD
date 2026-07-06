@@ -1,15 +1,21 @@
 package com.example.mydnd;
 
+import android.app.Dialog;
 import android.content.Intent;
 import android.os.Bundle;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.view.View;
+import android.view.LayoutInflater;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import androidx.activity.ComponentActivity;
-import androidx.appcompat.app.AlertDialog;
 
 import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
@@ -25,11 +31,11 @@ import com.example.mydnd.game.setup.NewGameDraftGenerator;
 import com.example.mydnd.game.setup.WorldData;
 import com.example.mydnd.game.setup.WorldRepository;
 import com.example.mydnd.llm.LlmModelManager;
+import com.example.mydnd.util.MusicManager;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import com.example.mydnd.util.MusicManager;
 
 public class NewGameActivity extends ComponentActivity {
 
@@ -151,76 +157,397 @@ public class NewGameActivity extends ComponentActivity {
             return;
         }
 
-        setBusy(true, "Загружаю живые миры...");
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_living_worlds);
+        dialog.setCanceledOnTouchOutside(true);
+
+        LinearLayout worldsContainer =
+                dialog.findViewById(R.id.livingWorldsContainer);
+
+        Button closeButton =
+                dialog.findViewById(R.id.closeLivingWorldsButton);
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        dialog,
+                        0.94f,
+                        0.88f
+                )
+        );
+
+        dialog.show();
+        loadLivingWorldsIntoDialog(dialog, worldsContainer);
+    }
+
+
+    private void loadLivingWorldsIntoDialog(
+            Dialog dialog,
+            LinearLayout worldsContainer
+    ) {
+        worldsContainer.removeAllViews();
+
+        TextView loadingText = new TextView(this);
+        loadingText.setText("Загружаю живые миры...");
+        loadingText.setTextColor(Color.rgb(184, 176, 160));
+        loadingText.setTextSize(15f);
+        loadingText.setPadding(8, 24, 8, 24);
+        loadingText.setGravity(android.view.Gravity.CENTER);
+        worldsContainer.addView(loadingText);
 
         DbExecutor.execute(() -> {
-            List<LivingWorldData> worlds = worldRepository.getAllLivingWorlds();
+            try {
+                List<LivingWorldData> worlds =
+                        worldRepository.getAllLivingWorlds();
 
-            runOnUiThread(() -> {
-                setBusy(false, "");
+                runOnUiThread(() -> {
+                    if (!dialog.isShowing()) {
+                        return;
+                    }
 
-                if (worlds.isEmpty()) {
-                    Toast.makeText(
-                            this,
-                            "Сохранённых миров пока нет.",
-                            Toast.LENGTH_SHORT
-                    ).show();
-                    return;
-                }
+                    renderLivingWorldCards(
+                            dialog,
+                            worldsContainer,
+                            worlds
+                    );
+                });
 
-                String[] labels = new String[worlds.size()];
+            } catch (Throwable throwable) {
+                runOnUiThread(() -> {
+                    if (!dialog.isShowing()) {
+                        return;
+                    }
 
-                for (int i = 0; i < worlds.size(); i++) {
-                    labels[i] = buildLivingWorldLabel(worlds.get(i));
-                }
+                    worldsContainer.removeAllViews();
 
-                new AlertDialog.Builder(this)
-                        .setTitle("Выберите живой мир")
-                        .setItems(labels, (dialog, which) -> {
-                            if (which < 0 || which >= worlds.size()) {
-                                return;
-                            }
-
-                            selectExistingWorld(worlds.get(which));
-                        })
-                        .setNegativeButton("Отмена", null)
-                        .show();
-            });
+                    TextView errorText = new TextView(this);
+                    errorText.setText("Не удалось загрузить миры.");
+                    errorText.setTextColor(Color.rgb(216, 154, 130));
+                    errorText.setTextSize(15f);
+                    errorText.setPadding(8, 24, 8, 24);
+                    errorText.setGravity(android.view.Gravity.CENTER);
+                    worldsContainer.addView(errorText);
+                });
+            }
         });
     }
 
-    private String buildLivingWorldLabel(LivingWorldData data) {
-        StringBuilder text = new StringBuilder();
-        text.append(data.getWorldData().getWorld().name);
 
-        if (!data.getTimeline().name.isEmpty()) {
-            text.append(" — ").append(data.getTimeline().name);
+    private void renderLivingWorldCards(
+            Dialog dialog,
+            LinearLayout worldsContainer,
+            List<LivingWorldData> worlds
+    ) {
+        worldsContainer.removeAllViews();
+
+        if (worlds == null || worlds.isEmpty()) {
+            TextView emptyText = new TextView(this);
+            emptyText.setText("Сохранённых миров пока нет.");
+            emptyText.setTextColor(Color.rgb(184, 176, 160));
+            emptyText.setTextSize(15f);
+            emptyText.setPadding(8, 28, 8, 28);
+            emptyText.setGravity(android.view.Gravity.CENTER);
+            worldsContainer.addView(emptyText);
+            return;
         }
 
-        String state = limit(data.getTimeline().stateSummary, 140);
+        LayoutInflater inflater = LayoutInflater.from(this);
 
-        if (!state.isEmpty()) {
-            text.append("\n").append(state);
+        for (LivingWorldData livingWorld : worlds) {
+            View card = inflater.inflate(
+                    R.layout.item_living_world,
+                    worldsContainer,
+                    false
+            );
+
+            TextView titleText =
+                    card.findViewById(R.id.livingWorldTitleText);
+
+            TextView genreText =
+                    card.findViewById(R.id.livingWorldGenreText);
+
+            TextView stateText =
+                    card.findViewById(R.id.livingWorldStateText);
+
+            TextView changesText =
+                    card.findViewById(R.id.livingWorldChangesText);
+
+            Button playButton =
+                    card.findViewById(R.id.playLivingWorldButton);
+
+            Button deleteButton =
+                    card.findViewById(R.id.deleteLivingWorldButton);
+
+            String worldName =
+                    livingWorld.getWorldData().getWorld().name;
+
+            String timelineName =
+                    livingWorld.getTimeline().name;
+
+            titleText.setText(
+                    timelineName == null || timelineName.trim().isEmpty()
+                            ? worldName
+                            : worldName + " — " + timelineName.trim()
+            );
+
+            String genre =
+                    livingWorld.getWorldData().getWorld().genre;
+
+            if (genre == null || genre.trim().isEmpty()) {
+                genreText.setVisibility(View.GONE);
+            } else {
+                genreText.setVisibility(View.VISIBLE);
+                genreText.setText(genre.trim());
+            }
+
+            String state = limit(
+                    livingWorld.getTimeline().stateSummary,
+                    220
+            );
+
+            if (state.isEmpty()) {
+                stateText.setVisibility(View.GONE);
+            } else {
+                stateText.setVisibility(View.VISIBLE);
+                stateText.setText(state);
+            }
+
+            String changes = buildRecentWorldChanges(livingWorld);
+
+            if (changes.isEmpty()) {
+                changesText.setVisibility(View.GONE);
+            } else {
+                changesText.setVisibility(View.VISIBLE);
+                changesText.setText("Последние изменения: " + changes);
+            }
+
+            playButton.setOnClickListener(v -> {
+                dialog.dismiss();
+                selectExistingWorld(livingWorld);
+            });
+
+            deleteButton.setOnClickListener(v ->
+                    showDeleteLivingWorldDialog(
+                            dialog,
+                            worldsContainer,
+                            livingWorld
+                    )
+            );
+
+            worldsContainer.addView(card);
         }
+    }
 
+
+    private String buildRecentWorldChanges(
+            LivingWorldData data
+    ) {
         List<String> changes = new ArrayList<>();
 
         for (WorldEventEntity event : data.getRecentEvents()) {
-            if (event != null && event.text != null && !event.text.trim().isEmpty()) {
-                changes.add(event.text.trim());
+            if (event == null
+                    || event.text == null
+                    || event.text.trim().isEmpty()) {
+                continue;
             }
+
+            changes.add(
+                    limit(event.text.trim(), 100)
+            );
 
             if (changes.size() >= 2) {
                 break;
             }
         }
 
-        if (!changes.isEmpty()) {
-            text.append("\nИзменения: ").append(String.join("; ", changes));
+        return String.join(" • ", changes);
+    }
+
+
+    private void showDeleteLivingWorldDialog(
+            Dialog worldsDialog,
+            LinearLayout worldsContainer,
+            LivingWorldData livingWorld
+    ) {
+        Dialog confirmDialog = new Dialog(this);
+        confirmDialog.setContentView(
+                R.layout.dialog_confirm_delete_living_world
+        );
+        confirmDialog.setCanceledOnTouchOutside(true);
+
+        TextView messageText =
+                confirmDialog.findViewById(
+                        R.id.deleteLivingWorldMessage
+                );
+
+        Button cancelButton =
+                confirmDialog.findViewById(
+                        R.id.cancelDeleteLivingWorldButton
+                );
+
+        Button deleteButton =
+                confirmDialog.findViewById(
+                        R.id.confirmDeleteLivingWorldButton
+                );
+
+        String worldName =
+                livingWorld.getWorldData().getWorld().name;
+
+        messageText.setText(
+                "Удалить живой мир «"
+                        + worldName
+                        + "»?\n\n"
+                        + "Его история, события и состояние будут удалены. "
+                        + "Мир с сохранёнными кампаниями удалить нельзя."
+        );
+
+        cancelButton.setOnClickListener(v ->
+                confirmDialog.dismiss()
+        );
+
+        deleteButton.setOnClickListener(v -> {
+            deleteButton.setEnabled(false);
+            deleteButton.setText("Удаляю...");
+
+            deleteLivingWorld(
+                    confirmDialog,
+                    worldsDialog,
+                    worldsContainer,
+                    livingWorld.getTimeline().id
+            );
+        });
+
+        confirmDialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        confirmDialog,
+                        0.90f,
+                        0f
+                )
+        );
+
+        confirmDialog.show();
+    }
+
+
+    private void deleteLivingWorld(
+            Dialog confirmDialog,
+            Dialog worldsDialog,
+            LinearLayout worldsContainer,
+            long timelineId
+    ) {
+        DbExecutor.execute(() -> {
+            try {
+                WorldRepository.DeleteLivingWorldResult result =
+                        worldRepository.deleteLivingWorld(timelineId);
+
+                runOnUiThread(() -> {
+                    if (result
+                            == WorldRepository.DeleteLivingWorldResult.DELETED) {
+
+                        confirmDialog.dismiss();
+
+                        Toast.makeText(
+                                this,
+                                "Мир удалён.",
+                                Toast.LENGTH_SHORT
+                        ).show();
+
+                        if (worldsDialog.isShowing()) {
+                            loadLivingWorldsIntoDialog(
+                                    worldsDialog,
+                                    worldsContainer
+                            );
+                        }
+
+                        return;
+                    }
+
+                    Button deleteButton =
+                            confirmDialog.findViewById(
+                                    R.id.confirmDeleteLivingWorldButton
+                            );
+
+                    deleteButton.setEnabled(true);
+                    deleteButton.setText("Удалить");
+
+                    if (result
+                            == WorldRepository.DeleteLivingWorldResult.HAS_CAMPAIGNS) {
+
+                        Toast.makeText(
+                                this,
+                                "В этом мире есть сохранённые игры. Сначала удалите их.",
+                                Toast.LENGTH_LONG
+                        ).show();
+
+                        return;
+                    }
+
+                    Toast.makeText(
+                            this,
+                            "Мир уже не найден.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+
+            } catch (Throwable throwable) {
+                runOnUiThread(() -> {
+                    Button deleteButton =
+                            confirmDialog.findViewById(
+                                    R.id.confirmDeleteLivingWorldButton
+                            );
+
+                    deleteButton.setEnabled(true);
+                    deleteButton.setText("Удалить");
+
+                    Toast.makeText(
+                            this,
+                            "Не удалось удалить мир.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        });
+    }
+
+
+    private void configureFantasyDialogWindow(
+            Dialog dialog,
+            float widthFraction,
+            float heightFraction
+    ) {
+        Window window = dialog.getWindow();
+
+        if (window == null) {
+            return;
         }
 
-        return limit(text.toString(), 420);
+        window.setBackgroundDrawable(
+                new ColorDrawable(Color.TRANSPARENT)
+        );
+
+        int screenWidth =
+                getResources().getDisplayMetrics().widthPixels;
+
+        int screenHeight =
+                getResources().getDisplayMetrics().heightPixels;
+
+        int width = Math.max(
+                280,
+                (int) (screenWidth * widthFraction)
+        );
+
+        int height = heightFraction > 0f
+                ? (int) (screenHeight * heightFraction)
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
+
+        window.setLayout(width, height);
+        window.setDimAmount(0.72f);
+        window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND
+        );
     }
+
 
     private void selectExistingWorld(LivingWorldData selected) {
         livingWorldData = selected;

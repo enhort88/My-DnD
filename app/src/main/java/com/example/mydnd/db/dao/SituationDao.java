@@ -36,4 +36,8 @@ public interface SituationDao {
             long campaignId,
             int limit
     );
+
+    @Query("DELETE FROM situations WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

@@ -33,4 +33,8 @@ public interface NpcDao {
             long campaignId,
             int limit
     );
+
+    @Query("DELETE FROM npcs WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

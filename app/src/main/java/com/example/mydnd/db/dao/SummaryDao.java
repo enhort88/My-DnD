@@ -19,4 +19,8 @@ public interface SummaryDao {
 
     @Query("SELECT * FROM summaries WHERE campaign_id = :campaignId ORDER BY id ASC")
     List<SummaryEntity> getForCampaign(long campaignId);
+
+    @Query("DELETE FROM summaries WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

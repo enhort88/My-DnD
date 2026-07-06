@@ -41,4 +41,8 @@ public interface CampaignDao {
             long campaignId,
             long updatedAt
     );
+
+    @Query("DELETE FROM campaigns WHERE id = :campaignId")
+    int deleteById(long campaignId);
+
 }

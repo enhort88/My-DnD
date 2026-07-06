@@ -71,4 +71,8 @@ public interface GameEventDao {
             long afterEventId,
             int limit
     );
+
+    @Query("DELETE FROM game_events WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

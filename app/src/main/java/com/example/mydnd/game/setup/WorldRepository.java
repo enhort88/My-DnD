@@ -1,5 +1,9 @@
 package com.example.mydnd.game.setup;
 
+import android.database.Cursor;
+
+import androidx.sqlite.db.SupportSQLiteDatabase;
+
 import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.dao.WorldDao;
 import com.example.mydnd.db.dao.WorldEventDao;
@@ -13,6 +17,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class WorldRepository {
+
+
+    public enum DeleteLivingWorldResult {
+        DELETED,
+        HAS_CAMPAIGNS,
+        NOT_FOUND
+    }
 
     private static final int SELECTION_EVENT_LIMIT = 3;
 
@@ -123,6 +134,130 @@ public class WorldRepository {
 
         return result;
     }
+
+    public DeleteLivingWorldResult deleteLivingWorld(
+            long timelineId
+    ) {
+        if (timelineId <= 0L) {
+            return DeleteLivingWorldResult.NOT_FOUND;
+        }
+
+        final DeleteLivingWorldResult[] result = {
+                DeleteLivingWorldResult.NOT_FOUND
+        };
+
+        database.runInTransaction(() -> {
+            SupportSQLiteDatabase sqlite =
+                    database.getOpenHelper().getWritableDatabase();
+
+            long worldId = 0L;
+
+            try (Cursor cursor = sqlite.query(
+                    "SELECT world_id FROM world_timelines WHERE id = ? LIMIT 1",
+                    new Object[]{timelineId}
+            )) {
+                if (cursor.moveToFirst()) {
+                    worldId = cursor.getLong(0);
+                }
+            }
+
+            if (worldId <= 0L) {
+                result[0] = DeleteLivingWorldResult.NOT_FOUND;
+                return;
+            }
+
+            long campaignCount = 0L;
+
+            try (Cursor cursor = sqlite.query(
+                    "SELECT COUNT(*) FROM campaigns "
+                            + "WHERE world_timeline_id = ? OR "
+                            + "(world_timeline_id = 0 AND world_id = ?)",
+                    new Object[]{timelineId, worldId}
+            )) {
+                if (cursor.moveToFirst()) {
+                    campaignCount = cursor.getLong(0);
+                }
+            }
+
+            if (campaignCount > 0L) {
+                result[0] = DeleteLivingWorldResult.HAS_CAMPAIGNS;
+                return;
+            }
+
+            Object[] timelineArgs = new Object[]{timelineId};
+
+            sqlite.execSQL(
+                    "DELETE FROM world_events WHERE world_timeline_id = ?",
+                    timelineArgs
+            );
+
+            sqlite.execSQL(
+                    "DELETE FROM npcs WHERE world_timeline_id = ?",
+                    timelineArgs
+            );
+
+            sqlite.execSQL(
+                    "DELETE FROM situations WHERE world_timeline_id = ?",
+                    timelineArgs
+            );
+
+            sqlite.execSQL(
+                    "DELETE FROM world_timelines WHERE id = ?",
+                    timelineArgs
+            );
+
+            long remainingTimelines = 0L;
+
+            try (Cursor cursor = sqlite.query(
+                    "SELECT COUNT(*) FROM world_timelines WHERE world_id = ?",
+                    new Object[]{worldId}
+            )) {
+                if (cursor.moveToFirst()) {
+                    remainingTimelines = cursor.getLong(0);
+                }
+            }
+
+            if (remainingTimelines == 0L) {
+                sqlite.execSQL(
+                        "DELETE FROM character_starting_items "
+                                + "WHERE character_id IN ("
+                                + "SELECT id FROM characters "
+                                + "WHERE origin_world_id = ? "
+                                + "AND id NOT IN ("
+                                + "SELECT character_id FROM campaigns "
+                                + "WHERE character_id > 0"
+                                + ")"
+                                + ")",
+                        new Object[]{worldId}
+                );
+
+                sqlite.execSQL(
+                        "DELETE FROM characters "
+                                + "WHERE origin_world_id = ? "
+                                + "AND id NOT IN ("
+                                + "SELECT character_id FROM campaigns "
+                                + "WHERE character_id > 0"
+                                + ")",
+                        new Object[]{worldId}
+                );
+
+                sqlite.execSQL(
+                        "DELETE FROM world_races WHERE world_id = ?",
+                        new Object[]{worldId}
+                );
+
+                sqlite.execSQL(
+                        "DELETE FROM worlds WHERE id = ?",
+                        new Object[]{worldId}
+                );
+            }
+
+            result[0] = DeleteLivingWorldResult.DELETED;
+        });
+
+        return result[0];
+    }
+
 
     private String safe(String value) {
         return value == null ? "" : value.trim();

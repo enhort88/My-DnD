@@ -44,4 +44,8 @@ public interface InventoryItemDao {
     int deleteById(
             long itemId
     );
+
+    @Query("DELETE FROM inventory_items WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

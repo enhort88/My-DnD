@@ -1,5 +1,6 @@
 package com.example.mydnd;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.Context;
 import android.os.Bundle;
@@ -9,6 +10,8 @@ import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
@@ -33,10 +36,14 @@ import java.text.SimpleDateFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.view.View;
+import android.view.LayoutInflater;
+import android.view.Window;
+import android.view.ViewGroup;
 import com.example.mydnd.db.AppDatabase;
 import com.example.mydnd.db.DbExecutor;
 import com.example.mydnd.db.entity.CampaignEntity;
@@ -58,6 +65,7 @@ import com.example.mydnd.memory.ChangeClassifier;
 import com.example.mydnd.memory.ChangeOperationClassifier;
 import com.example.mydnd.memory.EntityExtractor;
 import com.example.mydnd.util.MusicManager;
+import com.example.mydnd.util.AppSettings;
 
 public class MainActivity extends ComponentActivity {
 
@@ -97,6 +105,7 @@ public class MainActivity extends ComponentActivity {
     private Button characterButton;
     private Button inventoryButton;
     private Button journalButton;
+    private Button gameSettingsButton;
 
     private LlmModelManager modelManager;
 
@@ -169,6 +178,10 @@ public class MainActivity extends ComponentActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        generationProfile = profileForResponseMode(
+                AppSettings.getResponseMode(this)
+        );
         welcomeBackground =
                 findViewById(R.id.welcomeBackground);
 
@@ -215,12 +228,10 @@ public class MainActivity extends ComponentActivity {
         continueGameButton = findViewById(R.id.continueGameButton);
         loadGamesButton = findViewById(R.id.loadGamesButton);
         settingsButton = findViewById(R.id.settingsButton);
-//        settingsButton.setEnabled(true);
-//        settingsButton.setText("ТЕСТ ФАКТОВ");
-//
-//        settingsButton.setOnClickListener(v -> {
-//            runMemoryFactExtractorV1();
-//        });
+        settingsButton.setEnabled(true);
+        settingsButton.setOnClickListener(v ->
+                showSettingsDialog()
+        );
         exitButton = findViewById(R.id.exitButton);
 
         chatTextView = findViewById(R.id.chatTextView);
@@ -230,6 +241,8 @@ public class MainActivity extends ComponentActivity {
         characterButton = findViewById(R.id.characterButton);
         inventoryButton = findViewById(R.id.inventoryButton);
         journalButton = findViewById(R.id.journalButton);
+        gameSettingsButton = findViewById(R.id.gameSettingsButton);
+
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
@@ -245,6 +258,17 @@ public class MainActivity extends ComponentActivity {
         journalButton.setOnClickListener(v ->
                 showJournalDialog()
         );
+
+        if (gameSettingsButton != null) {
+            gameSettingsButton.setOnClickListener(v ->
+                    showSettingsDialog()
+            );
+        } else {
+            Log.e(
+                    "MyDND_UI",
+                    "gameSettingsButton not found in activity_main.xml"
+            );
+        }
 
         File modelsDirectory =
                 getExternalFilesDir("models");
@@ -1560,48 +1584,60 @@ public class MainActivity extends ComponentActivity {
 
 
     private void showSavedGamesDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_saved_games);
+        dialog.setCanceledOnTouchOutside(true);
+
+        LinearLayout gamesContainer =
+                dialog.findViewById(R.id.savedGamesContainer);
+
+        Button closeButton =
+                dialog.findViewById(R.id.closeSavedGamesButton);
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored ->
+                configureSavedGamesDialogWindow(
+                        dialog,
+                        0.94f,
+                        0.88f
+                )
+        );
+
+        dialog.show();
+        loadSavedGamesIntoDialog(dialog, gamesContainer);
+    }
+
+
+    private void loadSavedGamesIntoDialog(
+            Dialog dialog,
+            LinearLayout gamesContainer
+    ) {
+        gamesContainer.removeAllViews();
+
+        TextView loadingText = new TextView(this);
+        loadingText.setText("Загружаю сохранения...");
+        loadingText.setTextColor(Color.rgb(184, 176, 160));
+        loadingText.setTextSize(15f);
+        loadingText.setPadding(8, 24, 8, 24);
+        loadingText.setGravity(android.view.Gravity.CENTER);
+        gamesContainer.addView(loadingText);
+
         DbExecutor.execute(() -> {
             try {
                 List<SavedGameSummary> savedGames =
                         savedGameRepository.getSavedGames();
 
                 runOnUiThread(() -> {
-                    if (savedGames.isEmpty()) {
-                        Toast.makeText(
-                                MainActivity.this,
-                                "Сохранённых игр пока нет.",
-                                Toast.LENGTH_SHORT
-                        ).show();
+                    if (!dialog.isShowing()) {
                         return;
                     }
 
-                    String[] labels =
-                            new String[savedGames.size()];
-
-                    for (int i = 0; i < savedGames.size(); i++) {
-                        labels[i] = formatSavedGameLabel(
-                                savedGames.get(i)
-                        );
-                    }
-
-                    new AlertDialog.Builder(
-                            MainActivity.this
-                    )
-                            .setTitle("Загрузить игру")
-                            .setItems(
-                                    labels,
-                                    (dialog, which) ->
-                                            openCampaignFromMenu(
-                                                    savedGames
-                                                            .get(which)
-                                                            .getCampaignId()
-                                            )
-                            )
-                            .setNegativeButton(
-                                    "Отмена",
-                                    null
-                            )
-                            .show();
+                    renderSavedGameCards(
+                            dialog,
+                            gamesContainer,
+                            savedGames
+                    );
                 });
 
             } catch (Throwable throwable) {
@@ -1611,15 +1647,317 @@ public class MainActivity extends ComponentActivity {
                         throwable
                 );
 
-                runOnUiThread(() ->
-                        Toast.makeText(
-                                MainActivity.this,
-                                "Не удалось загрузить список игр.",
-                                Toast.LENGTH_SHORT
-                        ).show()
-                );
+                runOnUiThread(() -> {
+                    if (!dialog.isShowing()) {
+                        return;
+                    }
+
+                    gamesContainer.removeAllViews();
+
+                    TextView errorText = new TextView(this);
+                    errorText.setText("Не удалось загрузить список игр.");
+                    errorText.setTextColor(Color.rgb(216, 154, 130));
+                    errorText.setTextSize(15f);
+                    errorText.setPadding(8, 24, 8, 24);
+                    errorText.setGravity(android.view.Gravity.CENTER);
+                    gamesContainer.addView(errorText);
+                });
             }
         });
+    }
+
+
+    private void renderSavedGameCards(
+            Dialog dialog,
+            LinearLayout gamesContainer,
+            List<SavedGameSummary> savedGames
+    ) {
+        gamesContainer.removeAllViews();
+
+        if (savedGames == null || savedGames.isEmpty()) {
+            TextView emptyText = new TextView(this);
+            emptyText.setText("Сохранённых игр пока нет.");
+            emptyText.setTextColor(Color.rgb(184, 176, 160));
+            emptyText.setTextSize(15f);
+            emptyText.setPadding(8, 28, 8, 28);
+            emptyText.setGravity(android.view.Gravity.CENTER);
+            gamesContainer.addView(emptyText);
+            return;
+        }
+
+        LayoutInflater inflater = LayoutInflater.from(this);
+
+        for (SavedGameSummary savedGame : savedGames) {
+            View card = inflater.inflate(
+                    R.layout.item_saved_game,
+                    gamesContainer,
+                    false
+            );
+
+            TextView titleText =
+                    card.findViewById(R.id.savedGameTitleText);
+
+            TextView worldCharacterText =
+                    card.findViewById(R.id.savedGameWorldCharacterText);
+
+            TextView situationText =
+                    card.findViewById(R.id.savedGameSituationText);
+
+            TextView updatedAtText =
+                    card.findViewById(R.id.savedGameUpdatedAtText);
+
+            Button playButton =
+                    card.findViewById(R.id.playSavedGameButton);
+
+            Button deleteButton =
+                    card.findViewById(R.id.deleteSavedGameButton);
+
+            String title = valueOr(
+                    savedGame.getTitle(),
+                    "Кампания #" + savedGame.getCampaignId()
+            );
+
+            titleText.setText(title);
+
+            String world = valueOr(
+                    savedGame.getWorldName(),
+                    "без мира"
+            );
+
+            String character = valueOr(
+                    savedGame.getCharacterName(),
+                    "без героя"
+            );
+
+            worldCharacterText.setText(
+                    "Мир: " + world + "  •  Герой: " + character
+            );
+
+            String situation = savedGame.getSituationTitle();
+
+            if (situation == null || situation.trim().isEmpty()) {
+                situationText.setVisibility(View.GONE);
+            } else {
+                situationText.setVisibility(View.VISIBLE);
+                situationText.setText("Сейчас: " + situation.trim());
+            }
+
+            if (savedGame.getUpdatedAt() > 0L) {
+                SimpleDateFormat dateFormat =
+                        new SimpleDateFormat(
+                                "dd.MM.yyyy HH:mm",
+                                Locale.getDefault()
+                        );
+
+                updatedAtText.setVisibility(View.VISIBLE);
+                updatedAtText.setText(
+                        "Последняя игра: "
+                                + dateFormat.format(
+                                        new Date(savedGame.getUpdatedAt())
+                                )
+                );
+            } else {
+                updatedAtText.setVisibility(View.GONE);
+            }
+
+            playButton.setOnClickListener(v -> {
+                dialog.dismiss();
+                openCampaignFromMenu(savedGame.getCampaignId());
+            });
+
+            deleteButton.setOnClickListener(v ->
+                    showDeleteSavedGameDialog(
+                            dialog,
+                            gamesContainer,
+                            savedGame
+                    )
+            );
+
+            gamesContainer.addView(card);
+        }
+    }
+
+
+    private void showDeleteSavedGameDialog(
+            Dialog savedGamesDialog,
+            LinearLayout gamesContainer,
+            SavedGameSummary savedGame
+    ) {
+        Dialog confirmDialog = new Dialog(this);
+        confirmDialog.setContentView(
+                R.layout.dialog_confirm_delete_saved_game
+        );
+        confirmDialog.setCanceledOnTouchOutside(true);
+
+        TextView messageText =
+                confirmDialog.findViewById(
+                        R.id.deleteSavedGameMessage
+                );
+
+        Button cancelButton =
+                confirmDialog.findViewById(
+                        R.id.cancelDeleteSavedGameButton
+                );
+
+        Button deleteButton =
+                confirmDialog.findViewById(
+                        R.id.confirmDeleteSavedGameButton
+                );
+
+        String title = valueOr(
+                savedGame.getTitle(),
+                "Кампания #" + savedGame.getCampaignId()
+        );
+
+        messageText.setText(
+                "Удалить сохранение «"
+                        + title
+                        + "»?\n\n"
+                        + "Личный журнал, инвентарь и память этой кампании будут удалены. "
+                        + "Живой мир и его мировые события останутся."
+        );
+
+        cancelButton.setOnClickListener(v ->
+                confirmDialog.dismiss()
+        );
+
+        deleteButton.setOnClickListener(v -> {
+            deleteButton.setEnabled(false);
+            deleteButton.setText("Удаляю...");
+
+            deleteSavedGame(
+                    confirmDialog,
+                    savedGamesDialog,
+                    gamesContainer,
+                    savedGame.getCampaignId()
+            );
+        });
+
+        confirmDialog.setOnShowListener(ignored ->
+                configureSavedGamesDialogWindow(
+                        confirmDialog,
+                        0.90f,
+                        0f
+                )
+        );
+
+        confirmDialog.show();
+    }
+
+
+    private void deleteSavedGame(
+            Dialog confirmDialog,
+            Dialog savedGamesDialog,
+            LinearLayout gamesContainer,
+            long campaignId
+    ) {
+        DbExecutor.execute(() -> {
+            try {
+                SavedGameRepository.DeleteSavedGameResult result =
+                        savedGameRepository.deleteSavedGame(campaignId);
+
+                runOnUiThread(() -> {
+                    if (result
+                            == SavedGameRepository.DeleteSavedGameResult.DELETED) {
+
+                        if (currentCampaignId == campaignId) {
+                            currentCampaignId = 0L;
+                        }
+
+                        confirmDialog.dismiss();
+
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Сохранение удалено.",
+                                Toast.LENGTH_SHORT
+                        ).show();
+
+                        if (savedGamesDialog.isShowing()) {
+                            loadSavedGamesIntoDialog(
+                                    savedGamesDialog,
+                                    gamesContainer
+                            );
+                        }
+
+                        return;
+                    }
+
+                    Button deleteButton =
+                            confirmDialog.findViewById(
+                                    R.id.confirmDeleteSavedGameButton
+                            );
+
+                    deleteButton.setEnabled(true);
+                    deleteButton.setText("Удалить");
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Сохранение уже не найдено.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_LOAD_GAME",
+                        "Failed to delete campaign",
+                        throwable
+                );
+
+                runOnUiThread(() -> {
+                    Button deleteButton =
+                            confirmDialog.findViewById(
+                                    R.id.confirmDeleteSavedGameButton
+                            );
+
+                    deleteButton.setEnabled(true);
+                    deleteButton.setText("Удалить");
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Не удалось удалить сохранение.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        });
+    }
+
+
+    private void configureSavedGamesDialogWindow(
+            Dialog dialog,
+            float widthFraction,
+            float heightFraction
+    ) {
+        Window window = dialog.getWindow();
+
+        if (window == null) {
+            return;
+        }
+
+        window.setBackgroundDrawable(
+                new ColorDrawable(Color.TRANSPARENT)
+        );
+
+        int screenWidth =
+                getResources().getDisplayMetrics().widthPixels;
+
+        int screenHeight =
+                getResources().getDisplayMetrics().heightPixels;
+
+        int width = Math.max(
+                280,
+                (int) (screenWidth * widthFraction)
+        );
+
+        int height = heightFraction > 0f
+                ? Math.max(
+                        320,
+                        (int) (screenHeight * heightFraction)
+                )
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
+
+        window.setLayout(width, height);
     }
 
 
@@ -1694,6 +2032,293 @@ public class MainActivity extends ComponentActivity {
     }
 
 
+    private void showFantasyTextDialog(
+            String title,
+            String content,
+            float heightFraction
+    ) {
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_fantasy_text);
+        dialog.setCanceledOnTouchOutside(true);
+
+        TextView titleText =
+                dialog.findViewById(R.id.fantasyDialogTitle);
+
+        TextView contentText =
+                dialog.findViewById(R.id.fantasyDialogContent);
+
+        Button closeButton =
+                dialog.findViewById(R.id.fantasyDialogCloseButton);
+
+        titleText.setText(
+                title == null || title.trim().isEmpty()
+                        ? "POCKET D&D"
+                        : title.trim()
+        );
+
+        contentText.setText(
+                content == null || content.trim().isEmpty()
+                        ? "Пока пусто."
+                        : content.trim()
+        );
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        dialog,
+                        0.94f,
+                        heightFraction
+                )
+        );
+
+        dialog.show();
+    }
+
+
+    private void showSettingsDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_settings);
+        dialog.setCanceledOnTouchOutside(true);
+
+        Button musicToggleButton =
+                dialog.findViewById(R.id.settingsMusicToggleButton);
+
+        TextView volumeText =
+                dialog.findViewById(R.id.settingsVolumeText);
+
+        SeekBar volumeSeekBar =
+                dialog.findViewById(R.id.settingsVolumeSeekBar);
+
+        Button fastButton =
+                dialog.findViewById(R.id.settingsFastModeButton);
+
+        Button normalButton =
+                dialog.findViewById(R.id.settingsNormalModeButton);
+
+        Button atmosphericButton =
+                dialog.findViewById(R.id.settingsAtmosphericModeButton);
+
+        TextView modeHintText =
+                dialog.findViewById(R.id.settingsModeHintText);
+
+        TextView modelInfoText =
+                dialog.findViewById(R.id.settingsModelInfoText);
+
+        Button closeButton =
+                dialog.findViewById(R.id.settingsCloseButton);
+
+        Runnable refreshMusicUi = () -> {
+            boolean enabled = AppSettings.isMusicEnabled(this);
+
+            musicToggleButton.setText(
+                    enabled
+                            ? "МУЗЫКА: ВКЛ"
+                            : "МУЗЫКА: ВЫКЛ"
+            );
+
+            int percent = Math.round(
+                    AppSettings.getMusicVolume(this) * 100f
+            );
+
+            volumeText.setText(
+                    "Громкость: " + percent + "%"
+            );
+        };
+
+        musicToggleButton.setOnClickListener(v -> {
+            boolean enabled = !AppSettings.isMusicEnabled(this);
+            AppSettings.setMusicEnabled(this, enabled);
+            MusicManager.refresh(this);
+            refreshMusicUi.run();
+        });
+
+        int initialVolume = Math.round(
+                AppSettings.getMusicVolume(this) * 100f
+        );
+
+        volumeSeekBar.setProgress(initialVolume);
+        refreshMusicUi.run();
+
+        volumeSeekBar.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            SeekBar seekBar,
+                            int progress,
+                            boolean fromUser
+                    ) {
+                        volumeText.setText(
+                                "Громкость: " + progress + "%"
+                        );
+
+                        if (fromUser) {
+                            AppSettings.setMusicVolume(
+                                    MainActivity.this,
+                                    progress / 100f
+                            );
+                            MusicManager.refresh(MainActivity.this);
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar seekBar) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar seekBar) {
+                    }
+                }
+        );
+
+        View.OnClickListener modeClickListener = v -> {
+            String mode;
+
+            if (v.getId() == R.id.settingsFastModeButton) {
+                mode = AppSettings.RESPONSE_FAST;
+            } else if (v.getId() == R.id.settingsAtmosphericModeButton) {
+                mode = AppSettings.RESPONSE_ATMOSPHERIC;
+            } else {
+                mode = AppSettings.RESPONSE_NORMAL;
+            }
+
+            AppSettings.setResponseMode(this, mode);
+            generationProfile = profileForResponseMode(mode);
+
+            refreshResponseModeUi(
+                    fastButton,
+                    normalButton,
+                    atmosphericButton,
+                    modeHintText,
+                    mode
+            );
+        };
+
+        fastButton.setOnClickListener(modeClickListener);
+        normalButton.setOnClickListener(modeClickListener);
+        atmosphericButton.setOnClickListener(modeClickListener);
+
+        refreshResponseModeUi(
+                fastButton,
+                normalButton,
+                atmosphericButton,
+                modeHintText,
+                AppSettings.getResponseMode(this)
+        );
+
+        modelInfoText.setText(
+                "Модель: " + MASTER_MODEL_FILE
+        );
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        dialog,
+                        0.94f,
+                        0.86f
+                )
+        );
+
+        dialog.show();
+    }
+
+
+    private void refreshResponseModeUi(
+            Button fastButton,
+            Button normalButton,
+            Button atmosphericButton,
+            TextView hintText,
+            String mode
+    ) {
+        String safeMode = AppSettings.normalizeResponseMode(mode);
+
+        fastButton.setText(
+                AppSettings.RESPONSE_FAST.equals(safeMode)
+                        ? "✓ БЫСТРО"
+                        : "БЫСТРО"
+        );
+
+        normalButton.setText(
+                AppSettings.RESPONSE_NORMAL.equals(safeMode)
+                        ? "✓ ОБЫЧНО"
+                        : "ОБЫЧНО"
+        );
+
+        atmosphericButton.setText(
+                AppSettings.RESPONSE_ATMOSPHERIC.equals(safeMode)
+                        ? "✓ АТМОСФЕРНО"
+                        : "АТМОСФЕРНО"
+        );
+
+        if (AppSettings.RESPONSE_FAST.equals(safeMode)) {
+            hintText.setText(
+                    "Короткие ответы. Самый быстрый режим."
+            );
+        } else if (AppSettings.RESPONSE_ATMOSPHERIC.equals(safeMode)) {
+            hintText.setText(
+                    "Более длинные ответы. Может работать заметно медленнее."
+            );
+        } else {
+            hintText.setText(
+                    "Текущий рабочий баланс скорости и атмосферы."
+            );
+        }
+    }
+
+
+    private GenerationProfile profileForResponseMode(String mode) {
+        String safeMode = AppSettings.normalizeResponseMode(mode);
+
+        if (AppSettings.RESPONSE_FAST.equals(safeMode)) {
+            return GenerationProfile.fast();
+        }
+
+        if (AppSettings.RESPONSE_ATMOSPHERIC.equals(safeMode)) {
+            return GenerationProfile.atmospheric();
+        }
+
+        return GenerationProfile.normal();
+    }
+
+
+    private void configureFantasyDialogWindow(
+            Dialog dialog,
+            float widthFraction,
+            float heightFraction
+    ) {
+        Window window = dialog.getWindow();
+
+        if (window == null) {
+            return;
+        }
+
+        window.setBackgroundDrawable(
+                new ColorDrawable(Color.TRANSPARENT)
+        );
+
+        int screenWidth =
+                getResources().getDisplayMetrics().widthPixels;
+
+        int screenHeight =
+                getResources().getDisplayMetrics().heightPixels;
+
+        int width = Math.max(
+                280,
+                (int) (screenWidth * widthFraction)
+        );
+
+        int height = heightFraction > 0f
+                ? Math.max(
+                        320,
+                        (int) (screenHeight * heightFraction)
+                )
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
+
+        window.setLayout(width, height);
+    }
+
+
     private void showCharacterDialog() {
         if (currentCampaignId <= 0L) {
             return;
@@ -1723,20 +2348,13 @@ public class MainActivity extends ComponentActivity {
                         );
 
                 runOnUiThread(() ->
-                        new AlertDialog.Builder(
-                                MainActivity.this
+                        showFantasyTextDialog(
+                                character == null
+                                        ? "ПЕРСОНАЖ"
+                                        : character.name,
+                                characterText,
+                                0.78f
                         )
-                                .setTitle(
-                                        character == null
-                                                ? "Персонаж"
-                                                : character.name
-                                )
-                                .setMessage(characterText)
-                                .setPositiveButton(
-                                        "Закрыть",
-                                        null
-                                )
-                                .show()
                 );
 
             } catch (Throwable throwable) {
@@ -1825,16 +2443,11 @@ public class MainActivity extends ComponentActivity {
                         );
 
                 runOnUiThread(() ->
-                        new AlertDialog.Builder(
-                                MainActivity.this
+                        showFantasyTextDialog(
+                                "ЖУРНАЛ",
+                                journalText,
+                                0.88f
                         )
-                                .setTitle("Журнал")
-                                .setMessage(journalText)
-                                .setPositiveButton(
-                                        "Закрыть",
-                                        null
-                                )
-                                .show()
                 );
 
             } catch (Throwable throwable) {
@@ -1970,16 +2583,11 @@ public class MainActivity extends ComponentActivity {
                         );
 
                 runOnUiThread(() ->
-                        new AlertDialog.Builder(
-                                MainActivity.this
+                        showFantasyTextDialog(
+                                "ИНВЕНТАРЬ",
+                                inventoryText,
+                                0.68f
                         )
-                                .setTitle("Инвентарь")
-                                .setMessage(inventoryText)
-                                .setPositiveButton(
-                                        "Закрыть",
-                                        null
-                                )
-                                .show()
                 );
 
             } catch (Throwable throwable) {

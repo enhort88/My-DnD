@@ -47,4 +47,8 @@ public interface MemoryFactDao {
             long campaignId,
             String factText
     );
+
+    @Query("DELETE FROM memory_facts WHERE campaign_id = :campaignId")
+    int deleteForCampaign(long campaignId);
+
 }

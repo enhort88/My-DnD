@@ -8,22 +8,36 @@ import androidx.annotation.RawRes;
 public final class MusicManager {
 
     private static MediaPlayer mediaPlayer;
-    private static int currentTrack;
+    private static int requestedTrack;
+    private static int loadedTrack;
 
     private MusicManager() {
     }
 
-    public static void play(Context context, @RawRes int trackResId) {
-        if (mediaPlayer != null && currentTrack == trackResId) {
-            if (!mediaPlayer.isPlaying()) {
-                mediaPlayer.start();
-            }
+    public static void play(
+            Context context,
+            @RawRes int trackResId
+    ) {
+        requestedTrack = trackResId;
+
+        if (!AppSettings.isMusicEnabled(context)) {
+            releasePlayer();
             return;
         }
 
-        stop();
+        if (mediaPlayer != null
+                && loadedTrack == trackResId) {
 
-        currentTrack = trackResId;
+            applyVolume(context);
+
+            if (!mediaPlayer.isPlaying()) {
+                mediaPlayer.start();
+            }
+
+            return;
+        }
+
+        releasePlayer();
 
         mediaPlayer = MediaPlayer.create(
                 context.getApplicationContext(),
@@ -31,22 +45,57 @@ public final class MusicManager {
         );
 
         if (mediaPlayer == null) {
-            currentTrack = 0;
+            loadedTrack = 0;
             return;
         }
 
+        loadedTrack = trackResId;
         mediaPlayer.setLooping(true);
-        mediaPlayer.setVolume(0.25f, 0.25f);
+        applyVolume(context);
         mediaPlayer.start();
     }
 
-    public static void stop() {
+    public static void refresh(Context context) {
+        if (!AppSettings.isMusicEnabled(context)) {
+            releasePlayer();
+            return;
+        }
+
         if (mediaPlayer != null) {
-            mediaPlayer.stop();
+            applyVolume(context);
+            return;
+        }
+
+        if (requestedTrack != 0) {
+            play(context, requestedTrack);
+        }
+    }
+
+    public static void stop() {
+        releasePlayer();
+        requestedTrack = 0;
+    }
+
+    private static void applyVolume(Context context) {
+        if (mediaPlayer == null) {
+            return;
+        }
+
+        float volume = AppSettings.getMusicVolume(context);
+        mediaPlayer.setVolume(volume, volume);
+    }
+
+    private static void releasePlayer() {
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.stop();
+            } catch (IllegalStateException ignored) {
+            }
+
             mediaPlayer.release();
             mediaPlayer = null;
         }
 
-        currentTrack = 0;
+        loadedTrack = 0;
     }
 }

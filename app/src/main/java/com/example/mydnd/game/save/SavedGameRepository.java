@@ -12,6 +12,11 @@ import java.util.List;
 
 public class SavedGameRepository {
 
+    public enum DeleteSavedGameResult {
+        DELETED,
+        NOT_FOUND
+    }
+
     private final AppDatabase database;
 
     public SavedGameRepository(AppDatabase database) {
@@ -56,5 +61,40 @@ public class SavedGameRepository {
         }
 
         return result;
+    }
+
+    /**
+     * Deletes only one hero's save/campaign data.
+     *
+     * Living world data is intentionally preserved:
+     * - world / races;
+     * - world timeline;
+     * - world events.
+     *
+     * The character is also preserved so it can be reused later.
+     */
+    public DeleteSavedGameResult deleteSavedGame(long campaignId) {
+        CampaignEntity campaign =
+                database.campaignDao().getById(campaignId);
+
+        if (campaign == null) {
+            return DeleteSavedGameResult.NOT_FOUND;
+        }
+
+        database.runInTransaction(() -> {
+            database.gameEventDao().deleteForCampaign(campaignId);
+            database.inventoryItemDao().deleteForCampaign(campaignId);
+            database.summaryDao().deleteForCampaign(campaignId);
+            database.memoryFactDao().deleteForCampaign(campaignId);
+
+            // These rows are currently created for one campaign even though
+            // they also carry world_timeline_id for context lookup.
+            database.npcDao().deleteForCampaign(campaignId);
+            database.situationDao().deleteForCampaign(campaignId);
+
+            database.campaignDao().deleteById(campaignId);
+        });
+
+        return DeleteSavedGameResult.DELETED;
     }
 }
