@@ -368,7 +368,7 @@ public class MainActivity extends ComponentActivity {
 
         showThinkingIndicator();
 
-        processInventoryAndGenerate(playerText);
+        processOnePassInventoryAndGenerate(playerText);
 
 
 
