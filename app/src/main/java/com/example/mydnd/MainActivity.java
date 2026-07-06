@@ -122,6 +122,10 @@ public class MainActivity extends ComponentActivity {
 
     private static final long STREAM_FLUSH_DELAY_MS = 80;
 
+    private static final int WORLD_EVENT_BATCH_SIZE = 5;
+    private static final int WORLD_EVENT_PREVIOUS_MASTER_LIMIT = 4;
+    private static final int WORLD_EVENT_MASTER_TEXT_MAX_CHARS = 500;
+
     private static final String MASTER_MODEL_FILE =
             "gemma-4-E2B_q4_0-it.gguf";
 
@@ -972,6 +976,32 @@ public class MainActivity extends ComponentActivity {
                                 campaignId
                         );
 
+                int masterEventCount =
+                        database.gameEventDao().countEventsBySpeaker(
+                                campaignId,
+                                "MASTER"
+                        );
+
+                boolean runWorldEventPhase =
+                        masterEventCount > 0
+                                && masterEventCount % WORLD_EVENT_BATCH_SIZE == 0;
+
+                String worldEventBatchText = "";
+
+                if (runWorldEventPhase) {
+                    List<GameEventEntity> previousMasterEvents =
+                            database.gameEventDao().getRecentEventsBySpeaker(
+                                    campaignId,
+                                    "MASTER",
+                                    WORLD_EVENT_PREVIOUS_MASTER_LIMIT
+                            );
+
+                    worldEventBatchText =
+                            buildWorldEventBatchText(
+                                    previousMasterEvents
+                            );
+                }
+
                 String rawPrompt =
                         promptBuilder.buildInventoryToolAwarePrompt(
                                 playerText,
@@ -993,6 +1023,10 @@ public class MainActivity extends ComponentActivity {
                                 + inventoryBefore
                                 + " | promptChars="
                                 + preparedPrompt.length()
+                                + " | masterEventsBefore="
+                                + masterEventCount
+                                + " | worldEventCheck="
+                                + runWorldEventPhase
                 );
 
                 Log.d(
@@ -1002,7 +1036,9 @@ public class MainActivity extends ComponentActivity {
 
                 startOnePassInventoryGeneration(
                         preparedPrompt,
-                        campaignId
+                        campaignId,
+                        runWorldEventPhase,
+                        worldEventBatchText
                 );
 
             } catch (Throwable throwable) {
@@ -1014,9 +1050,60 @@ public class MainActivity extends ComponentActivity {
     }
 
 
+    private String buildWorldEventBatchText(
+            List<GameEventEntity> previousMasterEvents
+    ) {
+        if (previousMasterEvents == null
+                || previousMasterEvents.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder batch = new StringBuilder();
+
+        int index = 1;
+
+        for (GameEventEntity event : previousMasterEvents) {
+            if (event == null
+                    || event.text == null
+                    || event.text.trim().isEmpty()) {
+                continue;
+            }
+
+            String text = event.text
+                    .replace('<', '‹')
+                    .replace('>', '›')
+                    .replace('\n', ' ')
+                    .replace('\r', ' ')
+                    .trim()
+                    .replaceAll("\\s+", " ");
+
+            if (text.length() > WORLD_EVENT_MASTER_TEXT_MAX_CHARS) {
+                text = text.substring(
+                        0,
+                        WORLD_EVENT_MASTER_TEXT_MAX_CHARS
+                );
+            }
+
+            if (batch.length() > 0) {
+                batch.append("\n");
+            }
+
+            batch.append(index)
+                    .append(") ")
+                    .append(text);
+
+            index++;
+        }
+
+        return batch.toString();
+    }
+
+
     private void startOnePassInventoryGeneration(
             String preparedPrompt,
-            long campaignId
+            long campaignId,
+            boolean runWorldEventPhase,
+            String worldEventBatchText
     ) {
         masterStreamingStartPosition =
                 -1;
@@ -1025,6 +1112,8 @@ public class MainActivity extends ComponentActivity {
                 ModelRole.MASTER,
                 preparedPrompt,
                 generationProfile,
+                runWorldEventPhase,
+                worldEventBatchText,
                 new NativeToolCallback() {
 
                     @Override
@@ -2105,8 +2194,17 @@ public class MainActivity extends ComponentActivity {
         TextView modelInfoText =
                 dialog.findViewById(R.id.settingsModelInfoText);
 
+        Button resetDataButton =
+                dialog.findViewById(R.id.settingsResetDataButton);
+
         Button closeButton =
                 dialog.findViewById(R.id.settingsCloseButton);
+
+        resetDataButton.setOnClickListener(v ->
+                showResetAllDataDialog(
+                        dialog
+                )
+        );
 
         Runnable refreshMusicUi = () -> {
             boolean enabled = AppSettings.isMusicEnabled(this);
@@ -2221,6 +2319,138 @@ public class MainActivity extends ComponentActivity {
         );
 
         dialog.show();
+    }
+
+
+    private void showResetAllDataDialog(
+            Dialog settingsDialog
+    ) {
+        Dialog confirmDialog = new Dialog(this);
+        confirmDialog.setContentView(
+                R.layout.dialog_confirm_reset_data
+        );
+        confirmDialog.setCanceledOnTouchOutside(true);
+
+        Button cancelButton =
+                confirmDialog.findViewById(
+                        R.id.cancelResetDataButton
+                );
+
+        Button confirmButton =
+                confirmDialog.findViewById(
+                        R.id.confirmResetDataButton
+                );
+
+        cancelButton.setOnClickListener(v ->
+                confirmDialog.dismiss()
+        );
+
+        confirmButton.setOnClickListener(v -> {
+            if (generationInProgress
+                    || (modelManager != null && modelManager.isBusy())) {
+
+                Toast.makeText(
+                        MainActivity.this,
+                        "Сначала остановите генерацию.",
+                        Toast.LENGTH_SHORT
+                ).show();
+
+                return;
+            }
+
+            confirmButton.setEnabled(false);
+            confirmButton.setText("ОБНУЛЯЮ...");
+
+            resetAllGameData(
+                    settingsDialog,
+                    confirmDialog
+            );
+        });
+
+        confirmDialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        confirmDialog,
+                        0.90f,
+                        0f
+                )
+        );
+
+        confirmDialog.show();
+    }
+
+
+    private void resetAllGameData(
+            Dialog settingsDialog,
+            Dialog confirmDialog
+    ) {
+        DbExecutor.execute(() -> {
+            try {
+                database.clearAllTables();
+
+                runOnUiThread(() -> {
+                    currentCampaignId = 0L;
+
+                    chatDisplay.clear();
+                    chatDisplay.clearSpans();
+                    promptHistory.setLength(0);
+                    gameEvents.clear();
+
+                    inputEditText.setText("");
+
+                    generationInProgress = false;
+                    generationCancelledByUser = false;
+                    masterStreamingStarted = false;
+                    masterStreamingStartPosition = -1;
+
+                    updateChat();
+
+                    confirmDialog.dismiss();
+                    settingsDialog.dismiss();
+
+                    welcomeLayout.animate().cancel();
+                    gameLayout.animate().cancel();
+
+                    welcomeLayout.setAlpha(1f);
+                    welcomeLayout.setTranslationX(0f);
+
+                    gameLayout.setAlpha(1f);
+                    gameLayout.setTranslationX(0f);
+
+                    showWelcomeMenu();
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Все игровые данные удалены.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_RESET_DATA",
+                        "Failed to clear Room database",
+                        throwable
+                );
+
+                runOnUiThread(() -> {
+                    Button confirmButton =
+                            confirmDialog.findViewById(
+                                    R.id.confirmResetDataButton
+                            );
+
+                    if (confirmButton != null) {
+                        confirmButton.setEnabled(true);
+                        confirmButton.setText("ОБНУЛИТЬ");
+                    }
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Не удалось обнулить данные.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                });
+            }
+        });
     }
 
 

@@ -171,6 +171,8 @@ public class LocalLlmEngine implements LlmEngine {
     public void generateInventoryToolAware(
             String prompt,
             GenerationProfile profile,
+            boolean runWorldEventPhase,
+            String worldEventBatchText,
             NativeToolCallback toolCallback,
             LlmCallback callback
     ) {
@@ -221,6 +223,8 @@ public class LocalLlmEngine implements LlmEngine {
                                         profile.getTopP(),
                                         profile.getTopK(),
                                         profile.getRepeatPenalty(),
+                                        runWorldEventPhase,
+                                        worldEventBatchText,
                                         nativeTokenCallback,
                                         toolCallback
                                 );

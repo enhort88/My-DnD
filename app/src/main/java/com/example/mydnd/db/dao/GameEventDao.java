@@ -17,6 +17,31 @@ public interface GameEventDao {
     @Query("SELECT * FROM game_events WHERE campaign_id = :campaignId ORDER BY id ASC")
     List<GameEventEntity> getEventsForCampaign(long campaignId);
 
+
+    @Query(
+            "SELECT COUNT(*) FROM game_events " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND speaker = :speaker"
+    )
+    int countEventsBySpeaker(
+            long campaignId,
+            String speaker
+    );
+
+    @Query(
+            "SELECT * FROM (" +
+                    "SELECT * FROM game_events " +
+                    "WHERE campaign_id = :campaignId " +
+                    "AND speaker = :speaker " +
+                    "ORDER BY id DESC LIMIT :limit" +
+                    ") ORDER BY id ASC"
+    )
+    List<GameEventEntity> getRecentEventsBySpeaker(
+            long campaignId,
+            String speaker,
+            int limit
+    );
+
     @Query("DELETE FROM game_events WHERE id = :eventId")
     void deleteById(long eventId);
 

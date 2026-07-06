@@ -1816,6 +1816,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         jfloat topP,
         jint topK,
         jfloat repeatPenalty,
+        jboolean runWorldEventPhase,
+        jstring worldEventBatchText,
         jobject tokenCallbackObject,
         jobject toolCallbackObject) {
 
@@ -1914,6 +1916,15 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 jstring_to_string(
                         env,
                         promptText
+                );
+
+        const bool should_run_world_event_phase =
+                runWorldEventPhase == JNI_TRUE;
+
+        std::string world_event_batch_text =
+                jstring_to_string(
+                        env,
+                        worldEventBatchText
                 );
 
         if (prompt.empty()) {
@@ -2700,20 +2711,39 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         );
 
         /*
-         * Фаза 4: короткая память живого мира ПОСЛЕ завершённого narrative.
-         * Полный prompt заново не декодируем: добавляем только маленькую
-         * служебную инструкцию в тот же llama_context.
+         * Фаза 4: память живого мира запускается только раз в 5 ходов.
+         * Java передаёт четыре предыдущих ответа мастера отдельно.
+         * Пятый, текущий ответ уже находится прямо выше в llama_context.
          */
-        if (!handle->cancel_requested.load()) {
-            const std::string world_event_instruction =
+        if (should_run_world_event_phase
+            && !handle->cancel_requested.load()) {
+
+            std::string world_event_instruction =
                     "<turn|>\n<|turn>user\n"
-                    "Служебно: оцени завершённый ход выше. "
-                    "Если появился один долговечный факт общего мира "
-                    "(смерть, власть, война, разрушение, устойчивое изменение NPC или места), "
-                    "вызови remember_world_event. "
-                    "Не сохраняй инвентарь, обычное движение и атмосферу. "
-                    "Иначе вызови no_world_event."
-                    "<turn|>\n<|turn>model\n";
+                    "Служебная проверка памяти мира. "
+                    "Оцени только четыре предыдущих ответа мастера ниже "
+                    "и текущий завершённый ответ мастера прямо выше. "
+                    "Игнорируй описание мира, старые WORLD_CHANGES, инвентарь "
+                    "и действия игрока как самостоятельные факты. "
+                    "Сохрани максимум один НОВЫЙ и действительно важный "
+                    "долговечный факт общего мира, который должен помнить будущий герой: "
+                    "смерть важного персонажа, смена власти, начало или конец войны, "
+                    "разрушение важного места, появление или исчезновение важной организации, "
+                    "существенное устойчивое изменение важного NPC или локации. "
+                    "Не сохраняй атмосферу, обычное движение, обычные предметы, "
+                    "повтор уже известного факта и мелкие бытовые события. "
+                    "Если подходящего нового факта нет, вызови no_world_event.\n"
+                    "ПРЕДЫДУЩИЕ ОТВЕТЫ МАСТЕРА:\n";
+
+            world_event_instruction += world_event_batch_text;
+
+            world_event_instruction +=
+                    "\n<turn|>\n<|turn>model\n";
+
+            MYDND_LOGI(
+                    "nativeGenerateInventoryToolAwareStream: WORLD EVENT CHECK ENABLED, batchChars=%zu",
+                    world_event_batch_text.size()
+            );
 
             int event_instruction_count =
                     -llama_tokenize(
@@ -2925,6 +2955,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     }
                 }
             }
+        } else {
+            MYDND_LOGI(
+                    "nativeGenerateInventoryToolAwareStream: WORLD EVENT SKIPPED"
+            );
         }
 
         MYDND_LOGI(

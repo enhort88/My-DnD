@@ -39,6 +39,8 @@ public class NativeLlmBridge {
             float topP,
             int topK,
             float repeatPenalty,
+            boolean runWorldEventPhase,
+            String worldEventBatchText,
             NativeTokenCallback tokenCallback,
             NativeToolCallback toolCallback
     );

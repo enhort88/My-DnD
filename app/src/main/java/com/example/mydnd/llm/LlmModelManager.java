@@ -137,6 +137,8 @@ public class LlmModelManager {
             ModelRole role,
             String prompt,
             GenerationProfile profile,
+            boolean runWorldEventPhase,
+            String worldEventBatchText,
             NativeToolCallback toolCallback,
             LlmCallback callback
     ) {
@@ -164,6 +166,8 @@ public class LlmModelManager {
         engine.generateInventoryToolAware(
                 prompt,
                 profile,
+                runWorldEventPhase,
+                worldEventBatchText,
                 toolCallback,
                 new LlmCallback() {
 
