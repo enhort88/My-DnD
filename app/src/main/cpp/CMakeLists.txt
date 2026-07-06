@@ -16,8 +16,22 @@ set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+
+# Один статический CPU backend. Никаких dynamic variants.
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
+
+# Телефон подтвердил asimddp (dotprod) и i8mm через /proc/cpuinfo.
+# Это отдельный производительный эксперимент именно для данного ARM64-устройства.
+set(
+        GGML_CPU_ARM_ARCH
+        "armv8.6-a+dotprod+i8mm"
+        CACHE STRING ""
+        FORCE
+)
+
+message(STATUS "GGML_CPU_ARM_ARCH = ${GGML_CPU_ARM_ARCH}")
 
 add_subdirectory(
         ${LLAMA_CPP_DIR}
