@@ -270,7 +270,7 @@ public class MainActivity extends ComponentActivity {
         );
 
         diceButton.setOnClickListener(v ->
-                showDiceRollDialog(20)
+                showDiceChoiceDialog()
         );
 
         if (gameSettingsButton != null) {
@@ -3014,6 +3014,63 @@ public class MainActivity extends ComponentActivity {
             sendButton.setText("Отправить");
         });
     }
+
+    private void showDiceChoiceDialog() {
+        if (generationInProgress) {
+            Toast.makeText(
+                    this,
+                    "Сначала завершите текущий ход.",
+                    Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_dice_choice);
+        dialog.setCanceledOnTouchOutside(true);
+
+        int[] buttonIds = {
+                R.id.diceChoiceD4,
+                R.id.diceChoiceD6,
+                R.id.diceChoiceD8,
+                R.id.diceChoiceD10,
+                R.id.diceChoiceD12,
+                R.id.diceChoiceD20,
+                R.id.diceChoiceD100
+        };
+
+        int[] sides = {
+                4, 6, 8, 10, 12, 20, 100
+        };
+
+        for (int i = 0; i < buttonIds.length; i++) {
+            Button choiceButton =
+                    dialog.findViewById(buttonIds[i]);
+
+            final int selectedSides = sides[i];
+
+            choiceButton.setOnClickListener(v -> {
+                dialog.dismiss();
+                showDiceRollDialog(selectedSides);
+            });
+        }
+
+        Button closeButton =
+                dialog.findViewById(R.id.diceChoiceCloseButton);
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored ->
+                configureFantasyDialogWindow(
+                        dialog,
+                        0.90f,
+                        0f
+                )
+        );
+
+        dialog.show();
+    }
+
 
     private void showDiceRollDialog(int sides) {
         if (generationInProgress) {

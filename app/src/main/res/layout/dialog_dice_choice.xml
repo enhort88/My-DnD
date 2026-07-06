@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/living_worlds_panel_background"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="22dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="@font/philosopher_bold"
+        android:gravity="center"
+        android:text="ВЫБЕРИ КУБИК"
+        android:textColor="#E8D8A8"
+        android:textSize="22sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:text="Какой кубик бросаем?"
+        android:textColor="#B8B0A0"
+        android:textSize="15sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="18dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/diceChoiceD4"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="d4" />
+
+        <Button
+            android:id="@+id/diceChoiceD6"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="d6" />
+
+        <Button
+            android:id="@+id/diceChoiceD8"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="d8" />
+
+        <Button
+            android:id="@+id/diceChoiceD10"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="d10" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/diceChoiceD12"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="d12" />
+
+        <Button
+            android:id="@+id/diceChoiceD20"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="d20" />
+
+        <Button
+            android:id="@+id/diceChoiceD100"
+            style="@style/FantasyButton"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="d100" />
+
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/diceChoiceCloseButton"
+        style="@style/FantasyButton"
+        android:layout_width="220dp"
+        android:layout_height="52dp"
+        android:layout_marginTop="18dp"
+        android:text="ОТМЕНА" />
+
+</LinearLayout>

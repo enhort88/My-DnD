@@ -341,7 +341,7 @@
                     android:layout_height="46dp"
                     android:layout_marginStart="6dp"
                     android:layout_weight="0.72"
-                    android:text="d20"
+                    android:text="Кубик"
                     android:maxLines="1"
                     android:autoSizeTextType="uniform"
                     android:autoSizeMinTextSize="9sp"
