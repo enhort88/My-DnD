@@ -10,6 +10,7 @@
 #include <ctime>
 #include <chrono>
 #include <algorithm>
+#include <cstring>
 
 #define MYDND_LOG_TAG "MyDND_NATIVE"
 #define MYDND_LOGI(...) __android_log_print(ANDROID_LOG_INFO, MYDND_LOG_TAG, __VA_ARGS__)
@@ -215,6 +216,252 @@ item-world ::= "{\"type\":\"ITEM\",\"holder\":\"WORLD\",\"name\":\"" item-name "
 
 item-name ::= [^"\r\n]{1,80}
 )GBNF";
+
+
+/*
+ * Returns true only when text is one exact vocabulary token.
+ * We use this for Gemma 4 protocol markers so the inventory grammar matches
+ * special tokens directly instead of hoping character matching will handle
+ * them the same way on every device / decode configuration.
+ */
+static bool get_single_special_token(
+        const llama_vocab * vocab,
+        const char * text,
+        llama_token & result
+) {
+    if (vocab == nullptr
+        || text == nullptr
+        || text[0] == '\0') {
+
+        return false;
+    }
+
+    int token_count =
+            -llama_tokenize(
+                    vocab,
+                    text,
+                    static_cast<int32_t>(
+                            std::strlen(text)
+                    ),
+                    nullptr,
+                    0,
+                    false,
+                    true
+            );
+
+    if (token_count != 1) {
+        return false;
+    }
+
+    llama_token token = 0;
+
+    int tokenized =
+            llama_tokenize(
+                    vocab,
+                    text,
+                    static_cast<int32_t>(
+                            std::strlen(text)
+                    ),
+                    &token,
+                    1,
+                    false,
+                    true
+            );
+
+    if (tokenized != 1) {
+        return false;
+    }
+
+    result = token;
+    return true;
+}
+
+
+static std::string build_inventory_tool_grammar(
+        const llama_vocab * vocab
+) {
+    llama_token tool_call_open = 0;
+    llama_token tool_call_close = 0;
+    llama_token tool_string_quote = 0;
+
+    if (!get_single_special_token(
+            vocab,
+            "<|tool_call>",
+            tool_call_open
+    )) {
+        return "";
+    }
+
+    if (!get_single_special_token(
+            vocab,
+            "<tool_call|>",
+            tool_call_close
+    )) {
+        return "";
+    }
+
+    if (!get_single_special_token(
+            vocab,
+            "<|\"|>",
+            tool_string_quote
+    )) {
+        return "";
+    }
+
+    MYDND_LOGI(
+            "inventory grammar special tokens: open=%d, quote=%d, close=%d",
+            static_cast<int>(tool_call_open),
+            static_cast<int>(tool_string_quote),
+            static_cast<int>(tool_call_close)
+    );
+
+    const std::string open =
+            "<[" + std::to_string(tool_call_open) + "]>";
+
+    const std::string close =
+            "<[" + std::to_string(tool_call_close) + "]>";
+
+    const std::string quote =
+            "<[" + std::to_string(tool_string_quote) + "]>";
+
+    std::string grammar;
+
+    grammar += "root ::= add | remove | no-change\n\n";
+
+    grammar += "add ::= ";
+    grammar += open;
+    grammar += " \"call:add_item_to_inventory{name:\" ";
+    grammar += quote;
+    grammar += " item-name ";
+    grammar += quote;
+    grammar += " \"}\" ";
+    grammar += close;
+    grammar += "\n\n";
+
+    grammar += "remove ::= ";
+    grammar += open;
+    grammar += " \"call:remove_item_from_inventory{name:\" ";
+    grammar += quote;
+    grammar += " item-name ";
+    grammar += quote;
+    grammar += " \"}\" ";
+    grammar += close;
+    grammar += "\n\n";
+
+    grammar += "no-change ::= ";
+    grammar += open;
+    grammar += " \"call:no_inventory_change{}\" ";
+    grammar += close;
+    grammar += "\n\n";
+
+    grammar += "item-name ::= [^<>{}\\r\\n]{1,80}\n";
+
+    MYDND_LOGI(
+            "inventory decision grammar:\n%s",
+            grammar.c_str()
+    );
+
+    return grammar;
+}
+
+static llama_sampler * create_inventory_decision_sampler(
+        const llama_vocab * vocab
+) {
+    std::string grammar =
+            build_inventory_tool_grammar(
+                    vocab
+            );
+
+    if (grammar.empty()) {
+        MYDND_LOGE(
+                "create_inventory_decision_sampler: Gemma tool special tokens are not single tokens"
+        );
+
+        return nullptr;
+    }
+
+    llama_sampler_chain_params sampler_params =
+            llama_sampler_chain_default_params();
+
+    sampler_params.no_perf = true;
+
+    llama_sampler * sampler =
+            llama_sampler_chain_init(
+                    sampler_params
+            );
+
+    llama_sampler * grammar_sampler =
+            llama_sampler_init_grammar(
+                    vocab,
+                    grammar.c_str(),
+                    "root"
+            );
+
+    if (grammar_sampler == nullptr) {
+        MYDND_LOGE(
+                "create_inventory_decision_sampler: llama_sampler_init_grammar returned nullptr"
+        );
+
+        llama_sampler_free(
+                sampler
+        );
+
+        return nullptr;
+    }
+
+    /*
+     * Grammar MUST be first. Then top-k/top-p only rank tokens that are valid
+     * for ADD / REMOVE / NONE. Keep the old decision sampling parameters so
+     * this experiment changes protocol enforcement, not semantic sampling.
+     */
+    llama_sampler_chain_add(
+            sampler,
+            grammar_sampler
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_penalties(
+                    96,
+                    1.00f,
+                    0.20f,
+                    0.10f
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_k(
+                    20
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_top_p(
+                    0.80f,
+                    1
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_temp(
+                    0.10f
+            )
+    );
+
+    llama_sampler_chain_add(
+            sampler,
+            llama_sampler_init_dist(
+                    static_cast<uint32_t>(
+                            time(nullptr)
+                    )
+            )
+    );
+
+    return sampler;
+}
 
 static bool g_backend_initialized = false;
 static std::mutex g_backend_mutex;
@@ -899,7 +1146,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
         auto prompt_decode_start =
                 std::chrono::steady_clock::now();
 
-        const int prompt_chunk_size = 16;
+        const int prompt_chunk_size = 64;
 
         for (int pos = 0; pos < tokenized; pos += prompt_chunk_size) {
             if (handle->cancel_requested.load()) {
@@ -1772,12 +2019,24 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
          * Ничего из этой фазы пользователю не стримим.
          */
         llama_sampler * decision_sampler =
-                create_sampler(
-                        0.10f,
-                        0.80f,
-                        20,
-                        1.00f
+                create_inventory_decision_sampler(
+                        handle->vocab
                 );
+
+        if (decision_sampler == nullptr) {
+            MYDND_LOGE(
+                    "nativeGenerateInventoryToolAwareStream: inventory decision grammar init failed"
+            );
+
+            return string_to_jstring(
+                    env,
+                    "Ошибка: не удалось инициализировать inventory decision grammar."
+            );
+        }
+
+        MYDND_LOGI(
+                "nativeGenerateInventoryToolAwareStream: inventory decision grammar ENABLED"
+        );
 
         std::string decision_output;
 
