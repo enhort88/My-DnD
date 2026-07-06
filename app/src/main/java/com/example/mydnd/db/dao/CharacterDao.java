@@ -26,4 +26,22 @@ public interface CharacterDao {
 
     @Query("SELECT * FROM characters ORDER BY id DESC")
     List<CharacterEntity> getAllCharacters();
+
+    @Query(
+            "UPDATE characters SET hp = :hp WHERE id = :characterId"
+    )
+    int updateHp(long characterId, int hp);
+
+    @Query(
+            "UPDATE characters SET strength = :strength, dexterity = :dexterity, "
+                    + "intelligence = :intelligence, charisma = :charisma "
+                    + "WHERE id = :characterId"
+    )
+    int updateBaseStats(
+            long characterId,
+            int strength,
+            int dexterity,
+            int intelligence,
+            int charisma
+    );
 }

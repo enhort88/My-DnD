@@ -14,6 +14,9 @@ public interface NpcDao {
     @Insert
     long insert(NpcEntity npc);
 
+    @Query("SELECT * FROM npcs WHERE id = :npcId LIMIT 1")
+    NpcEntity getById(long npcId);
+
     @Query(
             "SELECT * FROM npcs "
                     + "WHERE campaign_id = :campaignId AND active = 1 "
@@ -34,7 +37,30 @@ public interface NpcDao {
             int limit
     );
 
+    @Query(
+            "UPDATE npcs SET hp = :hp, updated_at = :updatedAt "
+                    + "WHERE id = :npcId"
+    )
+    int updateHp(long npcId, int hp, long updatedAt);
+
+    @Query(
+            "UPDATE npcs SET attitude = :attitude, updated_at = :updatedAt "
+                    + "WHERE id = :npcId"
+    )
+    int updateAttitude(long npcId, int attitude, long updatedAt);
+
+    @Query(
+            "UPDATE npcs SET location = :location, updated_at = :updatedAt "
+                    + "WHERE id = :npcId"
+    )
+    int updateLocation(long npcId, String location, long updatedAt);
+
+    @Query(
+            "UPDATE npcs SET knowledge_summary = :knowledge, updated_at = :updatedAt "
+                    + "WHERE id = :npcId"
+    )
+    int updateKnowledge(long npcId, String knowledge, long updatedAt);
+
     @Query("DELETE FROM npcs WHERE campaign_id = :campaignId")
     int deleteForCampaign(long campaignId);
-
 }

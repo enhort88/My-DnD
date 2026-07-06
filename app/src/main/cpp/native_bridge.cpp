@@ -501,7 +501,7 @@ static std::string build_world_event_grammar(
     grammar += quote;
     grammar += " event-text ";
     grammar += quote;
-    grammar += " \"}\" ";
+    grammar += " \",importance:\" importance \"}\" ";
     grammar += close;
     grammar += "\n\n";
 
@@ -512,6 +512,7 @@ static std::string build_world_event_grammar(
     grammar += "\n\n";
 
     grammar += "event-text ::= [^<>{}\\r\\n]{1,180}\n";
+    grammar += "importance ::= \"1\" | \"2\" | \"3\"\n";
 
     return grammar;
 }
@@ -1949,10 +1950,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 192;
 
         const int world_event_instruction_reserve =
-                128;
+                176;
 
         const int world_event_max_tokens =
-                64;
+                72;
 
         const float safe_temperature =
                 temperature > 0.0f
@@ -2732,6 +2733,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     "существенное устойчивое изменение важного NPC или локации. "
                     "Не сохраняй атмосферу, обычное движение, обычные предметы, "
                     "повтор уже известного факта и мелкие бытовые события. "
+                    "Если сохраняешь событие, укажи importance: "
+                    "1 = локальное и небольшое, 2 = важное региональное, "
+                    "3 = переломное событие уровня власти, войны, города или крупной организации. "
+                    "Формат: remember_world_event с text и importance. "
                     "Если подходящего нового факта нет, вызови no_world_event.\n"
                     "ПРЕДЫДУЩИЕ ОТВЕТЫ МАСТЕРА:\n";
 

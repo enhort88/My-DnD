@@ -40,6 +40,7 @@ public class GemmaToolCallParser {
                 functionName,
                 extractStringArgument(arguments, "name"),
                 extractStringArgument(arguments, "text"),
+                extractIntArgument(arguments, "importance", 1),
                 safeRaw
         );
     }
@@ -79,12 +80,38 @@ public class GemmaToolCallParser {
     }
 
 
+
+    private int extractIntArgument(
+            String arguments,
+            String key,
+            int fallback
+    ) {
+        Pattern pattern = Pattern.compile(
+                "(?:^|,)\\s*"
+                        + Pattern.quote(key)
+                        + "\\s*:\\s*(-?\\d+)"
+        );
+
+        Matcher matcher = pattern.matcher(arguments);
+
+        if (!matcher.find()) {
+            return fallback;
+        }
+
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
     public static class Result {
 
         private final boolean toolCall;
         private final String functionName;
         private final String itemName;
         private final String worldEventText;
+        private final int worldEventImportance;
         private final String rawText;
 
 
@@ -93,12 +120,14 @@ public class GemmaToolCallParser {
                 String functionName,
                 String itemName,
                 String worldEventText,
+                int worldEventImportance,
                 String rawText
         ) {
             this.toolCall = toolCall;
             this.functionName = functionName;
             this.itemName = itemName;
             this.worldEventText = worldEventText;
+            this.worldEventImportance = Math.max(1, Math.min(3, worldEventImportance));
             this.rawText = rawText;
         }
 
@@ -109,6 +138,7 @@ public class GemmaToolCallParser {
                     "",
                     "",
                     "",
+                    1,
                     rawText
             );
         }
@@ -118,6 +148,7 @@ public class GemmaToolCallParser {
                 String functionName,
                 String itemName,
                 String worldEventText,
+                int worldEventImportance,
                 String rawText
         ) {
             return new Result(
@@ -125,6 +156,7 @@ public class GemmaToolCallParser {
                     functionName,
                     itemName,
                     worldEventText,
+                    worldEventImportance,
                     rawText
             );
         }
@@ -147,6 +179,10 @@ public class GemmaToolCallParser {
 
         public String getWorldEventText() {
             return worldEventText;
+        }
+
+        public int getWorldEventImportance() {
+            return worldEventImportance;
         }
 
 

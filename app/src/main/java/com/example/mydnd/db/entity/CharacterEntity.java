@@ -48,6 +48,24 @@ public class CharacterEntity {
     @ColumnInfo(name = "personality")
     public String personality = "";
 
+    @ColumnInfo(name = "strength", defaultValue = "10")
+    public int strength = 10;
+
+    @ColumnInfo(name = "dexterity", defaultValue = "10")
+    public int dexterity = 10;
+
+    @ColumnInfo(name = "intelligence", defaultValue = "10")
+    public int intelligence = 10;
+
+    @ColumnInfo(name = "charisma", defaultValue = "10")
+    public int charisma = 10;
+
+    @ColumnInfo(name = "hp", defaultValue = "10")
+    public int hp = 10;
+
+    @ColumnInfo(name = "max_hp", defaultValue = "10")
+    public int maxHp = 10;
+
     @NonNull
     @ColumnInfo(name = "generation_prompt")
     public String generationPrompt = "";

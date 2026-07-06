@@ -29,6 +29,18 @@ public class WorldTimelineEntity {
     @ColumnInfo(name = "state_summary")
     public String stateSummary = "";
 
+    @ColumnInfo(name = "world_turn_count", defaultValue = "0")
+    public int worldTurnCount;
+
+    @ColumnInfo(name = "last_world_summary_event_id", defaultValue = "0")
+    public long lastWorldSummaryEventId;
+
+    @ColumnInfo(name = "last_world_summary_turn", defaultValue = "0")
+    public int lastWorldSummaryTurn;
+
+    @ColumnInfo(name = "next_random_event_turn", defaultValue = "0")
+    public int nextRandomEventTurn;
+
     @ColumnInfo(name = "created_at")
     public long createdAt;
 

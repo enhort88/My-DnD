@@ -25,6 +25,17 @@ public class WorldEventEntity {
     @ColumnInfo(name = "text")
     public String text = "";
 
+    @ColumnInfo(name = "importance", defaultValue = "1")
+    public int importance = 1;
+
+    @NonNull
+    @ColumnInfo(name = "event_type", defaultValue = "'EXTRACTED'")
+    public String eventType = "EXTRACTED";
+
+    @NonNull
+    @ColumnInfo(name = "tone", defaultValue = "'NEUTRAL'")
+    public String tone = "NEUTRAL";
+
     @ColumnInfo(name = "created_at")
     public long createdAt;
 }

@@ -77,6 +77,11 @@ public class CampaignSetupRepository {
                 npc.name = npcDraft.getName();
                 npc.description = npcDraft.getDescription();
                 npc.stateSummary = npcDraft.getStateSummary();
+                npc.hp = 10;
+                npc.maxHp = 10;
+                npc.attitude = 0;
+                npc.location = situationDraft.getTitle();
+                npc.knowledgeSummary = "";
                 npc.active = true;
                 npc.createdAt = now;
                 npc.updatedAt = now;

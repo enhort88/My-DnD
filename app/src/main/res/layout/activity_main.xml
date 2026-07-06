@@ -333,6 +333,21 @@
                     android:autoSizeMaxTextSize="13sp"
                     android:autoSizeStepGranularity="1sp" />
 
+
+                <Button
+                    android:id="@+id/diceButton"
+                    style="@style/FantasySendButton"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="0.72"
+                    android:text="d20"
+                    android:maxLines="1"
+                    android:autoSizeTextType="uniform"
+                    android:autoSizeMinTextSize="9sp"
+                    android:autoSizeMaxTextSize="14sp"
+                    android:autoSizeStepGranularity="1sp" />
+
             </LinearLayout>
 
 

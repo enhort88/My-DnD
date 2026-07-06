@@ -22,6 +22,34 @@ public interface WorldEventDao {
     List<WorldEventEntity> getRecent(long timelineId, int limit);
 
     @Query(
+            "SELECT * FROM world_events "
+                    + "WHERE world_timeline_id = :timelineId "
+                    + "AND id > :afterEventId "
+                    + "ORDER BY id ASC LIMIT :limit"
+    )
+    List<WorldEventEntity> getAfterIdAsc(
+            long timelineId,
+            long afterEventId,
+            int limit
+    );
+
+    @Query(
+            "SELECT COALESCE(MAX(importance), 0) FROM world_events "
+                    + "WHERE world_timeline_id = :timelineId "
+                    + "AND id > :afterEventId"
+    )
+    int getMaxImportanceAfterId(
+            long timelineId,
+            long afterEventId
+    );
+
+    @Query(
+            "SELECT COALESCE(MAX(id), 0) FROM world_events "
+                    + "WHERE world_timeline_id = :timelineId"
+    )
+    long getLatestId(long timelineId);
+
+    @Query(
             "SELECT COUNT(*) FROM world_events "
                     + "WHERE world_timeline_id = :timelineId AND text = :text"
     )

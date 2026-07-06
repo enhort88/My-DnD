@@ -34,12 +34,60 @@ public interface WorldTimelineDao {
     int touch(long timelineId, long updatedAt);
 
     @Query(
+            "UPDATE world_timelines SET "
+                    + "world_turn_count = world_turn_count + 1, "
+                    + "updated_at = :updatedAt "
+                    + "WHERE id = :timelineId"
+    )
+    int incrementWorldTurn(long timelineId, long updatedAt);
+
+    @Query(
             "UPDATE world_timelines SET state_summary = :stateSummary, updated_at = :updatedAt "
                     + "WHERE id = :timelineId"
     )
     int updateStateSummary(
             long timelineId,
             String stateSummary,
+            long updatedAt
+    );
+
+    @Query(
+            "UPDATE world_timelines SET "
+                    + "state_summary = :stateSummary, "
+                    + "last_world_summary_event_id = :lastEventId, "
+                    + "last_world_summary_turn = :masterTurn, "
+                    + "updated_at = :updatedAt "
+                    + "WHERE id = :timelineId"
+    )
+    int updateWorldSummary(
+            long timelineId,
+            String stateSummary,
+            long lastEventId,
+            int masterTurn,
+            long updatedAt
+    );
+
+    @Query(
+            "UPDATE world_timelines SET "
+                    + "last_world_summary_turn = :masterTurn, "
+                    + "updated_at = :updatedAt "
+                    + "WHERE id = :timelineId"
+    )
+    int markWorldSummaryCheckpoint(
+            long timelineId,
+            int masterTurn,
+            long updatedAt
+    );
+
+    @Query(
+            "UPDATE world_timelines SET "
+                    + "next_random_event_turn = :nextTurn, "
+                    + "updated_at = :updatedAt "
+                    + "WHERE id = :timelineId"
+    )
+    int updateNextRandomEventTurn(
+            long timelineId,
+            int nextTurn,
             long updatedAt
     );
 }

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/living_worlds_panel_background"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="22dp">
+
+    <TextView
+        android:id="@+id/diceTitleText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="@font/philosopher_bold"
+        android:gravity="center"
+        android:text="БРОСОК D20"
+        android:textColor="#E8D8A8"
+        android:textSize="22sp" />
+
+    <TextView
+        android:id="@+id/diceValueText"
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:gravity="center"
+        android:text="—"
+        android:textColor="#F2E5BD"
+        android:textSize="72sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/diceHintText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="Кубик катится..."
+        android:textColor="#B8B0A0"
+        android:textSize="15sp" />
+
+    <Button
+        android:id="@+id/diceCloseButton"
+        style="@style/FantasyButton"
+        android:layout_width="220dp"
+        android:layout_height="52dp"
+        android:layout_marginTop="18dp"
+        android:text="ЗАКРЫТЬ" />
+
+</LinearLayout>

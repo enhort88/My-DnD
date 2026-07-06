@@ -150,9 +150,22 @@ public class CampaignPromptRepository {
                 .append(", ")
                 .append(character.className);
 
+        text.append("; HP ")
+                .append(character.hp)
+                .append('/')
+                .append(character.maxHp)
+                .append("; СИЛ ")
+                .append(character.strength)
+                .append("; ЛОВ ")
+                .append(character.dexterity)
+                .append("; ИНТ ")
+                .append(character.intelligence)
+                .append("; ХАР ")
+                .append(character.charisma);
+
         if (!character.personality.isEmpty()) {
             text.append("; ")
-                    .append(limit(character.personality, 100));
+                    .append(limit(character.personality, 80));
         }
 
         return text.toString();
@@ -174,7 +187,9 @@ public class CampaignPromptRepository {
                 text.append('\n');
             }
 
-            text.append("- ")
+            text.append("- [")
+                    .append(event.importance)
+                    .append("] ")
                     .append(limit(event.text, 120));
         }
 
@@ -216,8 +231,25 @@ public class CampaignPromptRepository {
 
             text.append("- ")
                     .append(npc.name)
-                    .append(": ")
-                    .append(limit(npc.stateSummary, 100));
+                    .append(" [HP ")
+                    .append(npc.hp)
+                    .append('/')
+                    .append(npc.maxHp)
+                    .append("; отношение ")
+                    .append(npc.attitude);
+
+            if (!npc.location.isEmpty()) {
+                text.append("; локация: ")
+                        .append(limit(npc.location, 60));
+            }
+
+            text.append("]: ")
+                    .append(limit(npc.stateSummary, 80));
+
+            if (!npc.knowledgeSummary.isEmpty()) {
+                text.append("; знает: ")
+                        .append(limit(npc.knowledgeSummary, 80));
+            }
         }
 
         return text.toString();

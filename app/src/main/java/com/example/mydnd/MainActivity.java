@@ -18,6 +18,8 @@ import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.save.SavedGameRepository;
 import com.example.mydnd.game.world.WorldMemoryRepository;
+import com.example.mydnd.game.world.WorldMaintenanceService;
+import com.example.mydnd.rules.DiceService;
 import com.example.mydnd.game.save.SavedGameSummary;
 import com.example.mydnd.llm.GenerationProfile;
 import com.example.mydnd.llm.GemmaToolCallParser;
@@ -89,6 +91,8 @@ public class MainActivity extends ComponentActivity {
     private CampaignPromptRepository campaignPromptRepository;
     private SavedGameRepository savedGameRepository;
     private WorldMemoryRepository worldMemoryRepository;
+    private WorldMaintenanceService worldMaintenanceService;
+    private final DiceService diceService = new DiceService();
 
     private AppDatabase database;
     private long currentCampaignId = 0L;
@@ -105,6 +109,7 @@ public class MainActivity extends ComponentActivity {
     private Button characterButton;
     private Button inventoryButton;
     private Button journalButton;
+    private Button diceButton;
     private Button gameSettingsButton;
 
     private LlmModelManager modelManager;
@@ -245,6 +250,7 @@ public class MainActivity extends ComponentActivity {
         characterButton = findViewById(R.id.characterButton);
         inventoryButton = findViewById(R.id.inventoryButton);
         journalButton = findViewById(R.id.journalButton);
+        diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
 
 
@@ -261,6 +267,10 @@ public class MainActivity extends ComponentActivity {
 
         journalButton.setOnClickListener(v ->
                 showJournalDialog()
+        );
+
+        diceButton.setOnClickListener(v ->
+                showDiceRollDialog(20)
         );
 
         if (gameSettingsButton != null) {
@@ -291,6 +301,12 @@ public class MainActivity extends ComponentActivity {
                 masterModelFile.getAbsolutePath(),
                 serviceModelFile.getAbsolutePath()
         );
+        worldMaintenanceService =
+                new WorldMaintenanceService(
+                        database,
+                        modelManager,
+                        worldMemoryRepository
+                );
         summaryService =
                 new SummaryService(
                         database,
@@ -1178,20 +1194,28 @@ public class MainActivity extends ComponentActivity {
                     result.getFunctionName();
 
             if ("remember_world_event".equals(functionName)) {
+                int importance = result.getWorldEventImportance();
+
                 boolean stored = worldMemoryRepository.rememberForCampaign(
                         campaignId,
-                        result.getWorldEventText()
+                        result.getWorldEventText(),
+                        importance
                 );
 
                 Log.d(
                         "MyDND_WORLD_MEMORY",
-                        (stored ? "STORED: " : "SKIPPED: ")
+                        (stored ? "STORED" : "SKIPPED")
+                                + " importance="
+                                + importance
+                                + ": "
                                 + result.getWorldEventText()
                 );
 
                 return "<|tool_response>response:remember_world_event{status:<|\"|>"
                         + (stored ? "STORED" : "SKIPPED")
-                        + "<|\"|>}<tool_response|>";
+                        + "<|\"|>,importance:"
+                        + importance
+                        + "}<tool_response|>";
             }
 
             if ("no_world_event".equals(functionName)) {
@@ -2625,6 +2649,23 @@ public class MainActivity extends ComponentActivity {
                 character.age
         );
 
+        if (text.length() > 0) {
+            text.append("\n\n");
+        }
+
+        text.append("HP: ")
+                .append(character.hp)
+                .append('/')
+                .append(character.maxHp)
+                .append("\nСила: ")
+                .append(character.strength)
+                .append("  Ловкость: ")
+                .append(character.dexterity)
+                .append("\nИнтеллект: ")
+                .append(character.intelligence)
+                .append("  Харизма: ")
+                .append(character.charisma);
+
         appendDialogSection(
                 text,
                 "Описание",
@@ -2863,6 +2904,208 @@ public class MainActivity extends ComponentActivity {
                 : builder.toString();
     }
 
+
+
+    private void runWorldMaintenanceAfterMasterTurn() {
+        runWorldMaintenance(true);
+    }
+
+    private void runWorldMaintenanceIfDue() {
+        runWorldMaintenance(false);
+    }
+
+    private void runWorldMaintenance(boolean completedMasterTurn) {
+        if (worldMaintenanceService == null
+                || currentCampaignId <= 0L) {
+            return;
+        }
+
+        final long campaignId = currentCampaignId;
+
+        WorldMaintenanceService.Listener listener =
+                new WorldMaintenanceService.Listener() {
+                    @Override
+                    public void onStarted(String task) {
+                        runOnUiThread(() -> {
+                            if (currentCampaignId != campaignId) {
+                                return;
+                            }
+
+                            sendButton.setEnabled(false);
+
+                            if ("WORLD_SUMMARY".equals(task)) {
+                                sendButton.setText("Обновляю мир...");
+                            } else {
+                                sendButton.setText("Мир живёт...");
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onWorldSummaryUpdated(String summary) {
+                        Log.d(
+                                "MyDND_WORLD_SUMMARY",
+                                "UPDATED: " + summary
+                        );
+
+                        restoreSendButtonAfterMaintenance(campaignId);
+                    }
+
+                    @Override
+                    public void onRandomEventGenerated(
+                            String text,
+                            int importance,
+                            String tone
+                    ) {
+                        runOnUiThread(() -> {
+                            if (currentCampaignId == campaignId) {
+                                appendColoredText(
+                                        "Мир меняется: "
+                                                + text
+                                                + "\n\n",
+                                        COLOR_SYSTEM
+                                );
+                            }
+                        });
+
+                        restoreSendButtonAfterMaintenance(campaignId);
+                    }
+
+                    @Override
+                    public void onIdle() {
+                        restoreSendButtonAfterMaintenance(campaignId);
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        Log.e(
+                                "MyDND_WORLD_MAINT",
+                                "World maintenance failed",
+                                throwable
+                        );
+
+                        restoreSendButtonAfterMaintenance(campaignId);
+                    }
+                };
+
+        if (completedMasterTurn) {
+            worldMaintenanceService.onMasterTurnCompleted(
+                    campaignId,
+                    listener
+            );
+        } else {
+            worldMaintenanceService.runIfDue(
+                    campaignId,
+                    listener
+            );
+        }
+    }
+
+    private void restoreSendButtonAfterMaintenance(long campaignId) {
+        runOnUiThread(() -> {
+            if (currentCampaignId != campaignId
+                    || generationInProgress
+                    || (worldMaintenanceService != null
+                    && worldMaintenanceService.isWorking())) {
+                return;
+            }
+
+            sendButton.setEnabled(true);
+            sendButton.setText("Отправить");
+        });
+    }
+
+    private void showDiceRollDialog(int sides) {
+        if (generationInProgress) {
+            Toast.makeText(
+                    this,
+                    "Сначала завершите текущий ход.",
+                    Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+
+        final DiceService.RollResult result =
+                diceService.roll(sides, 0);
+
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_dice_roll);
+        dialog.setCanceledOnTouchOutside(false);
+
+        TextView titleText =
+                dialog.findViewById(R.id.diceTitleText);
+
+        TextView valueText =
+                dialog.findViewById(R.id.diceValueText);
+
+        TextView hintText =
+                dialog.findViewById(R.id.diceHintText);
+
+        Button closeButton =
+                dialog.findViewById(R.id.diceCloseButton);
+
+        titleText.setText("БРОСОК D" + sides);
+        valueText.setText("—");
+        hintText.setText("Кубик катится...");
+        closeButton.setEnabled(false);
+
+        final long animationDurationMs = 1100L;
+        final long animationStartedAt = System.currentTimeMillis();
+        final Runnable[] animation = new Runnable[1];
+
+        animation[0] = () -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+
+            long elapsed =
+                    System.currentTimeMillis() - animationStartedAt;
+
+            if (elapsed >= animationDurationMs) {
+                valueText.setText(
+                        String.valueOf(result.getTotal())
+                );
+                hintText.setText(
+                        result.getNatural() == sides
+                                ? "Критический максимум"
+                                : "Результат"
+                );
+                closeButton.setEnabled(true);
+                return;
+            }
+
+            valueText.setText(
+                    String.valueOf(
+                            diceService.animationFace(sides)
+                    )
+            );
+
+            uiHandler.postDelayed(
+                    animation[0],
+                    70L
+            );
+        };
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored -> {
+            configureFantasyDialogWindow(
+                    dialog,
+                    0.80f,
+                    0f
+            );
+
+            uiHandler.post(animation[0]);
+
+            runWorldMaintenanceIfDue();
+        });
+
+        dialog.setOnDismissListener(ignored ->
+                uiHandler.removeCallbacks(animation[0])
+        );
+
+        dialog.show();
+    }
 
     private void runInventoryToolTest(
             String action
@@ -3426,6 +3669,8 @@ public class MainActivity extends ComponentActivity {
                                 sendButton.setText(
                                         "Отправить"
                                 );
+
+                                runWorldMaintenanceAfterMasterTurn();
                             }
                     );
                 });

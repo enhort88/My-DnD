@@ -125,6 +125,28 @@ public class GenerationProfile {
                 1.05f
         );
     }
+    public static GenerationProfile worldSummary() {
+        return new GenerationProfile(
+                "World summary",
+                120,
+                0.10f,
+                0.65f,
+                16,
+                1.05f
+        );
+    }
+
+    public static GenerationProfile randomWorldEvent() {
+        return new GenerationProfile(
+                "Random world event",
+                90,
+                0.85f,
+                0.92f,
+                40,
+                1.08f
+        );
+    }
+
     public static GenerationProfile factExtraction() {
         return new GenerationProfile(
                 "Fact extraction",

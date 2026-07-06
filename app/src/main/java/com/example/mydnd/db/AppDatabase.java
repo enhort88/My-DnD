@@ -50,7 +50,7 @@ import com.example.mydnd.db.entity.WorldRaceEntity;
                 WorldTimelineEntity.class,
                 WorldEventEntity.class
         },
-        version = 5,
+        version = 6,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
@@ -390,6 +390,96 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+
+    private static final Migration MIGRATION_5_6 =
+            new Migration(5, 6) {
+                @Override
+                public void migrate(@NonNull SupportSQLiteDatabase database) {
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN importance INTEGER NOT NULL DEFAULT 1"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'EXTRACTED'"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN tone TEXT NOT NULL DEFAULT 'NEUTRAL'"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_timelines ADD COLUMN world_turn_count INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_timelines ADD COLUMN last_world_summary_event_id INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_timelines ADD COLUMN last_world_summary_turn INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_timelines ADD COLUMN next_random_event_turn INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN hp INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN max_hp INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN attitude INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN location TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN knowledge_summary TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN strength INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN dexterity INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN intelligence INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN charisma INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN hp INTEGER NOT NULL DEFAULT 10"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN max_hp INTEGER NOT NULL DEFAULT 10"
+                    );
+
+
+                    database.execSQL(
+                            "UPDATE world_timelines SET world_turn_count = COALESCE((" +
+                                    "SELECT COUNT(*) FROM game_events ge " +
+                                    "JOIN campaigns c ON c.id = ge.campaign_id " +
+                                    "WHERE c.world_timeline_id = world_timelines.id " +
+                                    "AND ge.speaker = 'MASTER'" +
+                                    "), 0)"
+                    );
+                }
+            };
+
     public static AppDatabase getInstance(Context context) {
         if (instance == null) {
             synchronized (AppDatabase.class) {
@@ -403,7 +493,8 @@ public abstract class AppDatabase extends RoomDatabase {
                                     MIGRATION_1_2,
                                     MIGRATION_2_3,
                                     MIGRATION_3_4,
-                                    MIGRATION_4_5
+                                    MIGRATION_4_5,
+                                    MIGRATION_5_6
                             )
                             .build();
                 }

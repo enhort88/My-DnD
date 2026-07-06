@@ -28,6 +28,12 @@ public class CharacterRepository {
         entity.description = draft.getDescription();
         entity.background = draft.getBackground();
         entity.personality = draft.getPersonality();
+        entity.strength = 10;
+        entity.dexterity = 10;
+        entity.intelligence = 10;
+        entity.charisma = 10;
+        entity.hp = 10;
+        entity.maxHp = 10;
         entity.generationPrompt = safe(generationPrompt);
         entity.createdAt = System.currentTimeMillis();
 

@@ -36,6 +36,23 @@ public class NpcEntity {
     @ColumnInfo(name = "state_summary")
     public String stateSummary = "";
 
+    @ColumnInfo(name = "hp", defaultValue = "10")
+    public int hp = 10;
+
+    @ColumnInfo(name = "max_hp", defaultValue = "10")
+    public int maxHp = 10;
+
+    @ColumnInfo(name = "attitude", defaultValue = "0")
+    public int attitude;
+
+    @NonNull
+    @ColumnInfo(name = "location", defaultValue = "''")
+    public String location = "";
+
+    @NonNull
+    @ColumnInfo(name = "knowledge_summary", defaultValue = "''")
+    public String knowledgeSummary = "";
+
     @ColumnInfo(name = "active")
     public boolean active;
 
