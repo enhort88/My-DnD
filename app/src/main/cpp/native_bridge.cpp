@@ -340,9 +340,9 @@ static std::string build_director_action_grammar(
     grammar += "\n\n";
 
     grammar += "action-type ::= \"DONE\" | \"CHECK\" | \"INV_ADD\" | \"INV_REMOVE\" | \"HP\" | \"MONEY\" | \"NPC_UPSERT\" | \"NPC_MEMORY\" | \"NPC_STATUS\" | \"WORLD_ADD\" | \"WORLD_UPDATE\" | \"WORLD_RESOLVE\" | \"QUEST_START\" | \"QUEST_UPDATE\" | \"QUEST_COMPLETE\" | \"QUEST_FAIL\" | \"ABILITY_ADD\" | \"ABILITY_UPDATE\" | \"ABILITY_REMOVE\" | \"EFFECT_ADD\" | \"EFFECT_REMOVE\" | \"LOCATION\"\n";
-    grammar += "name-text ::= [^<>{}\\r\\n]{0,120}\n";
-    grammar += "value-text ::= [^<>{}\\r\\n]{0,80}\n";
-    grammar += "details-text ::= [^<>{}\\r\\n]{0,300}\n";
+    grammar += "name-text ::= [^<>{}\\r\\n]{0,96}\n";
+    grammar += "value-text ::= [^<>{}\\r\\n]{0,40}\n";
+    grammar += "details-text ::= [^<>{}\\r\\n]{0,180}\n";
 
     MYDND_LOGI(
             "director action grammar:\n%s",
@@ -1996,7 +1996,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 narrative_predict + 60;
 
         const int decision_max_tokens =
-                256;
+                192;
 
         /*
          * Minimum live reserves, not worst-case sums. The previous preflight
@@ -2237,7 +2237,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
          * actual token count after the narrative is complete.
          */
         const int post_tool_narrative_reserve = narrative_min_reserve;
-        const int max_director_actions_per_turn = 8;
+        const int max_director_actions_per_turn = 5;
 
         auto generate_director_action =
                 [&](std::string & raw_tool_call,
@@ -2487,8 +2487,34 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             std::string raw_tool_call;
             int action_tokens = 0;
 
+            const int remaining_context =
+                    static_cast<int>(n_ctx) - context_tokens_used;
+
+            /*
+             * Do not start another free-form structural action unless there is
+             * room for that action, its Java response, the final DONE runway
+             * and a useful narrative. This prevents a small model from burning
+             * the last context on world/NPC churn and dying halfway through DONE.
+             */
+            const int force_done_threshold =
+                    post_tool_narrative_reserve
+                    + tool_response_min_reserve
+                    + director_startup_reserve
+                    + decision_max_tokens;
+
             const bool force_done =
-                    tool_number == max_director_actions_per_turn;
+                    tool_number == max_director_actions_per_turn
+                    || remaining_context <= force_done_threshold;
+
+            if (force_done
+                    && tool_number < max_director_actions_per_turn) {
+                MYDND_LOGI(
+                        "nativeGenerateDirectorAwareStream: forcing DONE early, tool=%d, remaining=%d, threshold=%d",
+                        tool_number,
+                        remaining_context,
+                        force_done_threshold
+                );
+            }
 
             if (!generate_director_action(
                     raw_tool_call,

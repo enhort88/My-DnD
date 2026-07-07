@@ -14,15 +14,16 @@ public final class DirectorFlowController {
         void onDirectorResult(DirectorResult result);
     }
 
-    private static final int MAX_ACTIONS_PER_TURN = 8;
-
     private final DirectorActionParser parser;
     private final DirectorExecutor executor;
     private final DirectorToolResponseBuilder responseBuilder;
     private final Listener listener;
 
     private final Set<String> appliedActionFingerprints = new HashSet<>();
+
+    private DirectorMode mode = DirectorMode.PLAYER_ACTION;
     private int actionCount;
+    private int appliedActionCount;
 
     public DirectorFlowController(
             DirectorStore store,
@@ -35,7 +36,15 @@ public final class DirectorFlowController {
     }
 
     public synchronized void startTurn() {
+        startTurn(DirectorMode.PLAYER_ACTION);
+    }
+
+    public synchronized void startTurn(DirectorMode mode) {
+        this.mode = mode == null
+                ? DirectorMode.PLAYER_ACTION
+                : mode;
         actionCount = 0;
+        appliedActionCount = 0;
         appliedActionFingerprints.clear();
     }
 
@@ -46,7 +55,7 @@ public final class DirectorFlowController {
     ) {
         actionCount++;
 
-        if (actionCount > MAX_ACTIONS_PER_TURN) {
+        if (actionCount > mode.getMaxAttempts()) {
             return terminalError("DIRECTOR_ACTION_LIMIT");
         }
 
@@ -57,8 +66,32 @@ public final class DirectorFlowController {
             return terminalError("DIRECTOR_PARSE_ERROR");
         }
 
-        String fingerprint = fingerprint(action);
         DirectorResult result;
+
+        if (!mode.allows(action.getType())) {
+            result = executor.reject(
+                    campaignId,
+                    action,
+                    "ACTION_NOT_ALLOWED_IN_MODE",
+                    mode.name()
+            );
+            dispatch(result);
+            return responseBuilder.build(result);
+        }
+
+        if (action.getType() != DirectorActionType.NO_CHANGE
+                && appliedActionCount >= mode.getMaxAppliedActions()) {
+            result = executor.reject(
+                    campaignId,
+                    action,
+                    "DIRECTOR_APPLIED_LIMIT",
+                    mode.name()
+            );
+            dispatch(result);
+            return responseBuilder.build(result);
+        }
+
+        String fingerprint = fingerprint(action);
 
         if (action.getType() != DirectorActionType.NO_CHANGE
                 && appliedActionFingerprints.contains(fingerprint)) {
@@ -73,6 +106,7 @@ public final class DirectorFlowController {
 
             if (result.getStatus() == DirectorStatus.APPLIED) {
                 appliedActionFingerprints.add(fingerprint);
+                appliedActionCount++;
             }
         }
 
@@ -80,9 +114,16 @@ public final class DirectorFlowController {
         return responseBuilder.build(result);
     }
 
+    public synchronized DirectorMode getMode() {
+        return mode;
+    }
 
     public synchronized int getActionCount() {
         return actionCount;
+    }
+
+    public synchronized int getAppliedActionCount() {
+        return appliedActionCount;
     }
 
     private String fingerprint(DirectorAction action) {
@@ -110,7 +151,7 @@ public final class DirectorFlowController {
         DirectorResult result = DirectorResult.rejected(
                 terminalAction,
                 code,
-                ""
+                mode.name()
         );
         dispatch(result);
         return responseBuilder.build(result);

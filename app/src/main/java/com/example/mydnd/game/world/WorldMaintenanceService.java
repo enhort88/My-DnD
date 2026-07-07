@@ -35,18 +35,15 @@ public class WorldMaintenanceService {
 
     private final AppDatabase database;
     private final LlmModelManager modelManager;
-    private final WorldMemoryRepository worldMemoryRepository;
     private final SecureRandom random = new SecureRandom();
     private final AtomicBoolean working = new AtomicBoolean(false);
 
     public WorldMaintenanceService(
             AppDatabase database,
-            LlmModelManager modelManager,
-            WorldMemoryRepository worldMemoryRepository
+            LlmModelManager modelManager
     ) {
         this.database = database;
         this.modelManager = modelManager;
-        this.worldMemoryRepository = worldMemoryRepository;
     }
 
     public void onMasterTurnCompleted(
@@ -272,15 +269,6 @@ public class WorldMaintenanceService {
 
                         DbExecutor.execute(() -> {
                             try {
-                                boolean stored = !eventText.isEmpty()
-                                        && worldMemoryRepository
-                                        .rememberRandomForCampaign(
-                                                campaign.id,
-                                                eventText,
-                                                importance,
-                                                tone
-                                        );
-
                                 int next = masterTurn + randomDelay();
 
                                 database.worldTimelineDao()
@@ -290,60 +278,35 @@ public class WorldMaintenanceService {
                                                 System.currentTimeMillis()
                                         );
 
+                                working.set(false);
+
                                 Log.d(
                                         TAG,
-                                        "random event stored=" + stored
+                                        "random event candidate"
                                                 + " importance=" + importance
                                                 + " tone=" + tone
                                                 + " next=" + next
                                                 + " text=" + eventText
                                 );
 
-                                if (stored && importance >= 3) {
-                                    // Сначала показываем игроку само редкое событие.
-                                    // Кнопка отправки не разблокируется, пока working=true.
-                                    listener.onRandomEventGenerated(
-                                            eventText,
-                                            importance,
-                                            tone
-                                    );
-
-                                    WorldTimelineEntity refreshed =
-                                            database.worldTimelineDao()
-                                                    .getById(timeline.id);
-
-                                    List<WorldEventEntity> unsummarized =
-                                            database.worldEventDao()
-                                                    .getAfterIdAsc(
-                                                            timeline.id,
-                                                            refreshed.lastWorldSummaryEventId,
-                                                            MAX_WORLD_EVENTS_FOR_SUMMARY
-                                                    );
-
-                                    if (!unsummarized.isEmpty()
-                                            && !modelManager.isBusy()) {
-                                        startWorldSummary(
-                                                campaign,
-                                                refreshed,
-                                                masterTurn,
-                                                unsummarized,
-                                                listener
-                                        );
-                                        return;
-                                    }
-                                }
-
-                                working.set(false);
-
-                                if (stored) {
-                                    listener.onRandomEventGenerated(
-                                            eventText,
-                                            importance,
-                                            tone
-                                    );
-                                } else {
+                                if (eventText.isEmpty()) {
                                     listener.onIdle();
+                                    return;
                                 }
+
+                                /*
+                                 * The maintenance service only decides WHEN a rare
+                                 * event is due and asks the model for a candidate.
+                                 * It does not mutate Room directly. MainActivity
+                                 * sends the candidate through DirectorMode.
+                                 * RANDOM_WORLD_EVENT so the visible plaque and the
+                                 * stored world fact still have one authoritative path.
+                                 */
+                                listener.onRandomEventGenerated(
+                                        eventText,
+                                        importance,
+                                        tone
+                                );
 
                             } catch (Throwable throwable) {
                                 finishError(listener, throwable);

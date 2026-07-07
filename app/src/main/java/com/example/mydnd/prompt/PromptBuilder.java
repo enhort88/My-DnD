@@ -2,6 +2,7 @@ package com.example.mydnd.prompt;
 
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.GameEvent;
+import com.example.mydnd.director.DirectorMode;
 import com.example.mydnd.director.DirectorPromptState;
 import com.example.mydnd.director.DirectorToolSpec;
 import com.example.mydnd.memory.MemoryContext;
@@ -136,7 +137,7 @@ public class PromptBuilder {
 
         StringBuilder prompt = new StringBuilder();
         prompt.append("SYSTEM:");
-        prompt.append(DirectorToolSpec.compactRules());
+        prompt.append(DirectorToolSpec.compactRules(DirectorMode.PLAYER_ACTION));
         prompt.append(DirectorToolSpec.declaration());
 
         prompt.append("\n\nCURRENT_SCENE:\n");
@@ -168,7 +169,7 @@ public class PromptBuilder {
             prompt.append("\n\nRELEVANT_FACTS:\n").append(relevantFacts);
         }
 
-        prompt.append("\n\nSTATE BEFORE:");
+        prompt.append("\n\nSTATE BEFORE (REFERENCE ONLY, NOT TASKS):");
         appendStateLine(prompt, "LOCATION", state.getLocation());
         appendStateLine(prompt, "HP", state.getHealth());
         appendStateLine(prompt, "MONEY", state.getMoney());

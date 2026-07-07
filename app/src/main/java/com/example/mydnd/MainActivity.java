@@ -20,6 +20,7 @@ import com.example.mydnd.game.StateChangeRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.director.DirectorFlowController;
+import com.example.mydnd.director.DirectorMode;
 import com.example.mydnd.director.DirectorPromptState;
 import com.example.mydnd.director.DirectorPromptStateRepository;
 import com.example.mydnd.director.DirectorResult;
@@ -167,10 +168,6 @@ public class MainActivity extends ComponentActivity {
 
     private static final long STREAM_FLUSH_DELAY_MS = 80;
     private static final int CHAT_BOTTOM_THRESHOLD_DP = 72;
-
-    private static final int WORLD_EVENT_BATCH_SIZE = 5;
-    private static final int WORLD_EVENT_PREVIOUS_MASTER_LIMIT = 4;
-    private static final int WORLD_EVENT_MASTER_TEXT_MAX_CHARS = 500;
 
     private static final String MASTER_MODEL_FILE =
             "gemma-4-E2B_q4_0-it.gguf";
@@ -393,8 +390,7 @@ public class MainActivity extends ComponentActivity {
         worldMaintenanceService =
                 new WorldMaintenanceService(
                         database,
-                        modelManager,
-                        worldMemoryRepository
+                        modelManager
                 );
         summaryService =
                 new SummaryService(
@@ -1735,22 +1731,14 @@ public class MainActivity extends ComponentActivity {
                                 "MASTER"
                         );
 
-                boolean runWorldEventPhase =
-                        masterEventCount > 0
-                                && masterEventCount % WORLD_EVENT_BATCH_SIZE == 0;
-
+                /*
+                 * Rare autonomous events are scheduled only by
+                 * WorldMaintenanceService (12-25 world turns). The old
+                 * every-5-master-turn native world-event phase is disabled so
+                 * ordinary PLAYER_ACTION turns cannot invent background events.
+                 */
+                boolean runWorldEventPhase = false;
                 String worldEventBatchText = "";
-                if (runWorldEventPhase) {
-                    List<GameEventEntity> previousMasterEvents =
-                            database.gameEventDao().getRecentEventsBySpeaker(
-                                    campaignId,
-                                    "MASTER",
-                                    WORLD_EVENT_PREVIOUS_MASTER_LIMIT
-                            );
-                    worldEventBatchText = buildWorldEventBatchText(
-                            previousMasterEvents
-                    );
-                }
 
                 Log.d(
                         "MyDND_DIRECTOR",
@@ -1795,55 +1783,6 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private String buildWorldEventBatchText(
-            List<GameEventEntity> previousMasterEvents
-    ) {
-        if (previousMasterEvents == null
-                || previousMasterEvents.isEmpty()) {
-            return "";
-        }
-
-        StringBuilder batch = new StringBuilder();
-
-        int index = 1;
-
-        for (GameEventEntity event : previousMasterEvents) {
-            if (event == null
-                    || event.text == null
-                    || event.text.trim().isEmpty()) {
-                continue;
-            }
-
-            String text = event.text
-                    .replace('<', '‹')
-                    .replace('>', '›')
-                    .replace('\n', ' ')
-                    .replace('\r', ' ')
-                    .trim()
-                    .replaceAll("\\s+", " ");
-
-            if (text.length() > WORLD_EVENT_MASTER_TEXT_MAX_CHARS) {
-                text = text.substring(
-                        0,
-                        WORLD_EVENT_MASTER_TEXT_MAX_CHARS
-                );
-            }
-
-            if (batch.length() > 0) {
-                batch.append("\n");
-            }
-
-            batch.append(index)
-                    .append(") ")
-                    .append(text);
-
-            index++;
-        }
-
-        return batch.toString();
-    }
-
-
     private void startDirectorGeneration(
             String preparedPrompt,
             long campaignId,
@@ -1853,7 +1792,7 @@ public class MainActivity extends ComponentActivity {
         masterStreamingStartPosition = -1;
         activeDirectorCampaignId = campaignId;
         directorTurnActive = true;
-        directorFlowController.startTurn();
+        directorFlowController.startTurn(DirectorMode.PLAYER_ACTION);
 
         modelManager.generateDirectorAware(
                 ModelRole.MASTER,
@@ -1876,9 +1815,9 @@ public class MainActivity extends ComponentActivity {
 
 
     /**
-     * Runs synchronously on the native generation thread. Director actions go
-     * through Java validation + Room; the legacy periodic world-memory tools
-     * remain a separate background phase.
+     * Runs synchronously on the native generation thread. Every structural
+     * mutation goes through the current Director mode; autonomous world events
+     * use WorldMaintenanceService and the RANDOM_WORLD_EVENT mode separately.
      */
     private String executeDirectorToolCallForContinuation(
             long campaignId,
@@ -1890,40 +1829,6 @@ public class MainActivity extends ComponentActivity {
         );
 
         try {
-            GemmaToolCallParser.Result legacyResult =
-                    gemmaToolCallParser.parse(rawToolCall);
-
-            if (legacyResult.hasToolCall()) {
-                String functionName = legacyResult.getFunctionName();
-
-                if ("remember_world_event".equals(functionName)) {
-                    int importance = legacyResult.getWorldEventImportance();
-                    boolean stored = worldMemoryRepository.rememberForCampaign(
-                            campaignId,
-                            legacyResult.getWorldEventText(),
-                            importance
-                    );
-
-                    Log.d(
-                            "MyDND_WORLD_MEMORY",
-                            (stored ? "STORED" : "SKIPPED")
-                                    + " importance=" + importance
-                                    + ": " + legacyResult.getWorldEventText()
-                    );
-
-                    return "<|tool_response>response:remember_world_event{status:<|\"|>"
-                            + (stored ? "STORED" : "SKIPPED")
-                            + "<|\"|>,importance:"
-                            + importance
-                            + "}<tool_response|>";
-                }
-
-                if ("no_world_event".equals(functionName)) {
-                    Log.d("MyDND_WORLD_MEMORY", "NO WORLD EVENT");
-                    return "<|tool_response>response:no_world_event{status:<|\"|>OK<|\"|>}<tool_response|>";
-                }
-            }
-
             return directorFlowController.onToolCall(
                     campaignId,
                     rawToolCall
@@ -1938,8 +1843,8 @@ public class MainActivity extends ComponentActivity {
 
             return "<|tool_response>response:director_action{status:<|\"|>REJECTED<|\"|>,"
                     + "code:<|\"|>JAVA_DIRECTOR_EXCEPTION<|\"|>,"
-                    + "type:<|\"|>DONE<|\"|>,name:<|\"|><|\"|>,"
-                    + "value:<|\"|><|\"|>,state_after:<|\"|><|\"|>}<tool_response|>";
+                    + "state_after:<|\"|><|\"|>,"
+                    + "next:<|\"|>DIRECT_OR_DONE<|\"|>}<tool_response|>";
         }
     }
 
@@ -3606,21 +3511,20 @@ public class MainActivity extends ComponentActivity {
                             int importance,
                             String tone
                     ) {
-                        /*
-                         * Background world maintenance stores autonomous world
-                         * memory, but it must never fabricate a visible plaque.
-                         * Visible state-change cards are reserved for APPLIED
-                         * Director actions only.
-                         */
                         Log.d(
                                 "MyDND_WORLD_MAINT",
-                                "Background world event stored"
+                                "Rare world event candidate"
                                         + " | importance=" + importance
                                         + " | tone=" + tone
                                         + " | text=" + text
                         );
 
-                        restoreSendButtonAfterMaintenance(campaignId);
+                        applyRareWorldEventThroughDirector(
+                                campaignId,
+                                text,
+                                importance,
+                                tone
+                        );
                     }
 
                     @Override
@@ -3652,6 +3556,161 @@ public class MainActivity extends ComponentActivity {
             );
         }
     }
+
+
+    /**
+     * A rare autonomous event is generated by WorldMaintenanceService, but it
+     * enters Room and the visible chat only through the Director. This keeps
+     * the same invariant as normal turns: no APPLIED DirectorResult -> no card.
+     */
+    private void applyRareWorldEventThroughDirector(
+            long campaignId,
+            String rawText,
+            int importance,
+            String tone
+    ) {
+        if (campaignId <= 0L || rawText == null || rawText.trim().isEmpty()) {
+            restoreSendButtonAfterMaintenance(campaignId);
+            return;
+        }
+
+        if (currentCampaignId != campaignId) {
+            restoreSendButtonAfterMaintenance(campaignId);
+            return;
+        }
+
+        String eventText = sanitizeDirectorField(rawText, 220);
+        String eventName = buildRareWorldEventName(eventText);
+        String eventDetails = buildRareWorldEventDetails(eventText, eventName);
+        String safeImportance = String.valueOf(Math.max(1, Math.min(3, importance)));
+
+        String rawToolCall =
+                "<|tool_call>call:director_action{type:<|\"|>WORLD_ADD<|\"|>,"
+                        + "name:<|\"|>" + eventName + "<|\"|>,"
+                        + "value:<|\"|>" + safeImportance + "<|\"|>,"
+                        + "details:<|\"|>" + eventDetails + "<|\"|>}<tool_call|>";
+
+        activeDirectorCampaignId = campaignId;
+        directorFlowController.startTurn(DirectorMode.RANDOM_WORLD_EVENT);
+
+        String response;
+        try {
+            response = directorFlowController.onToolCall(
+                    campaignId,
+                    rawToolCall
+            );
+        } finally {
+            activeDirectorCampaignId = 0L;
+        }
+
+        boolean applied = response != null
+                && response.contains("status:<|\"|>APPLIED<|\"|>");
+
+        Log.d(
+                "MyDND_RANDOM_DIRECTOR",
+                "mode=RANDOM_WORLD_EVENT"
+                        + " | applied=" + applied
+                        + " | importance=" + safeImportance
+                        + " | tone=" + tone
+                        + " | response=" + response
+        );
+
+        if (!applied) {
+            restoreSendButtonAfterMaintenance(campaignId);
+            return;
+        }
+
+        runOnUiThread(() -> {
+            if (currentCampaignId != campaignId) {
+                restoreSendButtonAfterMaintenance(campaignId);
+                return;
+            }
+
+            GameEvent worldEventMessage = GameEvent.master(eventText);
+            gameEvents.add(worldEventMessage);
+
+            appendColoredText(
+                    eventText + "\n\n",
+                    COLOR_MASTER
+            );
+
+            sendButton.setEnabled(false);
+            sendButton.setText("Сохраняю событие...");
+            updateChat();
+
+            saveEventToDb(
+                    worldEventMessage,
+                    () -> restoreSendButtonAfterMaintenance(campaignId)
+            );
+        });
+    }
+
+
+    private String buildRareWorldEventName(String eventText) {
+        String safe = sanitizeDirectorField(eventText, 90);
+        if (safe.isEmpty()) {
+            return "Редкое событие мира";
+        }
+
+        int sentenceEnd = safe.indexOf('.');
+        if (sentenceEnd >= 18) {
+            safe = safe.substring(0, sentenceEnd).trim();
+        }
+
+        if (safe.length() > 80) {
+            safe = safe.substring(0, 80).trim();
+        }
+
+        return safe.isEmpty()
+                ? "Редкое событие мира"
+                : safe;
+    }
+
+
+    private String buildRareWorldEventDetails(
+            String eventText,
+            String eventName
+    ) {
+        String text = sanitizeDirectorField(eventText, 220);
+        String name = sanitizeDirectorField(eventName, 90);
+
+        if (!name.isEmpty() && text.startsWith(name)) {
+            String remainder = text.substring(name.length()).trim();
+            while (remainder.startsWith(".")
+                    || remainder.startsWith(":")
+                    || remainder.startsWith("—")
+                    || remainder.startsWith("-")) {
+                remainder = remainder.substring(1).trim();
+            }
+            if (!remainder.isEmpty()) {
+                return remainder;
+            }
+        }
+
+        return text;
+    }
+
+
+    private String sanitizeDirectorField(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+
+        String safe = value
+                .replace('<', '‹')
+                .replace('>', '›')
+                .replace('{', '(')
+                .replace('}', ')')
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim()
+                .replaceAll("\\s+", " ");
+
+        return safe.length() <= maxChars
+                ? safe
+                : safe.substring(0, maxChars).trim();
+    }
+
 
     private void restoreSendButtonAfterMaintenance(long campaignId) {
         runOnUiThread(() -> {
