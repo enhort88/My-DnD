@@ -108,6 +108,18 @@ static bool ends_with_text(
 
 
 
+static bool is_inventory_tool_call_text(
+        const std::string & text
+) {
+    return text.find("add_item_to_inventory{")
+                   != std::string::npos
+           || text.find("remove_item_from_inventory{")
+                   != std::string::npos
+           || text.find("no_inventory_change{")
+                   != std::string::npos;
+}
+
+
 static bool is_complete_inventory_tool_call(
         const std::string & text
 ) {
@@ -1946,6 +1958,12 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         const int decision_max_tokens =
                 96;
 
+        const int max_inventory_tool_calls_per_turn =
+                4;
+
+        const int max_additional_inventory_tool_calls =
+                max_inventory_tool_calls_per_turn - 1;
+
         const int tool_response_reserve =
                 192;
 
@@ -2510,9 +2528,25 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 tool_response_tokenized
         );
 
+        int context_tokens_used =
+                tokenized
+                + decision_tokens
+                + tool_response_tokenized;
+
+        const int world_event_context_reserve =
+                should_run_world_event_phase
+                        ? world_event_instruction_reserve
+                          + world_event_max_tokens
+                        : 0;
+
+        const int post_tool_narrative_reserve =
+                48;
+
         /*
-         * Фаза 3: художественное продолжение уже после результата Room.
-         * Используем обычный narrative sampler и стримим только эту фазу.
+         * Фаза 3: event loop поверх того же llama_context.
+         * Обычный текст стримим игроку. Если модель выдаёт ещё один inventory
+         * tool call, не показываем его, а синхронно отправляем в Java listener,
+         * декодируем tool response и продолжаем генерацию в том же context.
          */
         llama_sampler * narrative_sampler =
                 create_sampler(
@@ -2524,23 +2558,337 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
 
         std::string narrative_output;
         std::string streaming_pending;
+        std::string late_tool_call_output;
+
+        bool capturing_late_tool_call =
+                false;
+
+        bool stop_after_protocol_error =
+                false;
+
+        int inventory_tool_call_count =
+                1;
+
+        int late_tool_call_tokens =
+                0;
 
         const int soft_min_tokens =
                 narrative_predict * 3 / 4;
 
+        const int narrative_generation_hard_max =
+                narrative_hard_max
+                + decision_max_tokens
+                  * max_additional_inventory_tool_calls;
+
+        auto stream_narrative_text =
+                [&](const std::string & text) -> bool {
+
+            if (text.empty()) {
+                return true;
+            }
+
+            narrative_output.append(
+                    text
+            );
+
+            streaming_pending.append(
+                    text
+            );
+
+            size_t ready_length =
+                    complete_utf8_prefix_length(
+                            streaming_pending
+                    );
+
+            if (ready_length <= 0) {
+                return true;
+            }
+
+            std::string ready_text =
+                    streaming_pending.substr(
+                            0,
+                            ready_length
+                    );
+
+            streaming_pending.erase(
+                    0,
+                    ready_length
+            );
+
+            jstring jToken =
+                    string_to_jstring(
+                            env,
+                            ready_text
+                    );
+
+            if (jToken != nullptr) {
+                env->CallVoidMethod(
+                        tokenCallbackObject,
+                        onTokenMethod,
+                        jToken
+                );
+
+                env->DeleteLocalRef(
+                        jToken
+                );
+            }
+
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                return false;
+            }
+
+            return true;
+        };
+
+        auto handle_late_inventory_tool_call =
+                [&](const std::string & raw_tool_call,
+                    int tool_number) -> bool {
+
+            MYDND_LOGI(
+                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_CALL #%d RAW = %s",
+                    tool_number,
+                    raw_tool_call.c_str()
+            );
+
+            jstring jLateToolCall =
+                    string_to_jstring(
+                            env,
+                            raw_tool_call
+                    );
+
+            jobject lateToolResponseObject =
+                    env->CallObjectMethod(
+                            toolCallbackObject,
+                            onToolCallMethod,
+                            jLateToolCall
+                    );
+
+            env->DeleteLocalRef(
+                    jLateToolCall
+            );
+
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: Java listener failed for TOOL_CALL #%d",
+                        tool_number
+                );
+
+                return false;
+            }
+
+            if (lateToolResponseObject == nullptr) {
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: Java listener returned null for TOOL_CALL #%d",
+                        tool_number
+                );
+
+                return false;
+            }
+
+            std::string late_tool_response =
+                    jstring_to_string(
+                            env,
+                            static_cast<jstring>(
+                                    lateToolResponseObject
+                            )
+                    );
+
+            env->DeleteLocalRef(
+                    lateToolResponseObject
+            );
+
+            if (late_tool_response.empty()) {
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: Java listener returned empty response for TOOL_CALL #%d",
+                        tool_number
+                );
+
+                return false;
+            }
+
+            MYDND_LOGI(
+                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_RESPONSE #%d = %s",
+                    tool_number,
+                    late_tool_response.c_str()
+            );
+
+            int late_response_count =
+                    -llama_tokenize(
+                            handle->vocab,
+                            late_tool_response.c_str(),
+                            static_cast<int32_t>(
+                                    late_tool_response.size()
+                            ),
+                            nullptr,
+                            0,
+                            false,
+                            true
+                    );
+
+            if (late_response_count <= 0) {
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: cannot tokenize TOOL_RESPONSE #%d",
+                        tool_number
+                );
+
+                return false;
+            }
+
+            std::vector<llama_token> late_response_tokens(
+                    late_response_count
+            );
+
+            int late_response_tokenized =
+                    llama_tokenize(
+                            handle->vocab,
+                            late_tool_response.c_str(),
+                            static_cast<int32_t>(
+                                    late_tool_response.size()
+                            ),
+                            late_response_tokens.data(),
+                            static_cast<int32_t>(
+                                    late_response_tokens.size()
+                            ),
+                            false,
+                            true
+                    );
+
+            if (late_response_tokenized < 0) {
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: tokenizer failed for TOOL_RESPONSE #%d",
+                        tool_number
+                );
+
+                return false;
+            }
+
+            if (context_tokens_used
+                    + late_response_tokenized
+                    + world_event_context_reserve
+                    + post_tool_narrative_reserve
+                >= static_cast<int>(n_ctx)) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: not enough context for TOOL_RESPONSE #%d; used=%d, response=%d, reserve=%d, ctx=%u",
+                        tool_number,
+                        context_tokens_used,
+                        late_response_tokenized,
+                        world_event_context_reserve
+                                + post_tool_narrative_reserve,
+                        n_ctx
+                );
+
+                return false;
+            }
+
+            auto late_response_decode_start =
+                    std::chrono::steady_clock::now();
+
+            for (
+                    int pos = 0;
+                    pos < late_response_tokenized;
+                    pos += prompt_chunk_size
+                    ) {
+
+                if (handle->cancel_requested.load()) {
+                    return false;
+                }
+
+                int chunk_size =
+                        prompt_chunk_size;
+
+                if (pos + chunk_size
+                    > late_response_tokenized) {
+
+                    chunk_size =
+                            late_response_tokenized
+                            - pos;
+                }
+
+                llama_batch late_response_batch =
+                        llama_batch_get_one(
+                                late_response_tokens.data()
+                                + pos,
+                                chunk_size
+                        );
+
+                if (llama_decode(
+                        handle->ctx,
+                        late_response_batch
+                ) != 0) {
+
+                    MYDND_LOGE(
+                            "nativeGenerateInventoryToolAwareStream: decode failed for TOOL_RESPONSE #%d at pos=%d",
+                            tool_number,
+                            pos
+                    );
+
+                    return false;
+                }
+            }
+
+            auto late_response_decode_end =
+                    std::chrono::steady_clock::now();
+
+            auto late_response_decode_ms =
+                    std::chrono::duration_cast<
+                            std::chrono::milliseconds
+                    >(
+                            late_response_decode_end
+                            - late_response_decode_start
+                    ).count();
+
+            context_tokens_used +=
+                    late_response_tokenized;
+
+            MYDND_LOGI(
+                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_RESPONSE #%d decode = %lld ms, tokens=%d",
+                    tool_number,
+                    static_cast<long long>(
+                            late_response_decode_ms
+                    ),
+                    late_response_tokenized
+            );
+
+            return true;
+        };
+
         auto narrative_start =
                 std::chrono::steady_clock::now();
 
-        int narrative_tokens =
+        int narrative_text_tokens =
+                0;
+
+        int generated_phase_tokens =
                 0;
 
         for (
                 int i = 0;
-                i < narrative_hard_max;
+                i < narrative_generation_hard_max;
                 i++
                 ) {
 
             if (handle->cancel_requested.load()) {
+                break;
+            }
+
+            if (context_tokens_used
+                    + world_event_context_reserve
+                    + 1
+                >= static_cast<int>(n_ctx)) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: narrative event loop stopped at context boundary; used=%d, reserve=%d, ctx=%u",
+                        context_tokens_used,
+                        world_event_context_reserve,
+                        n_ctx
+                );
+
                 break;
             }
 
@@ -2558,7 +2906,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 break;
             }
 
-            narrative_tokens++;
+            generated_phase_tokens++;
 
             char buffer[256];
 
@@ -2572,61 +2920,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                             true
                     );
 
+            std::string piece;
+
             if (piece_length > 0) {
-                std::string piece(
+                piece.assign(
                         buffer,
                         piece_length
                 );
-
-                narrative_output.append(
-                        piece
-                );
-
-                streaming_pending.append(
-                        piece
-                );
-
-                size_t ready_length =
-                        complete_utf8_prefix_length(
-                                streaming_pending
-                        );
-
-                if (ready_length > 0) {
-                    std::string ready_text =
-                            streaming_pending.substr(
-                                    0,
-                                    ready_length
-                            );
-
-                    streaming_pending.erase(
-                            0,
-                            ready_length
-                    );
-
-                    jstring jToken =
-                            string_to_jstring(
-                                    env,
-                                    ready_text
-                            );
-
-                    if (jToken != nullptr) {
-                        env->CallVoidMethod(
-                                tokenCallbackObject,
-                                onTokenMethod,
-                                jToken
-                        );
-
-                        env->DeleteLocalRef(
-                                jToken
-                        );
-                    }
-
-                    if (env->ExceptionCheck()) {
-                        env->ExceptionDescribe();
-                        env->ExceptionClear();
-                        break;
-                    }
-                }
             }
 
             llama_batch token_batch =
@@ -2647,13 +2947,183 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 break;
             }
 
-            if (i >= soft_min_tokens
+            context_tokens_used++;
+
+            bool handled_tool_event =
+                    false;
+
+            if (!piece.empty()) {
+                if (capturing_late_tool_call) {
+                    late_tool_call_output.append(
+                            piece
+                    );
+
+                    late_tool_call_tokens++;
+
+                } else {
+                    size_t tool_start =
+                            piece.find(
+                                    "<|tool_call>"
+                            );
+
+                    if (tool_start
+                        != std::string::npos) {
+
+                        std::string narrative_prefix =
+                                piece.substr(
+                                        0,
+                                        tool_start
+                                );
+
+                        if (!narrative_prefix.empty()) {
+                            narrative_text_tokens++;
+
+                            if (!stream_narrative_text(
+                                    narrative_prefix
+                            )) {
+                                break;
+                            }
+                        }
+
+                        capturing_late_tool_call =
+                                true;
+
+                        late_tool_call_output =
+                                piece.substr(
+                                        tool_start
+                                );
+
+                        late_tool_call_tokens =
+                                1;
+
+                        MYDND_LOGI(
+                                "nativeGenerateInventoryToolAwareStream: EVENT TOOL_CALL candidate detected"
+                        );
+
+                    } else {
+                        narrative_text_tokens++;
+
+                        if (!stream_narrative_text(
+                                piece
+                        )) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (capturing_late_tool_call
+                && is_complete_inventory_tool_call(
+                        late_tool_call_output
+                )) {
+
+                if (!is_inventory_tool_call_text(
+                        late_tool_call_output
+                )) {
+
+                    MYDND_LOGE(
+                            "nativeGenerateInventoryToolAwareStream: unexpected late non-inventory TOOL_CALL suppressed: %s",
+                            late_tool_call_output.c_str()
+                    );
+
+                    stop_after_protocol_error =
+                            true;
+
+                    break;
+                }
+
+                if (inventory_tool_call_count
+                    >= max_inventory_tool_calls_per_turn) {
+
+                    MYDND_LOGE(
+                            "nativeGenerateInventoryToolAwareStream: tool limit reached (%d); extra TOOL_CALL suppressed: %s",
+                            max_inventory_tool_calls_per_turn,
+                            late_tool_call_output.c_str()
+                    );
+
+                    stop_after_protocol_error =
+                            true;
+
+                    break;
+                }
+
+                inventory_tool_call_count++;
+
+                bool handled =
+                        handle_late_inventory_tool_call(
+                                late_tool_call_output,
+                                inventory_tool_call_count
+                        );
+
+                late_tool_call_output.clear();
+
+                late_tool_call_tokens =
+                        0;
+
+                capturing_late_tool_call =
+                        false;
+
+                if (!handled) {
+                    stop_after_protocol_error =
+                            true;
+
+                    break;
+                }
+
+                llama_sampler_free(
+                        narrative_sampler
+                );
+
+                narrative_sampler =
+                        create_sampler(
+                                safe_temperature,
+                                safe_top_p,
+                                safe_top_k,
+                                safe_repeat_penalty
+                        );
+
+                handled_tool_event =
+                        true;
+            }
+
+            if (capturing_late_tool_call
+                && late_tool_call_tokens
+                   >= decision_max_tokens) {
+
+                MYDND_LOGE(
+                        "nativeGenerateInventoryToolAwareStream: incomplete late TOOL_CALL suppressed after %d tokens: %s",
+                        late_tool_call_tokens,
+                        late_tool_call_output.c_str()
+                );
+
+                stop_after_protocol_error =
+                        true;
+
+                break;
+            }
+
+            if (handled_tool_event) {
+                continue;
+            }
+
+            if (!capturing_late_tool_call
+                && narrative_text_tokens
+                   >= soft_min_tokens
                 && ends_with_sentence_mark(
                         narrative_output
                 )) {
 
                 break;
             }
+        }
+
+        if (capturing_late_tool_call
+            && !late_tool_call_output.empty()) {
+
+            MYDND_LOGE(
+                    "nativeGenerateInventoryToolAwareStream: unfinished late TOOL_CALL suppressed at generation end: %s",
+                    late_tool_call_output.c_str()
+            );
         }
 
         if (!streaming_pending.empty()) {
@@ -2692,7 +3162,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
 
         if (narrative_ms > 0) {
             tokens_per_second =
-                    narrative_tokens * 1000.0
+                    generated_phase_tokens * 1000.0
                     / static_cast<double>(
                             narrative_ms
                     );
@@ -2703,11 +3173,16 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         );
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: narrative = %lld ms, tokens=%d, speed=%.2f tok/s",
+                "nativeGenerateInventoryToolAwareStream: narrative event loop = %lld ms, textTokens=%d, generatedTokens=%d, inventoryTools=%d, protocolStop=%s, speed=%.2f tok/s",
                 static_cast<long long>(
                         narrative_ms
                 ),
-                narrative_tokens,
+                narrative_text_tokens,
+                generated_phase_tokens,
+                inventory_tool_call_count,
+                stop_after_protocol_error
+                        ? "YES"
+                        : "NO",
                 tokens_per_second
         );
 

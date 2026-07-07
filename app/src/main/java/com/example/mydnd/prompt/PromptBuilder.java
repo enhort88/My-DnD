@@ -262,7 +262,8 @@ public class PromptBuilder {
             StringBuilder prompt
     ) {
         prompt.append("\nТы мастер мрачной RPG.");
-        prompt.append("\nПеред ответом определи итог инвентаря и вызови один tool.");
+        prompt.append("\nПеред ответом определи итог инвентаря и вызови минимум один tool.");
+        prompt.append("\nНесколько изменений — tools по одному; после каждого response при необходимости вызови следующий.");
         prompt.append("\nДля tool используй ACTION_HINT, INVENTORY BEFORE и PLAYER_ACTION.");
         prompt.append("\nACTION_HINT EXPLICIT_ADD/REMOVE — вызови соответствующий tool для *имени*; NONE — решай сам.");
         prompt.append("\nINVENTORY BEFORE — истина. Считай PLAYER_ACTION выполненным.");
@@ -272,7 +273,7 @@ public class PromptBuilder {
         prompt.append("\nУчитывай только итог всего действия.");
         prompt.append("\nREMOVE — точное имя из INVENTORY BEFORE.");
         prompt.append("\nADD — естественное имя из PLAYER_ACTION.");
-        prompt.append("\nПосле tool response кратко продолжи сцену по-русски и не противоречь результату.");
+        prompt.append("\nКогда изменения закончены, кратко продолжи сцену по-русски и не противоречь результатам.");
         prompt.append("\nПосле сцены при необходимости: [NPC_MEMORY|имя ACTIVE_NPC|GOOD/BAD/NEUTRAL|факт].");
         prompt.append("\nДля риска: [CHECK|STR/DEX/INT/CHA|5-25|причина]; до броска не описывай исход.");
         prompt.append("\nНе добавляй служебные строки без причины и не раскрывай числовое отношение NPC.");
