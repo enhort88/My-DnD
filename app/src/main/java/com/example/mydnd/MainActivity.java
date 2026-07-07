@@ -1,4 +1,5 @@
 package com.example.mydnd;
+import android.animation.AnimatorSet;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Intent;
@@ -83,6 +84,10 @@ import com.example.mydnd.memory.ChangeOperationClassifier;
 import com.example.mydnd.memory.EntityExtractor;
 import com.example.mydnd.util.MusicManager;
 import com.example.mydnd.util.AppSettings;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
+import android.text.Editable;
+import android.text.TextWatcher;
 
 public class MainActivity extends ComponentActivity {
 
@@ -125,7 +130,9 @@ public class MainActivity extends ComponentActivity {
     private TextView chatTextView;
     private EditText inputEditText;
     private ScrollView chatScrollView;
+
     private Button sendButton;
+    private AnimatorSet sendButtonBusyAnimator;
     private Button characterButton;
     private Button inventoryButton;
     private Button journalButton;
@@ -316,6 +323,7 @@ public class MainActivity extends ComponentActivity {
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
+        setupSendButtonBusyAnimation();
 
         characterButton.setOnClickListener(v ->
                 showCharacterDialog()
@@ -5372,5 +5380,98 @@ public class MainActivity extends ComponentActivity {
                     }
                 }
         );
+    }
+    private void setupSendButtonBusyAnimation() {
+        ObjectAnimator alphaAnimator = ObjectAnimator.ofFloat(
+                sendButton,
+                View.ALPHA,
+                1.0f,
+                0.55f
+        );
+
+        alphaAnimator.setDuration(600L);
+        alphaAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        alphaAnimator.setRepeatCount(ValueAnimator.INFINITE);
+
+        ObjectAnimator scaleXAnimator = ObjectAnimator.ofFloat(
+                sendButton,
+                View.SCALE_X,
+                0.94f,
+                1.00f
+        );
+
+        scaleXAnimator.setDuration(600L);
+        scaleXAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        scaleXAnimator.setRepeatCount(ValueAnimator.INFINITE);
+
+        ObjectAnimator scaleYAnimator = ObjectAnimator.ofFloat(
+                sendButton,
+                View.SCALE_Y,
+                0.94f,
+                1.00f
+        );
+
+        scaleYAnimator.setDuration(600L);
+        scaleYAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        scaleYAnimator.setRepeatCount(ValueAnimator.INFINITE);
+
+        sendButtonBusyAnimator = new AnimatorSet();
+        sendButtonBusyAnimator.playTogether(
+                alphaAnimator,
+                scaleXAnimator,
+                scaleYAnimator
+        );
+
+        sendButton.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(
+                    CharSequence text,
+                    int start,
+                    int count,
+                    int after
+            ) {
+            }
+
+            @Override
+            public void onTextChanged(
+                    CharSequence text,
+                    int start,
+                    int before,
+                    int count
+            ) {
+                updateSendButtonBusyAnimation(text);
+            }
+
+            @Override
+            public void afterTextChanged(Editable editable) {
+            }
+        });
+
+        updateSendButtonBusyAnimation(sendButton.getText());
+    }
+
+    private void updateSendButtonBusyAnimation(
+            CharSequence buttonText
+    ) {
+        boolean busy = buttonText != null
+                && !"Отправить".contentEquals(buttonText);
+
+        if (busy) {
+            if (!sendButtonBusyAnimator.isRunning()) {
+                sendButton.setAlpha(1.0f);
+                sendButton.setScaleX(1.0f);
+                sendButton.setScaleY(1.0f);
+
+                sendButtonBusyAnimator.start();
+            }
+
+            return;
+        }
+
+        sendButtonBusyAnimator.cancel();
+
+        sendButton.setAlpha(1.0f);
+        sendButton.setScaleX(1.0f);
+        sendButton.setScaleY(1.0f);
     }
 }
