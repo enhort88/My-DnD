@@ -35,7 +35,9 @@ public class ResponseCleaner {
     }
 
     private boolean isServiceLine(String line) {
-        return line.startsWith("SYSTEM:")
+        return line.startsWith("[NPC_MEMORY|")
+                || line.startsWith("[CHECK|")
+                || line.startsWith("SYSTEM:")
                 || line.startsWith("STYLE:")
                 || line.startsWith("SCENE:")
                 || line.startsWith("HISTORY:")

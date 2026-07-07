@@ -20,6 +20,7 @@ import com.example.mydnd.db.dao.SummaryDao;
 import com.example.mydnd.db.dao.WorldDao;
 import com.example.mydnd.db.dao.WorldEventDao;
 import com.example.mydnd.db.dao.WorldTimelineDao;
+import com.example.mydnd.db.dao.StateChangeDao;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.CharacterEntity;
 import com.example.mydnd.db.entity.CharacterStartingItemEntity;
@@ -32,6 +33,7 @@ import com.example.mydnd.db.entity.SummaryEntity;
 import com.example.mydnd.db.entity.WorldEntity;
 import com.example.mydnd.db.entity.WorldEventEntity;
 import com.example.mydnd.db.entity.WorldTimelineEntity;
+import com.example.mydnd.db.entity.StateChangeEntity;
 import com.example.mydnd.db.entity.WorldRaceEntity;
 
 @Database(
@@ -48,9 +50,10 @@ import com.example.mydnd.db.entity.WorldRaceEntity;
                 NpcEntity.class,
                 SituationEntity.class,
                 WorldTimelineEntity.class,
-                WorldEventEntity.class
+                WorldEventEntity.class,
+                StateChangeEntity.class
         },
-        version = 6,
+        version = 7,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
@@ -78,6 +81,8 @@ public abstract class AppDatabase extends RoomDatabase {
     public abstract NpcDao npcDao();
 
     public abstract SituationDao situationDao();
+
+    public abstract StateChangeDao stateChangeDao();
 
     private static final Migration MIGRATION_1_2 =
             new Migration(1, 2) {
@@ -480,6 +485,47 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+    private static final Migration MIGRATION_6_7 =
+            new Migration(6, 7) {
+                @Override
+                public void migrate(@NonNull SupportSQLiteDatabase database) {
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS state_changes (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "campaign_id INTEGER NOT NULL, " +
+                                    "type TEXT NOT NULL, " +
+                                    "status TEXT NOT NULL, " +
+                                    "title TEXT NOT NULL, " +
+                                    "description TEXT NOT NULL, " +
+                                    "subject_id INTEGER NOT NULL, " +
+                                    "subject_name TEXT NOT NULL, " +
+                                    "before_text TEXT NOT NULL, " +
+                                    "after_text TEXT NOT NULL, " +
+                                    "before_number INTEGER NOT NULL, " +
+                                    "after_number INTEGER NOT NULL, " +
+                                    "can_undo INTEGER NOT NULL, " +
+                                    "created_at INTEGER NOT NULL, " +
+                                    "updated_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_state_changes_campaign_id " +
+                                    "ON state_changes(campaign_id)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_state_changes_created_at " +
+                                    "ON state_changes(created_at)"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_state_changes_status " +
+                                    "ON state_changes(status)"
+                    );
+                }
+            };
+
     public static AppDatabase getInstance(Context context) {
         if (instance == null) {
             synchronized (AppDatabase.class) {
@@ -494,7 +540,8 @@ public abstract class AppDatabase extends RoomDatabase {
                                     MIGRATION_2_3,
                                     MIGRATION_3_4,
                                     MIGRATION_4_5,
-                                    MIGRATION_5_6
+                                    MIGRATION_5_6,
+                                    MIGRATION_6_7
                             )
                             .build();
                 }

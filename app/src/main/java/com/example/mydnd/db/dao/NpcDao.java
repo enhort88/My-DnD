@@ -26,6 +26,18 @@ public interface NpcDao {
 
     @Query(
             "SELECT * FROM npcs "
+                    + "WHERE campaign_id = :campaignId "
+                    + "AND active = 1 "
+                    + "AND LOWER(name) = LOWER(:npcName) "
+                    + "LIMIT 1"
+    )
+    NpcEntity findActiveByName(
+            long campaignId,
+            String npcName
+    );
+
+    @Query(
+            "SELECT * FROM npcs "
                     + "WHERE world_timeline_id = :timelineId "
                     + "AND campaign_id = :campaignId "
                     + "AND active = 1 "
@@ -60,6 +72,18 @@ public interface NpcDao {
                     + "WHERE id = :npcId"
     )
     int updateKnowledge(long npcId, String knowledge, long updatedAt);
+
+    @Query(
+            "UPDATE npcs SET knowledge_summary = :knowledge, "
+                    + "attitude = :attitude, updated_at = :updatedAt "
+                    + "WHERE id = :npcId"
+    )
+    int updateMemoryState(
+            long npcId,
+            String knowledge,
+            int attitude,
+            long updatedAt
+    );
 
     @Query("DELETE FROM npcs WHERE campaign_id = :campaignId")
     int deleteForCampaign(long campaignId);

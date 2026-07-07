@@ -14,6 +14,8 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.game.InventoryRepository;
+import com.example.mydnd.game.InventoryActionHintResolver;
+import com.example.mydnd.game.StateChangeRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.save.SavedGameRepository;
@@ -26,6 +28,7 @@ import com.example.mydnd.llm.GemmaToolCallParser;
 import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.NativeToolCallback;
 import com.example.mydnd.llm.ResponseCleaner;
+import com.example.mydnd.llm.NarrativeDirectiveParser;
 import com.example.mydnd.prompt.PromptBuilder;
 import com.example.mydnd.prompt.GemmaToolPromptBuilder;
 import java.io.File;
@@ -38,11 +41,22 @@ import java.text.SimpleDateFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.drawable.ColorDrawable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.ClickableSpan;
+import android.text.style.LineBackgroundSpan;
+import android.text.style.LeadingMarginSpan;
+import android.text.TextPaint;
+import android.text.method.LinkMovementMethod;
+import android.graphics.Typeface;
 import android.view.View;
+import android.view.MotionEvent;
 import android.view.LayoutInflater;
 import android.view.Window;
 import android.view.ViewGroup;
@@ -51,6 +65,7 @@ import com.example.mydnd.db.DbExecutor;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.GameEventEntity;
 import com.example.mydnd.db.entity.CharacterEntity;
+import com.example.mydnd.db.entity.StateChangeEntity;
 import android.util.Log;
 import com.example.mydnd.memory.CampaignMemory;
 import com.example.mydnd.memory.MemoryContext;
@@ -88,6 +103,9 @@ public class MainActivity extends ComponentActivity {
     private CampaignMemory campaignMemory;
 
     private InventoryRepository inventoryRepository;
+    private final InventoryActionHintResolver inventoryActionHintResolver =
+            new InventoryActionHintResolver();
+    private StateChangeRepository stateChangeRepository;
     private CampaignPromptRepository campaignPromptRepository;
     private SavedGameRepository savedGameRepository;
     private WorldMemoryRepository worldMemoryRepository;
@@ -100,6 +118,8 @@ public class MainActivity extends ComponentActivity {
     private Button loadGamesButton;
 
     private final ResponseCleaner responseCleaner = new ResponseCleaner();
+    private final NarrativeDirectiveParser narrativeDirectiveParser =
+            new NarrativeDirectiveParser();
 
     private boolean generationCancelledByUser = false;
     private TextView chatTextView;
@@ -125,7 +145,12 @@ public class MainActivity extends ComponentActivity {
 
     private boolean streamFlushScheduled = false;
 
+    private boolean chatAutoFollowEnabled = true;
+    private boolean chatUserTouching = false;
+    private boolean chatProgrammaticScroll = false;
+
     private static final long STREAM_FLUSH_DELAY_MS = 80;
+    private static final int CHAT_BOTTOM_THRESHOLD_DP = 72;
 
     private static final int WORLD_EVENT_BATCH_SIZE = 5;
     private static final int WORLD_EVENT_PREVIOUS_MASTER_LIMIT = 4;
@@ -141,6 +166,7 @@ public class MainActivity extends ComponentActivity {
     private Button startGameButton;
     private Button settingsButton;
     private Button exitButton;
+    private Button helpButton;
 
     private final SpannableStringBuilder chatDisplay = new SpannableStringBuilder();
     private final StringBuilder promptHistory = new StringBuilder();
@@ -148,6 +174,13 @@ public class MainActivity extends ComponentActivity {
     private static final int COLOR_MASTER = Color.rgb(232, 224, 208);
     private static final int COLOR_PLAYER = Color.rgb(150, 190, 255);
     private static final int COLOR_SYSTEM = Color.rgb(120, 120, 120);
+    private static final int COLOR_CARD_BG = Color.argb(178, 30, 27, 22);
+    private static final int COLOR_CARD_BORDER = Color.rgb(199, 166, 106);
+    private static final int COLOR_CARD_GOOD = Color.rgb(132, 176, 125);
+    private static final int COLOR_CARD_BAD = Color.rgb(190, 124, 112);
+    private static final int COLOR_CARD_NEUTRAL = Color.rgb(199, 166, 106);
+    private static final int COLOR_CARD_REVERTED_BG = Color.argb(150, 48, 48, 48);
+    private static final int COLOR_CARD_REVERTED_TEXT = Color.rgb(145, 145, 145);
 
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
@@ -200,6 +233,7 @@ public class MainActivity extends ComponentActivity {
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
         inventoryRepository = new InventoryRepository(database);
+        stateChangeRepository = new StateChangeRepository(database);
         campaignPromptRepository = new CampaignPromptRepository(database);
         savedGameRepository = new SavedGameRepository(database);
         worldMemoryRepository = new WorldMemoryRepository(database);
@@ -242,6 +276,7 @@ public class MainActivity extends ComponentActivity {
                 showSettingsDialog()
         );
         exitButton = findViewById(R.id.exitButton);
+        helpButton = findViewById(R.id.helpButton);
 
         chatTextView = findViewById(R.id.chatTextView);
         inputEditText = findViewById(R.id.inputEditText);
@@ -253,6 +288,31 @@ public class MainActivity extends ComponentActivity {
         diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
 
+        chatTextView.setMovementMethod(LinkMovementMethod.getInstance());
+        chatTextView.setHighlightColor(Color.TRANSPARENT);
+
+        chatScrollView.setOnTouchListener((view, event) -> {
+            int action = event.getActionMasked();
+
+            if (action == MotionEvent.ACTION_DOWN
+                    || action == MotionEvent.ACTION_MOVE) {
+                chatUserTouching = true;
+            } else if (action == MotionEvent.ACTION_UP
+                    || action == MotionEvent.ACTION_CANCEL) {
+                chatUserTouching = false;
+                chatAutoFollowEnabled = isChatNearBottom();
+            }
+
+            return false;
+        });
+
+        chatScrollView.setOnScrollChangeListener(
+                (view, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+                    if (!chatProgrammaticScroll && chatUserTouching) {
+                        chatAutoFollowEnabled = isChatNearBottom();
+                    }
+                }
+        );
 
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
@@ -368,6 +428,11 @@ public class MainActivity extends ComponentActivity {
             finish();
         });
 
+
+        helpButton.setOnClickListener(v ->
+                showAboutDialog()
+        );
+
         if (requestedCampaignId > 0L) {
             showGameScreen();
             loadCampaignOrStartFirstScene();
@@ -395,6 +460,7 @@ public class MainActivity extends ComponentActivity {
     private void startFirstScene() {
 
         chatDisplay.clear();
+        chatDisplay.clearSpans();
         gameEvents.clear();
         promptHistory.setLength(0);
 
@@ -470,6 +536,7 @@ public class MainActivity extends ComponentActivity {
         inputEditText.setText("");
         hideKeyboard();
 
+        chatAutoFollowEnabled = true;
         appendPlayerMessage(playerText);
 
         sendButton.setEnabled(true);
@@ -487,8 +554,36 @@ public class MainActivity extends ComponentActivity {
     private void updateChat() {
         chatTextView.setText(chatDisplay);
 
-        chatScrollView.post(() ->
-                chatScrollView.fullScroll(ScrollView.FOCUS_DOWN)
+        if (!chatAutoFollowEnabled) {
+            return;
+        }
+
+        chatScrollView.post(() -> {
+            if (!chatAutoFollowEnabled) {
+                return;
+            }
+
+            chatProgrammaticScroll = true;
+            chatScrollView.fullScroll(ScrollView.FOCUS_DOWN);
+            chatScrollView.post(() -> chatProgrammaticScroll = false);
+        });
+    }
+
+
+    private boolean isChatNearBottom() {
+        int contentHeight = chatTextView.getHeight();
+        int viewportBottom = chatScrollView.getScrollY()
+                + chatScrollView.getHeight();
+        int thresholdPx = dp(CHAT_BOTTOM_THRESHOLD_DP);
+
+        return contentHeight <= 0
+                || contentHeight - viewportBottom <= thresholdPx;
+    }
+
+
+    private int dp(int value) {
+        return Math.round(
+                value * getResources().getDisplayMetrics().density
         );
     }
 
@@ -639,6 +734,530 @@ public class MainActivity extends ComponentActivity {
         );
 
         updateChat();
+    }
+
+    private void showStateChangeBeforeNarrative(
+            long campaignId,
+            StateChangeEntity change
+    ) {
+        if (change == null) {
+            return;
+        }
+
+        runOnUiThread(() -> {
+            if (currentCampaignId != campaignId) {
+                return;
+            }
+
+            removeThinkingIndicator();
+            appendStateChangeCard(change);
+            updateChat();
+        });
+    }
+
+
+    private void appendStateChangeCard(
+            StateChangeEntity change
+    ) {
+        if (change == null) {
+            return;
+        }
+
+        boolean reverted =
+                StateChangeRepository.STATUS_REVERTED.equals(change.status);
+
+        int accentColor = reverted
+                ? COLOR_CARD_REVERTED_TEXT
+                : stateChangeColor(change.type);
+
+        int backgroundColor = reverted
+                ? COLOR_CARD_REVERTED_BG
+                : COLOR_CARD_BG;
+
+        int cardStart = chatDisplay.length();
+
+        chatDisplay.append("\u200A\n");
+
+        int titleStart = chatDisplay.length();
+        chatDisplay.append(stateChangeMark(change.type));
+        chatDisplay.append("  ");
+        chatDisplay.append(change.title);
+        int titleEnd = chatDisplay.length();
+
+        int actionStart = -1;
+        int actionEnd = -1;
+
+        if (reverted) {
+            chatDisplay.append("   ");
+            actionStart = chatDisplay.length();
+            chatDisplay.append("отменено");
+            actionEnd = chatDisplay.length();
+
+        } else if (StateChangeRepository.TYPE_DICE_CHECK.equals(change.type)
+                && StateChangeRepository.STATUS_PENDING.equals(change.status)) {
+            chatDisplay.append("   ");
+            actionStart = chatDisplay.length();
+            chatDisplay.append("БРОСИТЬ d20");
+            actionEnd = chatDisplay.length();
+
+        } else if (change.canUndo
+                && StateChangeRepository.STATUS_APPLIED.equals(change.status)) {
+            chatDisplay.append("   ");
+            actionStart = chatDisplay.length();
+            chatDisplay.append("↶");
+            actionEnd = chatDisplay.length();
+        }
+
+        chatDisplay.append("\n");
+
+        int descriptionStart = chatDisplay.length();
+        chatDisplay.append(buildStateChangeDescription(change));
+        int descriptionEnd = chatDisplay.length();
+
+        chatDisplay.append("\n\u200A");
+        int cardEnd = chatDisplay.length();
+        chatDisplay.append("\n\n");
+
+        chatDisplay.setSpan(
+                new StateCardSpan(
+                        backgroundColor,
+                        accentColor,
+                        COLOR_CARD_BORDER,
+                        dp(12),
+                        dp(4),
+                        dp(1)
+                ),
+                cardStart,
+                cardEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(
+                        reverted
+                                ? COLOR_CARD_REVERTED_TEXT
+                                : accentColor
+                ),
+                titleStart,
+                titleEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        chatDisplay.setSpan(
+                new StyleSpan(Typeface.BOLD),
+                titleStart,
+                titleEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        chatDisplay.setSpan(
+                new RelativeSizeSpan(0.86f),
+                titleStart,
+                titleEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        chatDisplay.setSpan(
+                new ForegroundColorSpan(
+                        reverted
+                                ? COLOR_CARD_REVERTED_TEXT
+                                : COLOR_MASTER
+                ),
+                descriptionStart,
+                descriptionEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        chatDisplay.setSpan(
+                new RelativeSizeSpan(0.96f),
+                descriptionStart,
+                descriptionEnd,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        );
+
+        if (actionStart >= 0 && actionEnd > actionStart) {
+            if (reverted) {
+                chatDisplay.setSpan(
+                        new ForegroundColorSpan(COLOR_CARD_REVERTED_TEXT),
+                        actionStart,
+                        actionEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+                chatDisplay.setSpan(
+                        new RelativeSizeSpan(0.76f),
+                        actionStart,
+                        actionEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+            } else {
+                final long changeId = change.id;
+                final boolean diceAction =
+                        StateChangeRepository.TYPE_DICE_CHECK.equals(change.type);
+
+                chatDisplay.setSpan(
+                        new ClickableSpan() {
+                            @Override
+                            public void onClick(View widget) {
+                                if (diceAction) {
+                                    openDiceCheck(changeId);
+                                } else {
+                                    undoStateChange(changeId);
+                                }
+                            }
+
+                            @Override
+                            public void updateDrawState(TextPaint ds) {
+                                ds.setColor(COLOR_CARD_BORDER);
+                                ds.setUnderlineText(false);
+                                ds.setFakeBoldText(true);
+                            }
+                        },
+                        actionStart,
+                        actionEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+
+                chatDisplay.setSpan(
+                        new RelativeSizeSpan(
+                                diceAction ? 0.82f : 1.05f
+                        ),
+                        actionStart,
+                        actionEnd,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                );
+            }
+        }
+    }
+
+
+    private String stateChangeMark(String type) {
+        if (StateChangeRepository.TYPE_INVENTORY_ADD.equals(type)) {
+            return "+";
+        }
+
+        if (StateChangeRepository.TYPE_INVENTORY_REMOVE.equals(type)) {
+            return "−";
+        }
+
+        if (StateChangeRepository.TYPE_DICE_CHECK.equals(type)) {
+            return "◆";
+        }
+
+        if (StateChangeRepository.TYPE_WORLD_EVENT.equals(type)) {
+            return "✦";
+        }
+
+        return "◇";
+    }
+
+
+    private static final class StateCardSpan
+            implements LineBackgroundSpan, LeadingMarginSpan {
+
+        private final Paint backgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint accentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int leadingMargin;
+        private final int accentWidth;
+
+        private StateCardSpan(
+                int backgroundColor,
+                int accentColor,
+                int borderColor,
+                int leadingMargin,
+                int accentWidth,
+                int borderWidth
+        ) {
+            this.leadingMargin = leadingMargin;
+            this.accentWidth = accentWidth;
+
+            backgroundPaint.setStyle(Paint.Style.FILL);
+            backgroundPaint.setColor(backgroundColor);
+
+            accentPaint.setStyle(Paint.Style.FILL);
+            accentPaint.setColor(accentColor);
+
+            borderPaint.setStyle(Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(borderWidth);
+            borderPaint.setColor(borderColor);
+            borderPaint.setAlpha(110);
+        }
+
+        @Override
+        public int getLeadingMargin(boolean first) {
+            return leadingMargin;
+        }
+
+        @Override
+        public void drawLeadingMargin(
+                Canvas canvas,
+                Paint paint,
+                int x,
+                int dir,
+                int top,
+                int baseline,
+                int bottom,
+                CharSequence text,
+                int start,
+                int end,
+                boolean first,
+                android.text.Layout layout
+        ) {
+            // Отступ создаёт место между левой полосой и текстом.
+        }
+
+        @Override
+        public void drawBackground(
+                Canvas canvas,
+                Paint paint,
+                int left,
+                int right,
+                int top,
+                int baseline,
+                int bottom,
+                CharSequence text,
+                int start,
+                int end,
+                int lineNumber
+        ) {
+            int cardLeft = left + 2;
+            int cardRight = right - 2;
+
+            canvas.drawRect(
+                    cardLeft,
+                    top,
+                    cardRight,
+                    bottom,
+                    backgroundPaint
+            );
+
+            canvas.drawRect(
+                    cardLeft,
+                    top,
+                    cardLeft + accentWidth,
+                    bottom,
+                    accentPaint
+            );
+
+            canvas.drawLine(
+                    cardRight,
+                    top,
+                    cardRight,
+                    bottom,
+                    borderPaint
+            );
+
+            if (text instanceof Spanned) {
+                Spanned spanned = (Spanned) text;
+                int spanStart = spanned.getSpanStart(this);
+                int spanEnd = spanned.getSpanEnd(this);
+
+                boolean firstLine = spanStart >= start && spanStart < end;
+                boolean lastLine = spanEnd > start && spanEnd <= end;
+
+                if (firstLine) {
+                    canvas.drawLine(
+                            cardLeft,
+                            top,
+                            cardRight,
+                            top,
+                            borderPaint
+                    );
+                }
+
+                if (lastLine) {
+                    canvas.drawLine(
+                            cardLeft,
+                            bottom,
+                            cardRight,
+                            bottom,
+                            borderPaint
+                    );
+                }
+            }
+        }
+    }
+
+
+    private String buildStateChangeDescription(StateChangeEntity change) {
+        if (StateChangeRepository.TYPE_DICE_CHECK.equals(change.type)) {
+            String attribute = displayAttribute(change.subjectName);
+
+            if (StateChangeRepository.STATUS_RESOLVED.equals(change.status)) {
+                return attribute
+                        + " • d20: "
+                        + change.afterNumber
+                        + " • СЛ "
+                        + change.beforeNumber
+                        + " • "
+                        + change.afterText;
+            }
+
+            String reason = change.description == null
+                    ? ""
+                    : change.description.trim();
+
+            return attribute
+                    + " • СЛ "
+                    + change.beforeNumber
+                    + (reason.isEmpty() ? "" : " • " + reason);
+        }
+
+        return change.description == null
+                ? ""
+                : change.description;
+    }
+
+
+
+
+    private int stateChangeColor(String type) {
+        if (StateChangeRepository.TYPE_NPC_MEMORY_GOOD.equals(type)) {
+            return COLOR_CARD_GOOD;
+        }
+
+        if (StateChangeRepository.TYPE_NPC_MEMORY_BAD.equals(type)) {
+            return COLOR_CARD_BAD;
+        }
+
+        return COLOR_CARD_NEUTRAL;
+    }
+
+
+    private void undoStateChange(long changeId) {
+        if (generationInProgress
+                || (modelManager != null && modelManager.isBusy())) {
+            Toast.makeText(
+                    this,
+                    "Дождитесь завершения текущего хода.",
+                    Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            StateChangeEntity originalChange =
+                    stateChangeRepository.get(changeId);
+
+            StateChangeRepository.UndoResult result =
+                    stateChangeRepository.undo(changeId);
+
+            if (result.isSuccess() && originalChange != null) {
+                saveUndoCorrectionForPrompt(originalChange);
+
+                Log.d(
+                        "MyDND_STATE_CHANGE",
+                        "UNDO APPLIED | type="
+                                + originalChange.type
+                                + " | subject="
+                                + originalChange.subjectName
+                );
+            }
+
+            runOnUiThread(() -> {
+                Toast.makeText(
+                        MainActivity.this,
+                        result.getMessage(),
+                        Toast.LENGTH_SHORT
+                ).show();
+
+                if (result.isSuccess()) {
+                    reloadChatTimeline();
+                }
+            });
+        });
+    }
+
+
+    private void saveUndoCorrectionForPrompt(
+            StateChangeEntity change
+    ) {
+        String correction = buildUndoCorrection(change);
+
+        if (correction.isEmpty()) {
+            return;
+        }
+
+        GameEventEntity entity = new GameEventEntity();
+        entity.campaignId = change.campaignId;
+        entity.speaker = GameEvent.Speaker.SYSTEM.name();
+        entity.text = correction;
+        entity.includeInPrompt = true;
+        entity.createdAt = System.currentTimeMillis();
+
+        database.gameEventDao().insert(entity);
+    }
+
+
+    private String buildUndoCorrection(
+            StateChangeEntity change
+    ) {
+        String subject = change.subjectName == null
+                ? ""
+                : change.subjectName.trim();
+
+        if (StateChangeRepository.TYPE_INVENTORY_ADD.equals(change.type)) {
+            return "Исправление состояния: получение предмета «"
+                    + subject
+                    + "» отменено пользователем. Предмета «"
+                    + subject
+                    + "» нет в инвентаре. INVENTORY BEFORE является истиной.";
+        }
+
+        if (StateChangeRepository.TYPE_INVENTORY_REMOVE.equals(change.type)) {
+            return "Исправление состояния: потеря предмета «"
+                    + subject
+                    + "» отменена пользователем. Предмет «"
+                    + subject
+                    + "» снова находится в инвентаре. INVENTORY BEFORE является истиной.";
+        }
+
+        if (StateChangeRepository.TYPE_NPC_MEMORY_GOOD.equals(change.type)
+                || StateChangeRepository.TYPE_NPC_MEMORY_BAD.equals(change.type)
+                || StateChangeRepository.TYPE_NPC_MEMORY_NEUTRAL.equals(change.type)) {
+            String fact = change.description == null
+                    ? ""
+                    : change.description.trim();
+
+            return "Исправление состояния: память NPC «"
+                    + subject
+                    + "» о факте «"
+                    + fact
+                    + "» отменена пользователем. Этот факт не считается известным NPC. "
+                    + "Текущее состояние ACTIVE_NPCS является истиной.";
+        }
+
+        return "";
+    }
+
+
+    private void reloadChatTimeline() {
+        if (currentCampaignId <= 0L) {
+            return;
+        }
+
+        final long campaignId = currentCampaignId;
+
+        DbExecutor.execute(() -> {
+            List<GameEventEntity> events =
+                    database.gameEventDao().getEventsForCampaign(campaignId);
+
+            List<StateChangeEntity> changes =
+                    stateChangeRepository.getForCampaign(campaignId);
+
+            runOnUiThread(() -> {
+                if (currentCampaignId != campaignId || generationInProgress) {
+                    return;
+                }
+
+                chatDisplay.clear();
+                chatDisplay.clearSpans();
+                gameEvents.clear();
+
+                renderLoadedTimeline(events, changes);
+                updateChat();
+            });
+        });
     }
 
     private void appendMasterMessage(String text) {
@@ -859,6 +1478,9 @@ public class MainActivity extends ComponentActivity {
             List<GameEventEntity> savedEvents =
                     database.gameEventDao().getEventsForCampaign(currentCampaignId);
 
+            List<StateChangeEntity> savedChanges =
+                    stateChangeRepository.getForCampaign(currentCampaignId);
+
             MemoryContext memoryContext =
                     campaignMemory.buildContext(
                             currentCampaignId,
@@ -883,19 +1505,21 @@ public class MainActivity extends ComponentActivity {
             );
 
             runOnUiThread(() -> {
+                chatAutoFollowEnabled = true;
                 chatDisplay.clear();
+                chatDisplay.clearSpans();
                 gameEvents.clear();
 
-                if (savedEvents == null || savedEvents.isEmpty()) {
+                if ((savedEvents == null || savedEvents.isEmpty())
+                        && (savedChanges == null || savedChanges.isEmpty())) {
                     startFirstScene();
                     return;
                 }
 
-                for (GameEventEntity entity : savedEvents) {
-                    GameEvent event = toGameEvent(entity);
-                    gameEvents.add(event);
-                    renderLoadedEvent(event);
-                }
+                renderLoadedTimeline(
+                        savedEvents,
+                        savedChanges
+                );
 
                 sendButton.setEnabled(true);
                 sendButton.setText("Отправить");
@@ -903,6 +1527,49 @@ public class MainActivity extends ComponentActivity {
                 updateChat();
             });
         });
+    }
+
+    private void renderLoadedTimeline(
+            List<GameEventEntity> events,
+            List<StateChangeEntity> changes
+    ) {
+        List<GameEventEntity> safeEvents =
+                events == null ? Collections.emptyList() : events;
+
+        List<StateChangeEntity> safeChanges =
+                changes == null ? Collections.emptyList() : changes;
+
+        int eventIndex = 0;
+        int changeIndex = 0;
+
+        while (eventIndex < safeEvents.size()
+                || changeIndex < safeChanges.size()) {
+
+            boolean useChange;
+
+            if (eventIndex >= safeEvents.size()) {
+                useChange = true;
+            } else if (changeIndex >= safeChanges.size()) {
+                useChange = false;
+            } else {
+                useChange = safeChanges.get(changeIndex).createdAt
+                        <= safeEvents.get(eventIndex).createdAt;
+            }
+
+            if (useChange) {
+                appendStateChangeCard(
+                        safeChanges.get(changeIndex)
+                );
+                changeIndex++;
+            } else {
+                GameEvent event = toGameEvent(
+                        safeEvents.get(eventIndex)
+                );
+                gameEvents.add(event);
+                renderLoadedEvent(event);
+                eventIndex++;
+            }
+        }
     }
 
     private GameEvent toGameEvent(GameEventEntity entity) {
@@ -1018,12 +1685,27 @@ public class MainActivity extends ComponentActivity {
                             );
                 }
 
+                InventoryActionHintResolver.Result actionHint =
+                        inventoryActionHintResolver.resolve(
+                                playerText,
+                                inventoryBefore
+                        );
+
+                Log.d(
+                        "MyDND_ACTION_HINT",
+                        "ACTION_HINT="
+                                + actionHint.getPromptValue()
+                                + " | reason="
+                                + actionHint.getReason()
+                );
+
                 String rawPrompt =
                         promptBuilder.buildInventoryToolAwarePrompt(
                                 playerText,
                                 memoryContext,
                                 inventoryBefore,
-                                campaignState
+                                campaignState,
+                                actionHint.getPromptValue()
                         );
 
                 String preparedPrompt =
@@ -1283,6 +1965,20 @@ public class MainActivity extends ComponentActivity {
                             + " | AFTER="
                             + inventoryNow
             );
+
+            if (applyResult.isApplied()) {
+                StateChangeEntity stateChange =
+                        stateChangeRepository.recordInventoryChange(
+                                campaignId,
+                                functionName,
+                                applyResult.getItemName()
+                        );
+
+                showStateChangeBeforeNarrative(
+                        campaignId,
+                        stateChange
+                );
+            }
 
             return buildGemmaInventoryToolResponse(
                     functionName,
@@ -2189,6 +2885,54 @@ public class MainActivity extends ComponentActivity {
     }
 
 
+    private void showAboutDialog() {
+        showFantasyTextDialog(
+                "СПРАВКА / ОБ ИГРЕ",
+                buildAboutText(),
+                0.88f
+        );
+    }
+
+
+    private String buildAboutText() {
+        return "POCKET D&D\n\n"
+                + "Локальный RPG-мастер, работающий прямо на телефоне. "
+                + "Игра не требует интернета: модель и данные кампании находятся на устройстве.\n\n"
+
+                + "КАК ИГРАТЬ\n"
+                + "Просто описывайте действия героя обычным языком. "
+                + "Мастер продолжит сцену и отыграет мир и NPC.\n\n"
+
+                + "ПРЕДМЕТЫ\n"
+                + "Для более точного действия с предметом можно выделить его название звёздочками.\n"
+                + "Пример: Я беру *железный ключ*.\n"
+                + "Пример: Я выбрасываю *старый меч*.\n\n"
+
+                + "ПЛАШКИ СОСТОЯНИЯ\n"
+                + "Важные изменения показываются отдельными плашками. "
+                + "Если мастер ошибся, безопасное изменение можно отменить кнопкой ↶. "
+                + "Отменённая плашка станет серой и останется в истории.\n\n"
+
+                + "NPC\n"
+                + "NPC могут запоминать важные поступки. Игра покажет, что именно NPC запомнил, "
+                + "но его числовое отношение к герою остаётся скрытым.\n\n"
+
+                + "ПРОВЕРКИ И КУБИКИ\n"
+                + "Если действие рискованное, мастер может запросить проверку. "
+                + "Нажмите «БРОСИТЬ d20» прямо на плашке. Любой кубик можно бросить вручную кнопкой «Кубик».\n\n"
+
+                + "ЖИВОЙ МИР\n"
+                + "Мир может меняться независимо от текущего героя. Важные последствия сохраняются между играми в одной истории мира.\n\n"
+
+                + "О ЛОКАЛЬНОМ ИИ\n"
+                + "Нейросеть может ошибаться. Поэтому каноническое состояние хранит Java/Room, "
+                + "а важные изменения делаются видимыми и, где это безопасно, отменяемыми.\n\n"
+
+                + "Автор: Поникаров Артём\n"
+                + "enhort@gmail.com";
+    }
+
+
     private void showSettingsDialog() {
         Dialog dialog = new Dialog(this);
         dialog.setContentView(R.layout.dialog_settings);
@@ -2957,18 +3701,23 @@ public class MainActivity extends ComponentActivity {
                             int importance,
                             String tone
                     ) {
-                        runOnUiThread(() -> {
-                            if (currentCampaignId == campaignId) {
-                                appendColoredText(
-                                        "Мир меняется: "
-                                                + text
-                                                + "\n\n",
-                                        COLOR_SYSTEM
-                                );
-                            }
-                        });
+                        DbExecutor.execute(() -> {
+                            StateChangeEntity change =
+                                    stateChangeRepository.recordWorldEvent(
+                                            campaignId,
+                                            text
+                                    );
 
-                        restoreSendButtonAfterMaintenance(campaignId);
+                            runOnUiThread(() -> {
+                                if (currentCampaignId == campaignId
+                                        && change != null) {
+                                    appendStateChangeCard(change);
+                                    updateChat();
+                                }
+
+                                restoreSendButtonAfterMaintenance(campaignId);
+                            });
+                        });
                     }
 
                     @Override
@@ -3051,7 +3800,7 @@ public class MainActivity extends ComponentActivity {
 
             choiceButton.setOnClickListener(v -> {
                 dialog.dismiss();
-                showDiceRollDialog(selectedSides);
+                showDiceRollDialog(selectedSides, null);
             });
         }
 
@@ -3072,7 +3821,10 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private void showDiceRollDialog(int sides) {
+    private void showDiceRollDialog(
+            int sides,
+            StateChangeEntity requestedCheck
+    ) {
         if (generationInProgress) {
             Toast.makeText(
                     this,
@@ -3101,7 +3853,11 @@ public class MainActivity extends ComponentActivity {
         Button closeButton =
                 dialog.findViewById(R.id.diceCloseButton);
 
-        titleText.setText("БРОСОК D" + sides);
+        titleText.setText(
+                requestedCheck == null
+                        ? "БРОСОК D" + sides
+                        : "ПРОВЕРКА: " + displayAttribute(requestedCheck.subjectName)
+        );
         valueText.setText("—");
         hintText.setText("Кубик катится...");
         closeButton.setEnabled(false);
@@ -3122,11 +3878,50 @@ public class MainActivity extends ComponentActivity {
                 valueText.setText(
                         String.valueOf(result.getTotal())
                 );
-                hintText.setText(
-                        result.getNatural() == sides
-                                ? "Критический максимум"
-                                : "Результат"
-                );
+                if (requestedCheck == null) {
+                    hintText.setText(
+                            result.getNatural() == sides
+                                    ? "Критический максимум"
+                                    : "Результат"
+                    );
+                } else {
+                    boolean success =
+                            result.getTotal() >= requestedCheck.beforeNumber;
+
+                    hintText.setText(
+                            (success ? "УСПЕХ" : "ПРОВАЛ")
+                                    + " • СЛ "
+                                    + requestedCheck.beforeNumber
+                    );
+
+                    final long campaignId = requestedCheck.campaignId;
+                    final int total = result.getTotal();
+
+                    DbExecutor.execute(() -> {
+                        boolean resolved =
+                                stateChangeRepository.resolveDiceCheck(
+                                        requestedCheck.id,
+                                        total,
+                                        success
+                                );
+
+                        if (resolved) {
+                            saveDiceResultForPrompt(
+                                    campaignId,
+                                    requestedCheck,
+                                    total,
+                                    success
+                            );
+                        }
+
+                        runOnUiThread(() -> {
+                            if (resolved && currentCampaignId == campaignId) {
+                                reloadChatTimeline();
+                            }
+                        });
+                    });
+                }
+
                 closeButton.setEnabled(true);
                 return;
             }
@@ -3598,6 +4393,34 @@ public class MainActivity extends ComponentActivity {
                                 ? ""
                                 : fullText;
 
+                final NarrativeDirectiveParser.ParseResult directiveResult =
+                        narrativeDirectiveParser.parse(narrative);
+
+                for (NarrativeDirectiveParser.Directive directive
+                        : directiveResult.getDirectives()) {
+                    Log.d(
+                            "MyDND_DIRECTIVE",
+                            "PARSED | type="
+                                    + directive.getType()
+                                    + " | subject="
+                                    + directive.getSubject()
+                                    + " | tone="
+                                    + directive.getTone()
+                                    + " | difficulty="
+                                    + directive.getDifficulty()
+                                    + " | text="
+                                    + directive.getText()
+                    );
+                }
+
+                for (String rejectedLine
+                        : directiveResult.getRejectedDirectiveLines()) {
+                    Log.w(
+                            "MyDND_DIRECTIVE",
+                            "REJECTED | raw=" + rejectedLine
+                    );
+                }
+
 
                 runOnUiThread(() -> {
 
@@ -3651,7 +4474,7 @@ public class MainActivity extends ComponentActivity {
                      */
                     String visibleText =
                             responseCleaner.clean(
-                                    narrative
+                                    directiveResult.getNarrativeText()
                             );
 
 
@@ -3727,7 +4550,11 @@ public class MainActivity extends ComponentActivity {
                                         "Отправить"
                                 );
 
-                                runWorldMaintenanceAfterMasterTurn();
+                                applyNarrativeDirectives(
+                                        currentCampaignId,
+                                        directiveResult.getDirectives(),
+                                        () -> runWorldMaintenanceAfterMasterTurn()
+                                );
                             }
                     );
                 });
@@ -3757,6 +4584,142 @@ public class MainActivity extends ComponentActivity {
         };
     }
 
+
+    private void applyNarrativeDirectives(
+            long campaignId,
+            List<NarrativeDirectiveParser.Directive> directives,
+            Runnable onFinished
+    ) {
+        if (directives == null || directives.isEmpty()) {
+            onFinished.run();
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            List<StateChangeEntity> created = new ArrayList<>();
+
+            for (NarrativeDirectiveParser.Directive directive : directives) {
+                if (NarrativeDirectiveParser.Directive.NPC_MEMORY.equals(
+                        directive.getType()
+                )) {
+                    StateChangeEntity change =
+                            stateChangeRepository.rememberNpc(
+                                    campaignId,
+                                    directive.getSubject(),
+                                    directive.getTone(),
+                                    directive.getText()
+                            );
+
+                    if (change != null) {
+                        created.add(change);
+                    }
+
+                } else if (NarrativeDirectiveParser.Directive.DICE_CHECK.equals(
+                        directive.getType()
+                )) {
+                    StateChangeEntity change =
+                            stateChangeRepository.createDiceCheck(
+                                    campaignId,
+                                    directive.getSubject(),
+                                    directive.getDifficulty(),
+                                    directive.getText()
+                            );
+
+                    if (change != null) {
+                        created.add(change);
+                    }
+                }
+            }
+
+            runOnUiThread(() -> {
+                if (currentCampaignId == campaignId) {
+                    for (StateChangeEntity change : created) {
+                        appendStateChangeCard(change);
+                    }
+                    updateChat();
+                }
+
+                onFinished.run();
+            });
+        });
+    }
+
+
+    private void openDiceCheck(long changeId) {
+        if (generationInProgress) {
+            Toast.makeText(
+                    this,
+                    "Дождитесь завершения текущего хода.",
+                    Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            StateChangeEntity change = stateChangeRepository.get(changeId);
+
+            runOnUiThread(() -> {
+                if (change == null
+                        || !StateChangeRepository.STATUS_PENDING.equals(
+                        change.status
+                )) {
+                    return;
+                }
+
+                showDiceRollDialog(20, change);
+            });
+        });
+    }
+
+
+    private String displayAttribute(String code) {
+        String safe = code == null
+                ? ""
+                : code.trim().toUpperCase(Locale.ROOT);
+
+        if ("STR".equals(safe) || "СИЛ".equals(safe) || "СИЛА".equals(safe)) {
+            return "СИЛА";
+        }
+
+        if ("DEX".equals(safe) || "ЛОВ".equals(safe) || "ЛОВКОСТЬ".equals(safe)) {
+            return "ЛОВКОСТЬ";
+        }
+
+        if ("INT".equals(safe) || "ИНТ".equals(safe) || "ИНТЕЛЛЕКТ".equals(safe)) {
+            return "ИНТЕЛЛЕКТ";
+        }
+
+        if ("CHA".equals(safe) || "ХАР".equals(safe) || "ХАРИЗМА".equals(safe)) {
+            return "ХАРИЗМА";
+        }
+
+        return safe.isEmpty() ? "ПРОВЕРКА" : safe;
+    }
+
+
+    private void saveDiceResultForPrompt(
+            long campaignId,
+            StateChangeEntity check,
+            int total,
+            boolean success
+    ) {
+        GameEventEntity entity = new GameEventEntity();
+        entity.campaignId = campaignId;
+        entity.speaker = GameEvent.Speaker.SYSTEM.name();
+        entity.text = "Результат проверки "
+                + displayAttribute(check.subjectName)
+                + ": d20="
+                + total
+                + " против СЛ "
+                + check.beforeNumber
+                + " — "
+                + (success ? "УСПЕХ" : "ПРОВАЛ")
+                + ".";
+        entity.includeInPrompt = true;
+        entity.createdAt = System.currentTimeMillis();
+
+        database.gameEventDao().insert(entity);
+    }
 
     private void updateSummaryIfNeeded() {
         summaryService.updateIfNeeded(

@@ -46,7 +46,8 @@ public class PromptBuilder {
                 inventory,
                 inventoryUpdate,
                 false,
-                CampaignPromptState.empty()
+                CampaignPromptState.empty(),
+                ""
         );
     }
 
@@ -71,6 +72,23 @@ public class PromptBuilder {
             List<String> inventoryBefore,
             CampaignPromptState campaignState
     ) {
+        return buildInventoryToolAwarePrompt(
+                playerText,
+                memoryContext,
+                inventoryBefore,
+                campaignState,
+                "NONE"
+        );
+    }
+
+
+    public String buildInventoryToolAwarePrompt(
+            String playerText,
+            MemoryContext memoryContext,
+            List<String> inventoryBefore,
+            CampaignPromptState campaignState,
+            String actionHint
+    ) {
         return buildPromptInternal(
                 playerText,
                 memoryContext,
@@ -79,7 +97,8 @@ public class PromptBuilder {
                 true,
                 campaignState == null
                         ? CampaignPromptState.empty()
-                        : campaignState
+                        : campaignState,
+                actionHint
         );
     }
 
@@ -90,7 +109,8 @@ public class PromptBuilder {
             List<String> inventory,
             String inventoryUpdate,
             boolean toolAwareInventory,
-            CampaignPromptState campaignState
+            CampaignPromptState campaignState,
+            String actionHint
     ) {
         String summary =
                 memoryContext.hasSummary()
@@ -126,6 +146,11 @@ public class PromptBuilder {
                 playerText == null
                         ? ""
                         : playerText.trim();
+
+        String safeActionHint =
+                actionHint == null || actionHint.trim().isEmpty()
+                        ? "NONE"
+                        : actionHint.trim();
 
         StringBuilder prompt = new StringBuilder();
 
@@ -221,6 +246,11 @@ public class PromptBuilder {
             prompt.append(safeInventoryUpdate);
         }
 
+        if (toolAwareInventory) {
+            prompt.append("\n\nACTION_HINT:\n");
+            prompt.append(safeActionHint);
+        }
+
         prompt.append("\n\nPLAYER_ACTION:\n");
         prompt.append(safePlayerText);
 
@@ -233,7 +263,8 @@ public class PromptBuilder {
     ) {
         prompt.append("\nТы мастер мрачной RPG.");
         prompt.append("\nПеред ответом определи итог инвентаря и вызови один tool.");
-        prompt.append("\nДля выбора tool используй INVENTORY BEFORE и PLAYER_ACTION.");
+        prompt.append("\nДля tool используй ACTION_HINT, INVENTORY BEFORE и PLAYER_ACTION.");
+        prompt.append("\nACTION_HINT EXPLICIT_ADD/REMOVE — вызови соответствующий tool для *имени*; NONE — решай сам.");
         prompt.append("\nINVENTORY BEFORE — истина. Считай PLAYER_ACTION выполненным.");
         prompt.append("\nADD: предмета не было, после действия он у игрока.");
         prompt.append("\nREMOVE: предмет был, после действия его нет.");
@@ -242,8 +273,11 @@ public class PromptBuilder {
         prompt.append("\nREMOVE — точное имя из INVENTORY BEFORE.");
         prompt.append("\nADD — естественное имя из PLAYER_ACTION.");
         prompt.append("\nПосле tool response кратко продолжи сцену по-русски и не противоречь результату.");
-        prompt.append("\nНе печатай служебные блоки и список инвентаря.");
-        prompt.append("\nНе решай за игрока. Кубики не бросай. Рискованное действие требует проверки.");
+        prompt.append("\nПосле сцены при необходимости: [NPC_MEMORY|имя ACTIVE_NPC|GOOD/BAD/NEUTRAL|факт].");
+        prompt.append("\nДля риска: [CHECK|STR/DEX/INT/CHA|5-25|причина]; до броска не описывай исход.");
+        prompt.append("\nНе добавляй служебные строки без причины и не раскрывай числовое отношение NPC.");
+        prompt.append("\nНе печатай другие служебные блоки и список инвентаря.");
+        prompt.append("\nНе решай за игрока. Кубики не бросай.");
         prompt.append("\nМрачно, атмосферно, без лишнего пафоса.");
     }
 
@@ -343,6 +377,9 @@ public class PromptBuilder {
 
             } else if (event.getSpeaker() == GameEvent.Speaker.MASTER) {
                 builder.append("GM: ");
+
+            } else if (event.getSpeaker() == GameEvent.Speaker.SYSTEM) {
+                builder.append("SYS: ");
 
             } else {
                 continue;
