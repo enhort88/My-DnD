@@ -94,6 +94,7 @@ import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.text.Editable;
 import android.text.TextWatcher;
+import com.example.mydnd.util.GameBackgroundManager;
 
 public class MainActivity extends ComponentActivity {
 
@@ -184,16 +185,18 @@ public class MainActivity extends ComponentActivity {
     private final SpannableStringBuilder chatDisplay = new SpannableStringBuilder();
     private final StringBuilder promptHistory = new StringBuilder();
 
-    private static final int COLOR_MASTER = Color.rgb(232, 224, 208);
-    private static final int COLOR_PLAYER = Color.rgb(150, 190, 255);
-    private static final int COLOR_SYSTEM = Color.rgb(120, 120, 120);
-    private static final int COLOR_CARD_BG = Color.argb(178, 30, 27, 22);
-    private static final int COLOR_CARD_BORDER = Color.rgb(199, 166, 106);
-    private static final int COLOR_CARD_GOOD = Color.rgb(132, 176, 125);
-    private static final int COLOR_CARD_BAD = Color.rgb(190, 124, 112);
-    private static final int COLOR_CARD_NEUTRAL = Color.rgb(199, 166, 106);
-    private static final int COLOR_CARD_REVERTED_BG = Color.argb(150, 48, 48, 48);
-    private static final int COLOR_CARD_REVERTED_TEXT = Color.rgb(145, 145, 145);
+    private int COLOR_MASTER;
+    private int COLOR_PLAYER;
+    private int COLOR_SYSTEM;
+
+    private int COLOR_CARD_BG;
+    private int COLOR_CARD_BORDER;
+    private int COLOR_CARD_GOOD;
+    private int COLOR_CARD_BAD;
+    private int COLOR_CARD_NEUTRAL;
+
+    private int COLOR_CARD_REVERTED_BG;
+    private int COLOR_CARD_REVERTED_TEXT;
 
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
@@ -234,6 +237,7 @@ public class MainActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+
         generationProfile = profileForResponseMode(
                 AppSettings.getResponseMode(this)
         );
@@ -242,6 +246,13 @@ public class MainActivity extends ComponentActivity {
 
         gameBackground =
                 findViewById(R.id.gameBackground);
+
+        applyGamePalette();
+
+        GameBackgroundManager.apply(
+                this,
+                gameBackground
+        );
 
         database = AppDatabase.getInstance(this);
         campaignMemory = new CampaignMemory(database);
@@ -2754,6 +2765,16 @@ public class MainActivity extends ComponentActivity {
 
         SeekBar volumeSeekBar =
                 dialog.findViewById(R.id.settingsVolumeSeekBar);
+        Button backgroundButton =
+                dialog.findViewById(R.id.settingsBackgroundButton);
+        backgroundButton.setText(
+                "ФОН ИГРЫ: "
+                        + GameBackgroundManager.getSelectedBackgroundTitle(this)
+        );
+
+        backgroundButton.setOnClickListener(v ->
+                showBackgroundChooser(backgroundButton)
+        );
 
         Button fastButton =
                 dialog.findViewById(R.id.settingsFastModeButton);
@@ -5443,5 +5464,154 @@ public class MainActivity extends ComponentActivity {
         sendButton.setAlpha(1.0f);
         sendButton.setScaleX(1.0f);
         sendButton.setScaleY(1.0f);
+    }
+    private void showBackgroundChooser(Button backgroundButton) {
+        List<GameBackgroundManager.BackgroundOption> backgrounds =
+                GameBackgroundManager.getAvailableBackgrounds(this);
+
+        if (backgrounds.isEmpty()) {
+            return;
+        }
+
+        String[] titles = new String[backgrounds.size()];
+
+        for (int i = 0; i < backgrounds.size(); i++) {
+            titles[i] = backgrounds.get(i).getTitle();
+        }
+
+        int selectedIndex =
+                GameBackgroundManager.getSelectedBackgroundIndex(this);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Выберите фон")
+                .setSingleChoiceItems(
+                        titles,
+                        selectedIndex,
+                        (dialog, which) -> {
+                            GameBackgroundManager.BackgroundOption selected =
+                                    backgrounds.get(which);
+
+                            GameBackgroundManager.saveSelectedBackground(
+                                    this,
+                                    selected.getResourceName()
+                            );
+
+                            applyGamePalette();
+
+                            GameBackgroundManager.apply(
+                                    this,
+                                    gameBackground
+                            );
+
+                            backgroundButton.setText(
+                                    "Фон игры: " + selected.getTitle()
+                            );
+                            if (currentCampaignId > 0L
+                                    && gameLayout.getVisibility() == View.VISIBLE) {
+
+                                reloadChatTimeline();
+                            }
+
+                            dialog.dismiss();
+                        }
+                )
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+    private void applyGamePalette() {
+        String backgroundName =
+                GameBackgroundManager.getSelectedBackgroundName(this);
+
+        if ("game_bg2".equals(backgroundName)) {
+
+            // Светлый фон — тёмные чернила и светлые плашки.
+            COLOR_MASTER =
+                    Color.rgb(48, 36, 25);
+
+            COLOR_PLAYER =
+                    Color.rgb(35, 70, 98);
+
+            COLOR_SYSTEM =
+                    Color.rgb(100, 91, 80);
+
+
+            COLOR_CARD_BG =
+                    Color.argb(
+                            220,
+                            232,
+                            216,
+                            184
+                    );
+
+            COLOR_CARD_BORDER =
+                    Color.rgb(112, 79, 42);
+
+            COLOR_CARD_GOOD =
+                    Color.rgb(68, 105, 60);
+
+            COLOR_CARD_BAD =
+                    Color.rgb(139, 62, 52);
+
+            COLOR_CARD_NEUTRAL =
+                    Color.rgb(112, 79, 42);
+
+
+            COLOR_CARD_REVERTED_BG =
+                    Color.argb(
+                            205,
+                            190,
+                            185,
+                            174
+                    );
+
+            COLOR_CARD_REVERTED_TEXT =
+                    Color.rgb(100, 96, 90);
+
+            return;
+        }
+
+
+        // game_bg — исходная тёмная палитра.
+        COLOR_MASTER =
+                Color.rgb(232, 224, 208);
+
+        COLOR_PLAYER =
+                Color.rgb(150, 190, 255);
+
+        COLOR_SYSTEM =
+                Color.rgb(120, 120, 120);
+
+
+        COLOR_CARD_BG =
+                Color.argb(
+                        178,
+                        30,
+                        27,
+                        22
+                );
+
+        COLOR_CARD_BORDER =
+                Color.rgb(199, 166, 106);
+
+        COLOR_CARD_GOOD =
+                Color.rgb(132, 176, 125);
+
+        COLOR_CARD_BAD =
+                Color.rgb(190, 124, 112);
+
+        COLOR_CARD_NEUTRAL =
+                Color.rgb(199, 166, 106);
+
+
+        COLOR_CARD_REVERTED_BG =
+                Color.argb(
+                        150,
+                        48,
+                        48,
+                        48
+                );
+
+        COLOR_CARD_REVERTED_TEXT =
+                Color.rgb(145, 145, 145);
     }
 }

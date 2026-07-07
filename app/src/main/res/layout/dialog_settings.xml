@@ -163,6 +163,13 @@
                 android:text="Удаляет все миры, героев, кампании, журнал, инвентарь и память. Модели и настройки приложения останутся."
                 android:textColor="#A9A092"
                 android:textSize="13sp" />
+            <Button
+                android:id="@+id/settingsBackgroundButton"
+                style="@style/FantasyButton"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="14dp"
+                android:text="ФОН ИГРЫ: 1" />
 
             <Button
                 android:id="@+id/settingsResetDataButton"
