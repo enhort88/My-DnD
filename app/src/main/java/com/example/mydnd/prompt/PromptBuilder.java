@@ -261,7 +261,7 @@ public class PromptBuilder {
     private void appendCompactToolAwareSystem(
             StringBuilder prompt
     ) {
-        prompt.append("\nТы мастер мрачной RPG.");
+        prompt.append("\nТы мастер DnD.");
         prompt.append("\nПеред ответом определи итог инвентаря и вызови минимум один tool.");
         prompt.append("\nНесколько изменений — tools по одному; после каждого response при необходимости вызови следующий.");
         prompt.append("\nДля tool используй ACTION_HINT, INVENTORY BEFORE и PLAYER_ACTION.");
@@ -279,7 +279,7 @@ public class PromptBuilder {
         prompt.append("\nНе добавляй служебные строки без причины и не раскрывай числовое отношение NPC.");
         prompt.append("\nНе печатай другие служебные блоки и список инвентаря.");
         prompt.append("\nНе решай за игрока. Кубики не бросай.");
-        prompt.append("\nМрачно, атмосферно, без лишнего пафоса.");
+        prompt.append("\nАтмосферно, без лишнего пафоса.");
     }
 
 
