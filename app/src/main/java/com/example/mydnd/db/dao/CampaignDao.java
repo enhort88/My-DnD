@@ -34,6 +34,16 @@ public interface CampaignDao {
     );
 
     @Query(
+            "UPDATE campaigns SET current_location = :location, updated_at = :updatedAt "
+                    + "WHERE id = :campaignId"
+    )
+    int updateCurrentLocation(
+            long campaignId,
+            String location,
+            long updatedAt
+    );
+
+    @Query(
             "UPDATE campaigns SET updated_at = :updatedAt "
                     + "WHERE id = :campaignId"
     )

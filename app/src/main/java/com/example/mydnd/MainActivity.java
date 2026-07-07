@@ -19,6 +19,11 @@ import com.example.mydnd.game.InventoryActionHintResolver;
 import com.example.mydnd.game.StateChangeRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
+import com.example.mydnd.director.DirectorFlowController;
+import com.example.mydnd.director.DirectorPromptState;
+import com.example.mydnd.director.DirectorPromptStateRepository;
+import com.example.mydnd.director.DirectorResult;
+import com.example.mydnd.director.RoomDirectorStore;
 import com.example.mydnd.game.save.SavedGameRepository;
 import com.example.mydnd.game.world.WorldMemoryRepository;
 import com.example.mydnd.game.world.WorldMaintenanceService;
@@ -112,6 +117,8 @@ public class MainActivity extends ComponentActivity {
             new InventoryActionHintResolver();
     private StateChangeRepository stateChangeRepository;
     private CampaignPromptRepository campaignPromptRepository;
+    private DirectorFlowController directorFlowController;
+    private DirectorPromptStateRepository directorPromptStateRepository;
     private SavedGameRepository savedGameRepository;
     private WorldMemoryRepository worldMemoryRepository;
     private WorldMaintenanceService worldMaintenanceService;
@@ -146,6 +153,8 @@ public class MainActivity extends ComponentActivity {
     private boolean masterStreamingStarted = false;
     private int masterStreamingStartPosition = -1;
     private boolean generationInProgress = false;
+    private volatile boolean directorTurnActive = false;
+    private volatile long activeDirectorCampaignId = 0L;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final StringBuilder pendingTokenBuffer = new StringBuilder();
@@ -242,6 +251,18 @@ public class MainActivity extends ComponentActivity {
         inventoryRepository = new InventoryRepository(database);
         stateChangeRepository = new StateChangeRepository(database);
         campaignPromptRepository = new CampaignPromptRepository(database);
+        directorPromptStateRepository = new DirectorPromptStateRepository(
+                database,
+                inventoryRepository
+        );
+        directorFlowController = new DirectorFlowController(
+                new RoomDirectorStore(
+                        database,
+                        inventoryRepository,
+                        stateChangeRepository
+                ),
+                this::onDirectorResult
+        );
         savedGameRepository = new SavedGameRepository(database);
         worldMemoryRepository = new WorldMemoryRepository(database);
 
@@ -514,7 +535,7 @@ public class MainActivity extends ComponentActivity {
 
             showThinkingIndicator();
 
-            processOnePassInventoryAndGenerate(
+            processDirectorAndGenerate(
                     action
             );
 
@@ -552,7 +573,7 @@ public class MainActivity extends ComponentActivity {
 
         showThinkingIndicator();
 
-        processOnePassInventoryAndGenerate(playerText);
+        processDirectorAndGenerate(playerText);
 
 
 
@@ -951,8 +972,42 @@ public class MainActivity extends ComponentActivity {
             return "◆";
         }
 
-        if (StateChangeRepository.TYPE_WORLD_EVENT.equals(type)) {
+        if (StateChangeRepository.TYPE_WORLD_EVENT.equals(type)
+                || StateChangeRepository.TYPE_WORLD_EVENT_UPDATE.equals(type)
+                || StateChangeRepository.TYPE_WORLD_EVENT_RESOLVE.equals(type)) {
             return "✦";
+        }
+
+        if (StateChangeRepository.TYPE_HEALTH_DAMAGE.equals(type)
+                || StateChangeRepository.TYPE_HEALTH_HEAL.equals(type)) {
+            return "♥";
+        }
+
+        if (StateChangeRepository.TYPE_MONEY_GAIN.equals(type)
+                || StateChangeRepository.TYPE_MONEY_SPEND.equals(type)) {
+            return "¤";
+        }
+
+        if (StateChangeRepository.TYPE_QUEST_START.equals(type)
+                || StateChangeRepository.TYPE_QUEST_UPDATE.equals(type)
+                || StateChangeRepository.TYPE_QUEST_COMPLETE.equals(type)
+                || StateChangeRepository.TYPE_QUEST_FAIL.equals(type)) {
+            return "◆";
+        }
+
+        if (StateChangeRepository.TYPE_ABILITY_ADD.equals(type)
+                || StateChangeRepository.TYPE_ABILITY_UPDATE.equals(type)
+                || StateChangeRepository.TYPE_ABILITY_REMOVE.equals(type)) {
+            return "✧";
+        }
+
+        if (StateChangeRepository.TYPE_EFFECT_ADD.equals(type)
+                || StateChangeRepository.TYPE_EFFECT_REMOVE.equals(type)) {
+            return "○";
+        }
+
+        if (StateChangeRepository.TYPE_LOCATION.equals(type)) {
+            return "⌖";
         }
 
         return "◇";
@@ -1120,11 +1175,17 @@ public class MainActivity extends ComponentActivity {
 
 
     private int stateChangeColor(String type) {
-        if (StateChangeRepository.TYPE_NPC_MEMORY_GOOD.equals(type)) {
+        if (StateChangeRepository.TYPE_NPC_MEMORY_GOOD.equals(type)
+                || StateChangeRepository.TYPE_HEALTH_HEAL.equals(type)
+                || StateChangeRepository.TYPE_MONEY_GAIN.equals(type)
+                || StateChangeRepository.TYPE_QUEST_COMPLETE.equals(type)) {
             return COLOR_CARD_GOOD;
         }
 
-        if (StateChangeRepository.TYPE_NPC_MEMORY_BAD.equals(type)) {
+        if (StateChangeRepository.TYPE_NPC_MEMORY_BAD.equals(type)
+                || StateChangeRepository.TYPE_HEALTH_DAMAGE.equals(type)
+                || StateChangeRepository.TYPE_MONEY_SPEND.equals(type)
+                || StateChangeRepository.TYPE_QUEST_FAIL.equals(type)) {
             return COLOR_CARD_BAD;
         }
 
@@ -1633,38 +1694,39 @@ public class MainActivity extends ComponentActivity {
      * один prompt decode, затем tool call -> Java/Room -> tool response
      * и художественное продолжение в том же native context.
      */
-    private void processOnePassInventoryAndGenerate(
+    private void processDirectorAndGenerate(
             String playerText
     ) {
         if (currentCampaignId <= 0L) {
             finishOnePassPreparationError(
-                    new IllegalStateException(
-                            "campaignId <= 0"
-                    )
+                    new IllegalStateException("campaignId <= 0")
             );
-
             return;
         }
 
-        final long campaignId =
-                currentCampaignId;
+        final long campaignId = currentCampaignId;
 
         DbExecutor.execute(() -> {
             try {
                 List<String> inventoryBefore =
-                        inventoryRepository.getItemNames(
-                                campaignId
-                        );
+                        inventoryRepository.getItemNames(campaignId);
 
                 MemoryContext memoryContext =
-                        campaignMemory.buildContext(
-                                campaignId,
-                                playerText
-                        );
+                        campaignMemory.buildContext(campaignId, playerText);
 
                 CampaignPromptState campaignState =
-                        campaignPromptRepository.build(
-                                campaignId
+                        campaignPromptRepository.build(campaignId);
+
+                InventoryActionHintResolver.Result actionHint =
+                        inventoryActionHintResolver.resolve(
+                                playerText,
+                                inventoryBefore
+                        );
+
+                DirectorPromptState directorState =
+                        directorPromptStateRepository.build(
+                                campaignId,
+                                actionHint.getPromptValue()
                         );
 
                 int masterEventCount =
@@ -1678,7 +1740,6 @@ public class MainActivity extends ComponentActivity {
                                 && masterEventCount % WORLD_EVENT_BATCH_SIZE == 0;
 
                 String worldEventBatchText = "";
-
                 if (runWorldEventPhase) {
                     List<GameEventEntity> previousMasterEvents =
                             database.gameEventDao().getRecentEventsBySpeaker(
@@ -1686,61 +1747,41 @@ public class MainActivity extends ComponentActivity {
                                     "MASTER",
                                     WORLD_EVENT_PREVIOUS_MASTER_LIMIT
                             );
-
-                    worldEventBatchText =
-                            buildWorldEventBatchText(
-                                    previousMasterEvents
-                            );
+                    worldEventBatchText = buildWorldEventBatchText(
+                            previousMasterEvents
+                    );
                 }
 
-                InventoryActionHintResolver.Result actionHint =
-                        inventoryActionHintResolver.resolve(
-                                playerText,
-                                inventoryBefore
-                        );
-
                 Log.d(
-                        "MyDND_ACTION_HINT",
-                        "ACTION_HINT="
-                                + actionHint.getPromptValue()
-                                + " | reason="
-                                + actionHint.getReason()
+                        "MyDND_DIRECTOR",
+                        "ACTION_HINT=" + actionHint.getPromptValue()
+                                + " | reason=" + actionHint.getReason()
                 );
 
                 String rawPrompt =
-                        promptBuilder.buildInventoryToolAwarePrompt(
+                        promptBuilder.buildDirectorToolAwarePrompt(
                                 playerText,
                                 memoryContext,
-                                inventoryBefore,
-                                campaignState,
-                                actionHint.getPromptValue()
+                                directorState,
+                                campaignState
                         );
 
-                String preparedPrompt =
-                        prepareMasterPrompt(
-                                rawPrompt
-                        );
+                String preparedPrompt = prepareMasterPrompt(rawPrompt);
 
                 Log.d(
-                        "MyDND_ONEPASS",
-                        "START campaignId="
-                                + campaignId
-                                + " | inventoryBefore="
-                                + inventoryBefore
-                                + " | promptChars="
-                                + preparedPrompt.length()
-                                + " | masterEventsBefore="
-                                + masterEventCount
-                                + " | worldEventCheck="
-                                + runWorldEventPhase
+                        "MyDND_DIRECTOR",
+                        "START campaignId=" + campaignId
+                                + " | promptChars=" + preparedPrompt.length()
+                                + " | masterEventsBefore=" + masterEventCount
+                                + " | worldEventCheck=" + runWorldEventPhase
                 );
 
                 Log.d(
-                        "MyDND_ONEPASS_PROMPT",
+                        "MyDND_DIRECTOR_PROMPT",
                         "\n" + preparedPrompt
                 );
 
-                startOnePassInventoryGeneration(
+                startDirectorGeneration(
                         preparedPrompt,
                         campaignId,
                         runWorldEventPhase,
@@ -1748,9 +1789,7 @@ public class MainActivity extends ComponentActivity {
                 );
 
             } catch (Throwable throwable) {
-                finishOnePassPreparationError(
-                        throwable
-                );
+                finishOnePassPreparationError(throwable);
             }
         });
     }
@@ -1805,28 +1844,27 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private void startOnePassInventoryGeneration(
+    private void startDirectorGeneration(
             String preparedPrompt,
             long campaignId,
             boolean runWorldEventPhase,
             String worldEventBatchText
     ) {
-        masterStreamingStartPosition =
-                -1;
+        masterStreamingStartPosition = -1;
+        activeDirectorCampaignId = campaignId;
+        directorTurnActive = true;
+        directorFlowController.startTurn();
 
-        modelManager.generateInventoryToolAware(
+        modelManager.generateDirectorAware(
                 ModelRole.MASTER,
                 preparedPrompt,
                 generationProfile,
                 runWorldEventPhase,
                 worldEventBatchText,
                 new NativeToolCallback() {
-
                     @Override
-                    public String onToolCall(
-                            String rawToolCall
-                    ) {
-                        return executeInventoryToolCallForContinuation(
+                    public String onToolCall(String rawToolCall) {
+                        return executeDirectorToolCallForContinuation(
                                 campaignId,
                                 rawToolCall
                         );
@@ -1838,254 +1876,105 @@ public class MainActivity extends ComponentActivity {
 
 
     /**
-     * Вызывается прямо из native generation thread.
-     * Здесь синхронно выполняется Room-команда, после чего строка
-     * tool response возвращается обратно в тот же llama_context.
+     * Runs synchronously on the native generation thread. Director actions go
+     * through Java validation + Room; the legacy periodic world-memory tools
+     * remain a separate background phase.
      */
-    private String executeInventoryToolCallForContinuation(
+    private String executeDirectorToolCallForContinuation(
             long campaignId,
             String rawToolCall
     ) {
         Log.d(
-                "MyDND_ONEPASS",
+                "MyDND_DIRECTOR",
                 "TOOL RAW:\n" + rawToolCall
         );
 
         try {
-            GemmaToolCallParser.Result result =
-                    gemmaToolCallParser.parse(
-                            rawToolCall
-                    );
+            GemmaToolCallParser.Result legacyResult =
+                    gemmaToolCallParser.parse(rawToolCall);
 
-            if (!result.hasToolCall()) {
-                List<String> inventoryNow =
-                        inventoryRepository.getItemNames(
-                                campaignId
-                        );
+            if (legacyResult.hasToolCall()) {
+                String functionName = legacyResult.getFunctionName();
 
-                String response =
-                        buildGemmaInventoryToolResponse(
-                                "no_inventory_change",
-                                "REJECTED",
-                                "NO_TOOL_CALL_PARSED",
-                                "",
-                                inventoryNow
-                        );
-
-                Log.e(
-                        "MyDND_ONEPASS",
-                        "Parser did not find tool call; returning safe response"
-                );
-
-                return response;
-            }
-
-            String functionName =
-                    result.getFunctionName();
-
-            if ("remember_world_event".equals(functionName)) {
-                int importance = result.getWorldEventImportance();
-
-                boolean stored = worldMemoryRepository.rememberForCampaign(
-                        campaignId,
-                        result.getWorldEventText(),
-                        importance
-                );
-
-                Log.d(
-                        "MyDND_WORLD_MEMORY",
-                        (stored ? "STORED" : "SKIPPED")
-                                + " importance="
-                                + importance
-                                + ": "
-                                + result.getWorldEventText()
-                );
-
-                return "<|tool_response>response:remember_world_event{status:<|\"|>"
-                        + (stored ? "STORED" : "SKIPPED")
-                        + "<|\"|>,importance:"
-                        + importance
-                        + "}<tool_response|>";
-            }
-
-            if ("no_world_event".equals(functionName)) {
-                Log.d(
-                        "MyDND_WORLD_MEMORY",
-                        "NO WORLD EVENT"
-                );
-
-                return "<|tool_response>response:no_world_event{status:<|\"|>OK<|\"|>}<tool_response|>";
-            }
-
-            if ("no_inventory_change".equals(
-                    functionName
-            )) {
-                List<String> inventoryNow =
-                        inventoryRepository.getItemNames(
-                                campaignId
-                        );
-
-                String response =
-                        buildGemmaInventoryToolResponse(
-                                functionName,
-                                "OK",
-                                "NO_INVENTORY_CHANGE",
-                                "",
-                                inventoryNow
-                        );
-
-                Log.d(
-                        "MyDND_ONEPASS",
-                        "TOOL NO CHANGE | AFTER="
-                                + inventoryNow
-                );
-
-                return response;
-            }
-
-            InventoryRepository.ApplyResult applyResult =
-                    inventoryRepository.applyToolCall(
+                if ("remember_world_event".equals(functionName)) {
+                    int importance = legacyResult.getWorldEventImportance();
+                    boolean stored = worldMemoryRepository.rememberForCampaign(
                             campaignId,
-                            functionName,
-                            result.getItemName()
+                            legacyResult.getWorldEventText(),
+                            importance
                     );
 
-            List<String> inventoryNow =
-                    inventoryRepository.getItemNames(
-                            campaignId
+                    Log.d(
+                            "MyDND_WORLD_MEMORY",
+                            (stored ? "STORED" : "SKIPPED")
+                                    + " importance=" + importance
+                                    + ": " + legacyResult.getWorldEventText()
                     );
 
-            String status =
-                    applyResult.isApplied()
-                            ? "APPLIED"
-                            : "REJECTED";
+                    return "<|tool_response>response:remember_world_event{status:<|\"|>"
+                            + (stored ? "STORED" : "SKIPPED")
+                            + "<|\"|>,importance:"
+                            + importance
+                            + "}<tool_response|>";
+                }
 
-            Log.d(
-                    "MyDND_ONEPASS",
-                    "TOOL "
-                            + status
-                            + " | function="
-                            + functionName
-                            + " | code="
-                            + applyResult.getCode()
-                            + " | item="
-                            + applyResult.getItemName()
-                            + " | AFTER="
-                            + inventoryNow
-            );
-
-            if (applyResult.isApplied()) {
-                StateChangeEntity stateChange =
-                        stateChangeRepository.recordInventoryChange(
-                                campaignId,
-                                functionName,
-                                applyResult.getItemName()
-                        );
-
-                showStateChangeBeforeNarrative(
-                        campaignId,
-                        stateChange
-                );
+                if ("no_world_event".equals(functionName)) {
+                    Log.d("MyDND_WORLD_MEMORY", "NO WORLD EVENT");
+                    return "<|tool_response>response:no_world_event{status:<|\"|>OK<|\"|>}<tool_response|>";
+                }
             }
 
-            return buildGemmaInventoryToolResponse(
-                    functionName,
-                    status,
-                    applyResult.getCode(),
-                    applyResult.getItemName(),
-                    inventoryNow
+            return directorFlowController.onToolCall(
+                    campaignId,
+                    rawToolCall
             );
 
         } catch (Throwable throwable) {
             Log.e(
-                    "MyDND_ONEPASS",
-                    "Tool execution failed",
+                    "MyDND_DIRECTOR",
+                    "Director tool execution failed",
                     throwable
             );
 
-            List<String> inventoryNow;
-
-            try {
-                inventoryNow =
-                        inventoryRepository.getItemNames(
-                                campaignId
-                        );
-            } catch (Throwable ignored) {
-                inventoryNow =
-                        Collections.emptyList();
-            }
-
-            return buildGemmaInventoryToolResponse(
-                    "no_inventory_change",
-                    "ERROR",
-                    "JAVA_TOOL_EXCEPTION",
-                    "",
-                    inventoryNow
-            );
+            return "<|tool_response>response:director_action{status:<|\"|>REJECTED<|\"|>,"
+                    + "code:<|\"|>JAVA_DIRECTOR_EXCEPTION<|\"|>,"
+                    + "type:<|\"|>DONE<|\"|>,name:<|\"|><|\"|>,"
+                    + "value:<|\"|><|\"|>,state_after:<|\"|><|\"|>}<tool_response|>";
         }
     }
 
 
-    private String buildGemmaInventoryToolResponse(
-            String functionName,
-            String status,
-            String code,
-            String itemName,
-            List<String> inventoryAfter
-    ) {
-        String safeFunctionName =
-                sanitizeToolField(
-                        functionName
-                );
-
-        if (safeFunctionName.isEmpty()) {
-            safeFunctionName =
-                    "no_inventory_change";
+    private void onDirectorResult(DirectorResult result) {
+        if (result == null) {
+            return;
         }
 
-        String inventoryText =
-                inventoryAfter == null
-                || inventoryAfter.isEmpty()
-                        ? "пусто"
-                        : String.join(
-                                " | ",
-                                inventoryAfter
-                        );
+        Log.d(
+                "MyDND_DIRECTOR",
+                "RESULT status=" + result.getStatus()
+                        + " | type=" + result.getAction().getType().getToolCode()
+                        + " | code=" + result.getCode()
+                        + " | cardId=" + result.getStateChangeId()
+                        + " | after=" + result.getStateAfter()
+        );
 
-        return "<|tool_response>response:"
-                + safeFunctionName
-                + "{status:<|\"|>"
-                + sanitizeToolField(status)
-                + "<|\"|>,code:<|\"|>"
-                + sanitizeToolField(code)
-                + "<|\"|>,item:<|\"|>"
-                + sanitizeToolField(itemName)
-                + "<|\"|>,inventory_after:<|\"|>"
-                + sanitizeToolField(inventoryText)
-                + "<|\"|>}<tool_response|>";
-    }
-
-
-    private String sanitizeToolField(
-            String value
-    ) {
-        if (value == null) {
-            return "";
+        if (result.getStateChangeId() <= 0L) {
+            return;
         }
 
-        return value
-                .replace('\n', ' ')
-                .replace('\r', ' ')
-                .replace('\t', ' ')
-                .replace("<|", "‹")
-                .replace("|>", "›")
-                .replace('{', '(')
-                .replace('}', ')')
-                .trim()
-                .replaceAll(
-                        "\\s+",
-                        " "
-                );
+        StateChangeEntity change =
+                stateChangeRepository.get(result.getStateChangeId());
+
+        long campaignId = activeDirectorCampaignId;
+
+        if (campaignId <= 0L) {
+            return;
+        }
+
+        showStateChangeBeforeNarrative(
+                campaignId,
+                change
+        );
     }
 
 
@@ -2103,6 +1992,12 @@ public class MainActivity extends ComponentActivity {
 
             generationInProgress =
                     false;
+
+            directorTurnActive =
+                    false;
+
+            activeDirectorCampaignId =
+                    0L;
 
             generationCancelledByUser =
                     false;
@@ -3174,6 +3069,8 @@ public class MainActivity extends ComponentActivity {
                     inputEditText.setText("");
 
                     generationInProgress = false;
+                    directorTurnActive = false;
+                    activeDirectorCampaignId = 0L;
                     generationCancelledByUser = false;
                     masterStreamingStarted = false;
                     masterStreamingStartPosition = -1;
@@ -3709,23 +3606,21 @@ public class MainActivity extends ComponentActivity {
                             int importance,
                             String tone
                     ) {
-                        DbExecutor.execute(() -> {
-                            StateChangeEntity change =
-                                    stateChangeRepository.recordWorldEvent(
-                                            campaignId,
-                                            text
-                                    );
+                        /*
+                         * Background world maintenance stores autonomous world
+                         * memory, but it must never fabricate a visible plaque.
+                         * Visible state-change cards are reserved for APPLIED
+                         * Director actions only.
+                         */
+                        Log.d(
+                                "MyDND_WORLD_MAINT",
+                                "Background world event stored"
+                                        + " | importance=" + importance
+                                        + " | tone=" + tone
+                                        + " | text=" + text
+                        );
 
-                            runOnUiThread(() -> {
-                                if (currentCampaignId == campaignId
-                                        && change != null) {
-                                    appendStateChangeCard(change);
-                                    updateChat();
-                                }
-
-                                restoreSendButtonAfterMaintenance(campaignId);
-                            });
-                        });
+                        restoreSendButtonAfterMaintenance(campaignId);
                     }
 
                     @Override
@@ -4401,6 +4296,8 @@ public class MainActivity extends ComponentActivity {
                                 ? ""
                                 : fullText;
 
+                final boolean isDirectorTurn = directorTurnActive;
+
                 final NarrativeDirectiveParser.ParseResult directiveResult =
                         narrativeDirectiveParser.parse(narrative);
 
@@ -4450,6 +4347,12 @@ public class MainActivity extends ComponentActivity {
 
                         generationInProgress =
                                 false;
+
+                        directorTurnActive =
+                                false;
+
+                        activeDirectorCampaignId =
+                                0L;
 
                         generationCancelledByUser =
                                 false;
@@ -4558,11 +4461,17 @@ public class MainActivity extends ComponentActivity {
                                         "Отправить"
                                 );
 
-                                applyNarrativeDirectives(
-                                        currentCampaignId,
-                                        directiveResult.getDirectives(),
-                                        () -> runWorldMaintenanceAfterMasterTurn()
-                                );
+                                if (isDirectorTurn) {
+                                    directorTurnActive = false;
+                                    activeDirectorCampaignId = 0L;
+                                    runWorldMaintenanceAfterMasterTurn();
+                                } else {
+                                    applyNarrativeDirectives(
+                                            currentCampaignId,
+                                            directiveResult.getDirectives(),
+                                            () -> runWorldMaintenanceAfterMasterTurn()
+                                    );
+                                }
                             }
                     );
                 });
@@ -4576,6 +4485,8 @@ public class MainActivity extends ComponentActivity {
                     flushStreamingTokens();
 
                     generationInProgress = false;
+                    directorTurnActive = false;
+                    activeDirectorCampaignId = 0L;
                     generationCancelledByUser = false;
                     masterStreamingStarted = false;
 

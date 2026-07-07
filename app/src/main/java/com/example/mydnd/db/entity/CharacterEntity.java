@@ -66,6 +66,9 @@ public class CharacterEntity {
     @ColumnInfo(name = "max_hp", defaultValue = "10")
     public int maxHp = 10;
 
+    @ColumnInfo(name = "money", defaultValue = "0")
+    public int money;
+
     @NonNull
     @ColumnInfo(name = "generation_prompt")
     public String generationPrompt = "";

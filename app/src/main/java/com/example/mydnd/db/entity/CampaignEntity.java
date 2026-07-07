@@ -1,5 +1,6 @@
 package com.example.mydnd.db.entity;
 
+import androidx.annotation.NonNull;
 import androidx.room.ColumnInfo;
 import androidx.room.Entity;
 import androidx.room.PrimaryKey;
@@ -24,6 +25,10 @@ public class CampaignEntity {
 
     @ColumnInfo(name = "current_situation_id", defaultValue = "0")
     public long currentSituationId;
+
+    @NonNull
+    @ColumnInfo(name = "current_location", defaultValue = "''")
+    public String currentLocation = "";
 
     @ColumnInfo(name = "created_at")
     public long createdAt;

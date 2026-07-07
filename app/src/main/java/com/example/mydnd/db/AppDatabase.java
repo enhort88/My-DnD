@@ -9,25 +9,33 @@ import androidx.room.RoomDatabase;
 import androidx.room.migration.Migration;
 import androidx.sqlite.db.SupportSQLiteDatabase;
 
+import com.example.mydnd.db.dao.AbilityDao;
 import com.example.mydnd.db.dao.CampaignDao;
 import com.example.mydnd.db.dao.CharacterDao;
+import com.example.mydnd.db.dao.DirectorActionAuditDao;
+import com.example.mydnd.db.dao.EffectDao;
 import com.example.mydnd.db.dao.GameEventDao;
 import com.example.mydnd.db.dao.InventoryItemDao;
 import com.example.mydnd.db.dao.MemoryFactDao;
 import com.example.mydnd.db.dao.NpcDao;
+import com.example.mydnd.db.dao.QuestDao;
 import com.example.mydnd.db.dao.SituationDao;
 import com.example.mydnd.db.dao.SummaryDao;
 import com.example.mydnd.db.dao.WorldDao;
 import com.example.mydnd.db.dao.WorldEventDao;
 import com.example.mydnd.db.dao.WorldTimelineDao;
 import com.example.mydnd.db.dao.StateChangeDao;
+import com.example.mydnd.db.entity.AbilityEntity;
 import com.example.mydnd.db.entity.CampaignEntity;
 import com.example.mydnd.db.entity.CharacterEntity;
 import com.example.mydnd.db.entity.CharacterStartingItemEntity;
+import com.example.mydnd.db.entity.DirectorActionAuditEntity;
+import com.example.mydnd.db.entity.EffectEntity;
 import com.example.mydnd.db.entity.GameEventEntity;
 import com.example.mydnd.db.entity.InventoryItemEntity;
 import com.example.mydnd.db.entity.MemoryFactEntity;
 import com.example.mydnd.db.entity.NpcEntity;
+import com.example.mydnd.db.entity.QuestEntity;
 import com.example.mydnd.db.entity.SituationEntity;
 import com.example.mydnd.db.entity.SummaryEntity;
 import com.example.mydnd.db.entity.WorldEntity;
@@ -51,16 +59,26 @@ import com.example.mydnd.db.entity.WorldRaceEntity;
                 SituationEntity.class,
                 WorldTimelineEntity.class,
                 WorldEventEntity.class,
-                StateChangeEntity.class
+                StateChangeEntity.class,
+                QuestEntity.class,
+                AbilityEntity.class,
+                EffectEntity.class,
+                DirectorActionAuditEntity.class
         },
-        version = 7,
+        version = 8,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
 
     private static volatile AppDatabase instance;
 
+    public abstract AbilityDao abilityDao();
+
     public abstract CampaignDao campaignDao();
+
+    public abstract DirectorActionAuditDao directorActionAuditDao();
+
+    public abstract EffectDao effectDao();
 
     public abstract GameEventDao gameEventDao();
 
@@ -79,6 +97,8 @@ public abstract class AppDatabase extends RoomDatabase {
     public abstract CharacterDao characterDao();
 
     public abstract NpcDao npcDao();
+
+    public abstract QuestDao questDao();
 
     public abstract SituationDao situationDao();
 
@@ -526,6 +546,152 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+    private static final Migration MIGRATION_7_8 =
+            new Migration(7, 8) {
+                @Override
+                public void migrate(@NonNull SupportSQLiteDatabase database) {
+                    database.execSQL(
+                            "ALTER TABLE campaigns ADD COLUMN current_location TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN money INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE npcs ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'"
+                    );
+
+                    database.execSQL(
+                            "UPDATE npcs SET status = CASE WHEN active = 1 THEN 'ACTIVE' ELSE 'INACTIVE' END"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN name TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN name_key TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN details TEXT NOT NULL DEFAULT ''"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'"
+                    );
+
+                    database.execSQL(
+                            "ALTER TABLE world_events ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "UPDATE world_events SET updated_at = created_at WHERE updated_at = 0"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS quests (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "campaign_id INTEGER NOT NULL, " +
+                                    "name TEXT NOT NULL, " +
+                                    "name_key TEXT NOT NULL, " +
+                                    "status TEXT NOT NULL, " +
+                                    "summary TEXT NOT NULL, " +
+                                    "created_at INTEGER NOT NULL, " +
+                                    "updated_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_quests_campaign_id ON quests(campaign_id)"
+                    );
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_quests_status ON quests(status)"
+                    );
+                    database.execSQL(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS index_quests_campaign_id_name_key " +
+                                    "ON quests(campaign_id, name_key)"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS abilities (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "campaign_id INTEGER NOT NULL, " +
+                                    "character_id INTEGER NOT NULL, " +
+                                    "name TEXT NOT NULL, " +
+                                    "name_key TEXT NOT NULL, " +
+                                    "category TEXT NOT NULL, " +
+                                    "details TEXT NOT NULL, " +
+                                    "active INTEGER NOT NULL, " +
+                                    "created_at INTEGER NOT NULL, " +
+                                    "updated_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_abilities_campaign_id ON abilities(campaign_id)"
+                    );
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_abilities_character_id ON abilities(character_id)"
+                    );
+                    database.execSQL(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS index_abilities_campaign_id_name_key " +
+                                    "ON abilities(campaign_id, name_key)"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS effects (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "campaign_id INTEGER NOT NULL, " +
+                                    "name TEXT NOT NULL, " +
+                                    "name_key TEXT NOT NULL, " +
+                                    "details TEXT NOT NULL, " +
+                                    "active INTEGER NOT NULL, " +
+                                    "created_at INTEGER NOT NULL, " +
+                                    "updated_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_effects_campaign_id ON effects(campaign_id)"
+                    );
+                    database.execSQL(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS index_effects_campaign_id_name_key " +
+                                    "ON effects(campaign_id, name_key)"
+                    );
+
+                    database.execSQL(
+                            "CREATE TABLE IF NOT EXISTS director_action_audit (" +
+                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                    "campaign_id INTEGER NOT NULL, " +
+                                    "type TEXT NOT NULL, " +
+                                    "name TEXT NOT NULL, " +
+                                    "value TEXT NOT NULL, " +
+                                    "details TEXT NOT NULL, " +
+                                    "status TEXT NOT NULL, " +
+                                    "code TEXT NOT NULL, " +
+                                    "state_after TEXT NOT NULL, " +
+                                    "state_change_id INTEGER NOT NULL, " +
+                                    "created_at INTEGER NOT NULL" +
+                                    ")"
+                    );
+
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_director_action_audit_campaign_id " +
+                                    "ON director_action_audit(campaign_id)"
+                    );
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_director_action_audit_created_at " +
+                                    "ON director_action_audit(created_at)"
+                    );
+                    database.execSQL(
+                            "CREATE INDEX IF NOT EXISTS index_director_action_audit_status " +
+                                    "ON director_action_audit(status)"
+                    );
+                }
+            };
+
     public static AppDatabase getInstance(Context context) {
         if (instance == null) {
             synchronized (AppDatabase.class) {
@@ -541,7 +707,8 @@ public abstract class AppDatabase extends RoomDatabase {
                                     MIGRATION_3_4,
                                     MIGRATION_4_5,
                                     MIGRATION_5_6,
-                                    MIGRATION_6_7
+                                    MIGRATION_6_7,
+                                    MIGRATION_7_8
                             )
                             .build();
                 }

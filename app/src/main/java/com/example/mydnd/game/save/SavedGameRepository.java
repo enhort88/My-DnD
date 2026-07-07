@@ -87,6 +87,10 @@ public class SavedGameRepository {
             database.summaryDao().deleteForCampaign(campaignId);
             database.memoryFactDao().deleteForCampaign(campaignId);
             database.stateChangeDao().deleteForCampaign(campaignId);
+            database.questDao().deleteForCampaign(campaignId);
+            database.abilityDao().deleteForCampaign(campaignId);
+            database.effectDao().deleteForCampaign(campaignId);
+            database.directorActionAuditDao().deleteForCampaign(campaignId);
 
             // These rows are currently created for one campaign even though
             // they also carry world_timeline_id for context lookup.

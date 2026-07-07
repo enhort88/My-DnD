@@ -2,6 +2,8 @@ package com.example.mydnd.prompt;
 
 import com.example.mydnd.game.CampaignPromptState;
 import com.example.mydnd.game.GameEvent;
+import com.example.mydnd.director.DirectorPromptState;
+import com.example.mydnd.director.DirectorToolSpec;
 import com.example.mydnd.memory.MemoryContext;
 
 import java.util.Collections;
@@ -100,6 +102,116 @@ public class PromptBuilder {
                         : campaignState,
                 actionHint
         );
+    }
+
+
+    /**
+     * Production prompt for the universal Director cycle.
+     * Canonical state is deliberately compact and comes from Room, not narrative parsing.
+     */
+    public String buildDirectorToolAwarePrompt(
+            String playerText,
+            MemoryContext memoryContext,
+            DirectorPromptState directorState,
+            CampaignPromptState campaignState
+    ) {
+        DirectorPromptState state = directorState == null
+                ? DirectorPromptState.empty()
+                : directorState;
+        CampaignPromptState campaign = campaignState == null
+                ? CampaignPromptState.empty()
+                : campaignState;
+
+        String summary = memoryContext.hasSummary()
+                ? limitFromStart(memoryContext.getLatestSummary(), MAX_SUMMARY_CHARS)
+                : "";
+        String recentEvents = limitFromEnd(
+                buildRecentEvents(memoryContext),
+                MAX_RECENT_EVENTS_CHARS
+        );
+        String relevantFacts = limitFromStart(
+                buildRelevantFacts(memoryContext),
+                MAX_RELEVANT_FACTS_CHARS
+        );
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("SYSTEM:");
+        prompt.append(DirectorToolSpec.compactRules());
+        prompt.append(DirectorToolSpec.declaration());
+
+        prompt.append("\n\nCURRENT_SCENE:\n");
+        prompt.append(limitFromStart(campaign.getCurrentScene(), MAX_SCENE_CHARS));
+
+        appendOptionalBlock(
+                prompt,
+                "WORLD",
+                limitFromStart(campaign.getWorld(), MAX_WORLD_CHARS)
+        );
+        appendOptionalBlock(
+                prompt,
+                "CHARACTER",
+                limitFromStart(campaign.getCharacter(), MAX_CHARACTER_CHARS)
+        );
+        appendOptionalBlock(
+                prompt,
+                "ACTIVE_SITUATIONS",
+                limitFromStart(campaign.getActiveSituations(), MAX_SITUATIONS_CHARS)
+        );
+
+        if (!summary.isEmpty()) {
+            prompt.append("\n\nSUMMARY:\n").append(summary);
+        }
+        if (!recentEvents.isEmpty()) {
+            prompt.append("\n\nRECENT_EVENTS:\n").append(recentEvents);
+        }
+        if (!relevantFacts.isEmpty()) {
+            prompt.append("\n\nRELEVANT_FACTS:\n").append(relevantFacts);
+        }
+
+        prompt.append("\n\nSTATE BEFORE:");
+        appendStateLine(prompt, "LOCATION", state.getLocation());
+        appendStateLine(prompt, "HP", state.getHealth());
+        appendStateLine(prompt, "MONEY", state.getMoney());
+        appendStateList(prompt, "INVENTORY", state.getInventory());
+        appendStateList(prompt, "NPCS", state.getActiveNpcs());
+        appendStateList(prompt, "QUESTS", state.getActiveQuests());
+        appendStateList(prompt, "WORLD_EVENTS", state.getWorldEvents());
+        appendStateList(prompt, "ABILITIES", state.getAbilities());
+        appendStateList(prompt, "EFFECTS", state.getEffects());
+        appendStateLine(prompt, "ACTION_HINT", state.getHint());
+
+        prompt.append("\n\nPLAYER_ACTION:\n");
+        prompt.append(playerText == null ? "" : playerText.trim());
+        return prompt.toString();
+    }
+
+    private void appendStateLine(StringBuilder prompt, String title, String value) {
+        String safe = value == null ? "" : value.trim();
+        prompt.append("\n").append(title).append(": ")
+                .append(safe.isEmpty() ? "NONE" : safe);
+    }
+
+    private void appendStateList(
+            StringBuilder prompt,
+            String title,
+            List<String> values
+    ) {
+        prompt.append("\n").append(title).append(":");
+        if (values == null || values.isEmpty()) {
+            prompt.append(" NONE");
+            return;
+        }
+        int count = 0;
+        for (String value : values) {
+            if (value == null || value.trim().isEmpty()) {
+                continue;
+            }
+            prompt.append("\n- ").append(value.trim());
+            count++;
+        }
+        if (count == 0) {
+            prompt.append(" NONE");
+        }
     }
 
 

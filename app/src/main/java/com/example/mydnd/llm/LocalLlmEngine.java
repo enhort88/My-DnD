@@ -168,7 +168,7 @@ public class LocalLlmEngine implements LlmEngine {
     }
 
 
-    public void generateInventoryToolAware(
+    public void generateDirectorAware(
             String prompt,
             GenerationProfile profile,
             boolean runWorldEventPhase,
@@ -183,20 +183,20 @@ public class LocalLlmEngine implements LlmEngine {
                     try {
                         Log.d(
                                 TAG,
-                                "generateInventoryToolAware(): started"
+                                "generateDirectorAware(): started"
                         );
 
                         load();
 
                         Log.d(
                                 TAG,
-                                "generateInventoryToolAware(): model loaded"
+                                "generateDirectorAware(): model loaded"
                         );
 
                         if (cancelled) {
                             Log.d(
                                     TAG,
-                                    "generateInventoryToolAware(): cancelled after load"
+                                    "generateDirectorAware(): cancelled after load"
                             );
 
                             callback.onComplete("");
@@ -215,7 +215,7 @@ public class LocalLlmEngine implements LlmEngine {
                                 };
 
                         String answer =
-                                nativeBridge.nativeGenerateInventoryToolAwareStream(
+                                nativeBridge.nativeGenerateDirectorAwareStream(
                                         handle,
                                         prompt,
                                         profile.getMaxTokens(),
@@ -231,22 +231,27 @@ public class LocalLlmEngine implements LlmEngine {
 
                         Log.d(
                                 TAG,
-                                "generateInventoryToolAware(): native generation finished"
+                                "generateDirectorAware(): native generation finished"
                         );
+
+                        if (answer != null
+                                && answer.startsWith("Ошибка:")) {
+                            throw new IllegalStateException(answer);
+                        }
 
                         callback.onComplete(answer);
 
                     } catch (Throwable throwable) {
                         Log.e(
                                 TAG,
-                                "generateInventoryToolAware(): error",
+                                "generateDirectorAware(): error",
                                 throwable
                         );
 
                         callback.onError(throwable);
                     }
                 },
-                "LocalLlmInventoryToolAwareThread"
+                "LocalLlmDirectorAwareThread"
         ).start();
     }
 

@@ -53,6 +53,10 @@ public class NpcEntity {
     @ColumnInfo(name = "knowledge_summary", defaultValue = "''")
     public String knowledgeSummary = "";
 
+    @NonNull
+    @ColumnInfo(name = "status", defaultValue = "'ACTIVE'")
+    public String status = "ACTIVE";
+
     @ColumnInfo(name = "active")
     public boolean active;
 

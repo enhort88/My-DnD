@@ -1,4 +1,4 @@
-//package com.example.mydnd;
+package com.example.mydnd;//package com.example.mydnd;
 //
 //import android.os.Bundle;
 //

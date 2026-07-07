@@ -50,6 +50,38 @@ public interface WorldEventDao {
     long getLatestId(long timelineId);
 
     @Query(
+            "SELECT * FROM world_events WHERE world_timeline_id = :timelineId "
+                    + "AND name_key = :nameKey AND status = 'ACTIVE' "
+                    + "ORDER BY id DESC LIMIT 1"
+    )
+    WorldEventEntity findActiveByNameKey(long timelineId, String nameKey);
+
+    @Query(
+            "SELECT * FROM world_events WHERE world_timeline_id = :timelineId "
+                    + "AND status = 'ACTIVE' ORDER BY updated_at DESC, id DESC LIMIT :limit"
+    )
+    List<WorldEventEntity> getActive(long timelineId, int limit);
+
+    @Query(
+            "UPDATE world_events SET text = :text, details = :details, "
+                    + "importance = :importance, updated_at = :updatedAt "
+                    + "WHERE id = :eventId"
+    )
+    int updateDirectorEvent(
+            long eventId,
+            String text,
+            String details,
+            int importance,
+            long updatedAt
+    );
+
+    @Query(
+            "UPDATE world_events SET status = :status, updated_at = :updatedAt "
+                    + "WHERE id = :eventId"
+    )
+    int updateStatus(long eventId, String status, long updatedAt);
+
+    @Query(
             "SELECT COUNT(*) FROM world_events "
                     + "WHERE world_timeline_id = :timelineId AND text = :text"
     )

@@ -16,6 +16,24 @@ public class StateChangeRepository {
     public static final String TYPE_NPC_MEMORY_NEUTRAL = "NPC_MEMORY_NEUTRAL";
     public static final String TYPE_DICE_CHECK = "DICE_CHECK";
     public static final String TYPE_WORLD_EVENT = "WORLD_EVENT";
+    public static final String TYPE_HEALTH_DAMAGE = "HEALTH_DAMAGE";
+    public static final String TYPE_HEALTH_HEAL = "HEALTH_HEAL";
+    public static final String TYPE_MONEY_GAIN = "MONEY_GAIN";
+    public static final String TYPE_MONEY_SPEND = "MONEY_SPEND";
+    public static final String TYPE_NPC_UPSERT = "NPC_UPSERT";
+    public static final String TYPE_NPC_STATUS = "NPC_STATUS";
+    public static final String TYPE_WORLD_EVENT_UPDATE = "WORLD_EVENT_UPDATE";
+    public static final String TYPE_WORLD_EVENT_RESOLVE = "WORLD_EVENT_RESOLVE";
+    public static final String TYPE_QUEST_START = "QUEST_START";
+    public static final String TYPE_QUEST_UPDATE = "QUEST_UPDATE";
+    public static final String TYPE_QUEST_COMPLETE = "QUEST_COMPLETE";
+    public static final String TYPE_QUEST_FAIL = "QUEST_FAIL";
+    public static final String TYPE_ABILITY_ADD = "ABILITY_ADD";
+    public static final String TYPE_ABILITY_UPDATE = "ABILITY_UPDATE";
+    public static final String TYPE_ABILITY_REMOVE = "ABILITY_REMOVE";
+    public static final String TYPE_EFFECT_ADD = "EFFECT_ADD";
+    public static final String TYPE_EFFECT_REMOVE = "EFFECT_REMOVE";
+    public static final String TYPE_LOCATION = "LOCATION";
 
     public static final String STATUS_APPLIED = "APPLIED";
     public static final String STATUS_REVERTED = "REVERTED";
@@ -155,20 +173,37 @@ public class StateChangeRepository {
         return insertAndReload(change);
     }
 
-    public StateChangeEntity recordWorldEvent(
+    /**
+     * Records a Director-owned state card after canonical Room state has changed.
+     * New Director actions are intentionally non-undoable until a safe per-type rollback exists.
+     */
+    public StateChangeEntity recordDirectorChange(
             long campaignId,
-            String text
+            String type,
+            String title,
+            String description,
+            long subjectId,
+            String subjectName,
+            String beforeText,
+            String afterText,
+            int beforeNumber,
+            int afterNumber
     ) {
-        if (campaignId <= 0L || safe(text).isEmpty()) {
+        if (campaignId <= 0L || safe(type).isEmpty() || safe(title).isEmpty()) {
             return null;
         }
 
         StateChangeEntity change = base(campaignId);
-        change.type = TYPE_WORLD_EVENT;
-        change.title = "МИР ИЗМЕНИЛСЯ";
-        change.description = safe(text);
+        change.type = safe(type);
+        change.title = safe(title);
+        change.description = safe(description);
+        change.subjectId = Math.max(0L, subjectId);
+        change.subjectName = safe(subjectName);
+        change.beforeText = safe(beforeText);
+        change.afterText = safe(afterText);
+        change.beforeNumber = beforeNumber;
+        change.afterNumber = afterNumber;
         change.canUndo = false;
-
         return insertAndReload(change);
     }
 

@@ -94,6 +94,11 @@ public class WorldMemoryRepository {
         event.importance = clampImportance(importance);
         event.eventType = eventType;
         event.tone = tone;
+        event.name = "";
+        event.nameKey = "";
+        event.details = "";
+        event.status = "ACTIVE";
+        event.updatedAt = now;
         event.createdAt = now;
 
         database.worldEventDao().insert(event);

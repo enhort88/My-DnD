@@ -108,19 +108,25 @@ static bool ends_with_text(
 
 
 
-static bool is_inventory_tool_call_text(
+static bool is_director_tool_call_text(
         const std::string & text
 ) {
-    return text.find("add_item_to_inventory{")
+    return text.find("director_action{")
+           != std::string::npos;
+}
+
+
+static bool is_director_done_call(
+        const std::string & text
+) {
+    return text.find("type:<|\"|>DONE<|\"|>")
                    != std::string::npos
-           || text.find("remove_item_from_inventory{")
-                   != std::string::npos
-           || text.find("no_inventory_change{")
+           || text.find("type:DONE")
                    != std::string::npos;
 }
 
 
-static bool is_complete_inventory_tool_call(
+static bool is_complete_tool_call(
         const std::string & text
 ) {
     if (text.empty()) {
@@ -135,11 +141,7 @@ static bool is_complete_inventory_tool_call(
     }
 
     const bool known_short_call =
-            text.find("add_item_to_inventory{")
-                    != std::string::npos
-            || text.find("remove_item_from_inventory{")
-                    != std::string::npos
-            || text.find("no_inventory_change{")
+            text.find("director_action{")
                     != std::string::npos
             || text.find("remember_world_event{")
                     != std::string::npos
@@ -293,104 +295,116 @@ static bool get_single_special_token(
 }
 
 
-static std::string build_inventory_tool_grammar(
+static std::string build_director_action_grammar(
         const llama_vocab * vocab
 ) {
     llama_token tool_call_open = 0;
     llama_token tool_call_close = 0;
     llama_token tool_string_quote = 0;
 
-    if (!get_single_special_token(
-            vocab,
-            "<|tool_call>",
-            tool_call_open
-    )) {
+    if (!get_single_special_token(vocab, "<|tool_call>", tool_call_open)
+        || !get_single_special_token(vocab, "<tool_call|>", tool_call_close)
+        || !get_single_special_token(vocab, "<|\"|>", tool_string_quote)) {
         return "";
     }
-
-    if (!get_single_special_token(
-            vocab,
-            "<tool_call|>",
-            tool_call_close
-    )) {
-        return "";
-    }
-
-    if (!get_single_special_token(
-            vocab,
-            "<|\"|>",
-            tool_string_quote
-    )) {
-        return "";
-    }
-
-    MYDND_LOGI(
-            "inventory grammar special tokens: open=%d, quote=%d, close=%d",
-            static_cast<int>(tool_call_open),
-            static_cast<int>(tool_string_quote),
-            static_cast<int>(tool_call_close)
-    );
 
     const std::string open =
             "<[" + std::to_string(tool_call_open) + "]>";
-
     const std::string close =
             "<[" + std::to_string(tool_call_close) + "]>";
-
     const std::string quote =
             "<[" + std::to_string(tool_string_quote) + "]>";
 
     std::string grammar;
-
-    grammar += "root ::= add | remove | no-change\n\n";
-
-    grammar += "add ::= ";
+    grammar += "root ::= action\n\n";
+    grammar += "action ::= ";
     grammar += open;
-    grammar += " \"call:add_item_to_inventory{name:\" ";
+    grammar += " \"call:director_action{type:\" ";
     grammar += quote;
-    grammar += " item-name ";
+    grammar += " action-type ";
+    grammar += quote;
+    grammar += " \",name:\" ";
+    grammar += quote;
+    grammar += " name-text ";
+    grammar += quote;
+    grammar += " \",value:\" ";
+    grammar += quote;
+    grammar += " value-text ";
+    grammar += quote;
+    grammar += " \",details:\" ";
+    grammar += quote;
+    grammar += " details-text ";
     grammar += quote;
     grammar += " \"}\" ";
     grammar += close;
     grammar += "\n\n";
 
-    grammar += "remove ::= ";
-    grammar += open;
-    grammar += " \"call:remove_item_from_inventory{name:\" ";
-    grammar += quote;
-    grammar += " item-name ";
-    grammar += quote;
-    grammar += " \"}\" ";
-    grammar += close;
-    grammar += "\n\n";
-
-    grammar += "no-change ::= ";
-    grammar += open;
-    grammar += " \"call:no_inventory_change{}\" ";
-    grammar += close;
-    grammar += "\n\n";
-
-    grammar += "item-name ::= [^<>{}\\r\\n]{1,80}\n";
+    grammar += "action-type ::= \"DONE\" | \"CHECK\" | \"INV_ADD\" | \"INV_REMOVE\" | \"HP\" | \"MONEY\" | \"NPC_UPSERT\" | \"NPC_MEMORY\" | \"NPC_STATUS\" | \"WORLD_ADD\" | \"WORLD_UPDATE\" | \"WORLD_RESOLVE\" | \"QUEST_START\" | \"QUEST_UPDATE\" | \"QUEST_COMPLETE\" | \"QUEST_FAIL\" | \"ABILITY_ADD\" | \"ABILITY_UPDATE\" | \"ABILITY_REMOVE\" | \"EFFECT_ADD\" | \"EFFECT_REMOVE\" | \"LOCATION\"\n";
+    grammar += "name-text ::= [^<>{}\\r\\n]{0,120}\n";
+    grammar += "value-text ::= [^<>{}\\r\\n]{0,80}\n";
+    grammar += "details-text ::= [^<>{}\\r\\n]{0,300}\n";
 
     MYDND_LOGI(
-            "inventory decision grammar:\n%s",
+            "director action grammar:\n%s",
             grammar.c_str()
     );
 
     return grammar;
 }
 
-static llama_sampler * create_inventory_decision_sampler(
+static std::string build_director_done_grammar(
+        const llama_vocab * vocab
+) {
+    llama_token tool_call_open = 0;
+    llama_token tool_call_close = 0;
+    llama_token tool_string_quote = 0;
+
+    if (!get_single_special_token(vocab, "<|tool_call>", tool_call_open)
+        || !get_single_special_token(vocab, "<tool_call|>", tool_call_close)
+        || !get_single_special_token(vocab, "<|\"|>", tool_string_quote)) {
+        return "";
+    }
+
+    const std::string open = "<[" + std::to_string(tool_call_open) + "]>";
+    const std::string close = "<[" + std::to_string(tool_call_close) + "]>";
+    const std::string quote = "<[" + std::to_string(tool_string_quote) + "]>";
+
+    std::string grammar = "root ::= ";
+    grammar += open;
+    grammar += " \"call:director_action{type:\" ";
+    grammar += quote;
+    grammar += " \"DONE\" ";
+    grammar += quote;
+    grammar += " \",name:\" ";
+    grammar += quote;
+    grammar += " ";
+    grammar += quote;
+    grammar += " \",value:\" ";
+    grammar += quote;
+    grammar += " ";
+    grammar += quote;
+    grammar += " \",details:\" ";
+    grammar += quote;
+    grammar += " ";
+    grammar += quote;
+    grammar += " \"}\" ";
+    grammar += close;
+    grammar += "\n";
+    return grammar;
+}
+
+
+static llama_sampler * create_director_action_sampler(
         const llama_vocab * vocab
 ) {
     std::string grammar =
-            build_inventory_tool_grammar(
+            build_director_action_grammar(
                     vocab
             );
 
     if (grammar.empty()) {
         MYDND_LOGE(
-                "create_inventory_decision_sampler: Gemma tool special tokens are not single tokens"
+                "create_director_decision_sampler: Gemma tool special tokens are not single tokens"
         );
 
         return nullptr;
@@ -415,7 +429,7 @@ static llama_sampler * create_inventory_decision_sampler(
 
     if (grammar_sampler == nullptr) {
         MYDND_LOGE(
-                "create_inventory_decision_sampler: llama_sampler_init_grammar returned nullptr"
+                "create_director_decision_sampler: llama_sampler_init_grammar returned nullptr"
         );
 
         llama_sampler_free(
@@ -426,9 +440,8 @@ static llama_sampler * create_inventory_decision_sampler(
     }
 
     /*
-     * Grammar MUST be first. Then top-k/top-p only rank tokens that are valid
-     * for ADD / REMOVE / NONE. Keep the old decision sampling parameters so
-     * this experiment changes protocol enforcement, not semantic sampling.
+     * Grammar MUST be first. Then top-k/top-p only rank tokens valid for
+     * the universal Director protocol. Keep this phase almost deterministic.
      */
     llama_sampler_chain_add(
             sampler,
@@ -476,6 +489,33 @@ static llama_sampler * create_inventory_decision_sampler(
             )
     );
 
+    return sampler;
+}
+
+
+static llama_sampler * create_director_done_sampler(
+        const llama_vocab * vocab
+) {
+    std::string grammar = build_director_done_grammar(vocab);
+    if (grammar.empty()) {
+        return nullptr;
+    }
+
+    llama_sampler_chain_params sampler_params =
+            llama_sampler_chain_default_params();
+    sampler_params.no_perf = true;
+
+    llama_sampler * sampler = llama_sampler_chain_init(sampler_params);
+    llama_sampler * grammar_sampler =
+            llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+
+    if (grammar_sampler == nullptr) {
+        llama_sampler_free(sampler);
+        return nullptr;
+    }
+
+    llama_sampler_chain_add(sampler, grammar_sampler);
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
     return sampler;
 }
 
@@ -1819,7 +1859,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
 extern "C"
 JNIEXPORT jstring JNICALL
-Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStream(
+Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         JNIEnv * env,
         jobject /* this */,
         jlong nativeHandle,
@@ -1835,7 +1875,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         jobject toolCallbackObject) {
 
     MYDND_LOGI(
-            "nativeGenerateInventoryToolAwareStream: ENTER"
+            "nativeGenerateDirectorAwareStream: ENTER"
     );
 
     if (nativeHandle == 0) {
@@ -1956,19 +1996,26 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 narrative_predict + 60;
 
         const int decision_max_tokens =
+                256;
+
+        /*
+         * Minimum live reserves, not worst-case sums. The previous preflight
+         * added decision_max_tokens + a phantom tool reserve + world-event
+         * reserve before generation had even started. With ctx=2048 that
+         * rejected valid turns (the reported case missed by only five tokens).
+         *
+         * Real Director actions and tool responses are checked dynamically
+         * against the actual token count below. World-event memory is optional
+         * background work and must never block the main turn.
+         */
+        const int director_startup_reserve =
                 96;
 
-        const int max_inventory_tool_calls_per_turn =
-                4;
+        const int tool_response_min_reserve =
+                128;
 
-        const int max_additional_inventory_tool_calls =
-                max_inventory_tool_calls_per_turn - 1;
-
-        const int tool_response_reserve =
-                192;
-
-        const int world_event_instruction_reserve =
-                176;
+        const int narrative_min_reserve =
+                96;
 
         const int world_event_max_tokens =
                 72;
@@ -2026,29 +2073,42 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                         handle->ctx
                 );
 
+        const int minimum_turn_reserve =
+                director_startup_reserve
+                + tool_response_min_reserve
+                + narrative_min_reserve;
+
         if (static_cast<uint32_t>(
                     n_prompt
-                    + decision_max_tokens
-                    + tool_response_reserve
-                    + narrative_hard_max
-                    + world_event_instruction_reserve
-                    + world_event_max_tokens
+                    + minimum_turn_reserve
+                    + 1
             ) >= n_ctx) {
 
             MYDND_LOGE(
-                    "nativeGenerateInventoryToolAwareStream: context overflow, prompt=%d, decision=%d, toolReserve=%d, narrative=%d, ctx=%u",
+                    "nativeGenerateDirectorAwareStream: context overflow, prompt=%d, directorMin=%d, toolMin=%d, narrativeMin=%d, ctx=%u",
                     n_prompt,
-                    decision_max_tokens,
-                    tool_response_reserve,
-                    narrative_hard_max,
+                    director_startup_reserve,
+                    tool_response_min_reserve,
+                    narrative_min_reserve,
                     n_ctx
             );
 
             return string_to_jstring(
                     env,
-                    "Ошибка: tool-aware prompt и ответ не помещаются в контекст модели."
+                    "Ошибка: prompt слишком большой для запуска Режиссёра в текущем контексте модели."
             );
         }
+
+        MYDND_LOGI(
+                "nativeGenerateDirectorAwareStream: context budget, prompt=%d, free=%d, directorMin=%d, toolMin=%d, narrativeMin=%d, worldEvent=%s, ctx=%u",
+                n_prompt,
+                static_cast<int>(n_ctx) - n_prompt,
+                director_startup_reserve,
+                tool_response_min_reserve,
+                narrative_min_reserve,
+                should_run_world_event_phase ? "YES" : "NO",
+                n_ctx
+        );
 
         std::vector<llama_token> prompt_tokens(
                 n_prompt
@@ -2077,7 +2137,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         }
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: prompt tokenized = %d",
+                "nativeGenerateDirectorAwareStream: prompt tokenized = %d",
                 tokenized
         );
 
@@ -2095,7 +2155,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
 
             if (handle->cancel_requested.load()) {
                 MYDND_LOGI(
-                        "nativeGenerateInventoryToolAwareStream: cancelled during prompt decode, pos=%d",
+                        "nativeGenerateDirectorAwareStream: cancelled during prompt decode, pos=%d",
                         pos
                 );
 
@@ -2125,7 +2185,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
             ) != 0) {
 
                 MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: prompt decode failed, pos=%d, chunk=%d",
+                        "nativeGenerateDirectorAwareStream: prompt decode failed, pos=%d, chunk=%d",
                         pos,
                         chunk_size
                 );
@@ -2149,7 +2209,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                 ).count();
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: ONE PASS prompt decode = %lld ms",
+                "nativeGenerateDirectorAwareStream: ONE PASS prompt decode = %lld ms",
                 static_cast<long long>(
                         prompt_decode_ms
                 )
@@ -2163,390 +2223,346 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         }
 
         /*
-         * Фаза 1: короткое детерминированное решение о состоянии инвентаря.
-         * Ничего из этой фазы пользователю не стримим.
+         * DIRECTOR PHASE.
+         * The prompt is decoded once. Every structural action is then forced by
+         * the universal grammar, executed synchronously in Java/Room, and its
+         * tool response is decoded back into the SAME llama_context.
+         * Nothing is streamed until DONE has been executed.
          */
-        llama_sampler * decision_sampler =
-                create_inventory_decision_sampler(
-                        handle->vocab
-                );
+        int context_tokens_used = tokenized;
 
-        if (decision_sampler == nullptr) {
-            MYDND_LOGE(
-                    "nativeGenerateInventoryToolAwareStream: inventory decision grammar init failed"
-            );
+        /*
+         * Keep enough room for a useful answer after Director. Do not reserve
+         * world-event memory here: it is best-effort and is checked using its
+         * actual token count after the narrative is complete.
+         */
+        const int post_tool_narrative_reserve = narrative_min_reserve;
+        const int max_director_actions_per_turn = 8;
 
-            return string_to_jstring(
-                    env,
-                    "Ошибка: не удалось инициализировать inventory decision grammar."
-            );
-        }
+        auto generate_director_action =
+                [&](std::string & raw_tool_call,
+                    int & generated_tokens,
+                    bool force_done) -> bool {
 
-        MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: inventory decision grammar ENABLED"
-        );
+            llama_sampler * decision_sampler =
+                    force_done
+                            ? create_director_done_sampler(handle->vocab)
+                            : create_director_action_sampler(handle->vocab);
 
-        std::string decision_output;
-
-        bool tool_call_complete =
-                false;
-
-        auto decision_start =
-                std::chrono::steady_clock::now();
-
-        int decision_tokens =
-                0;
-
-        for (
-                int i = 0;
-                i < decision_max_tokens;
-                i++
-                ) {
-
-            if (handle->cancel_requested.load()) {
-                break;
-            }
-
-            llama_token token =
-                    llama_sampler_sample(
-                            decision_sampler,
-                            handle->ctx,
-                            -1
-                    );
-
-            if (llama_vocab_is_eog(
-                    handle->vocab,
-                    token
-            )) {
-                break;
-            }
-
-            decision_tokens++;
-
-            char buffer[256];
-
-            int piece_length =
-                    llama_token_to_piece(
-                            handle->vocab,
-                            token,
-                            buffer,
-                            sizeof(buffer),
-                            0,
-                            true
-                    );
-
-            if (piece_length > 0) {
-                decision_output.append(
-                        buffer,
-                        piece_length
-                );
-            }
-
-            llama_batch token_batch =
-                    llama_batch_get_one(
-                            &token,
-                            1
-                    );
-
-            if (llama_decode(
-                    handle->ctx,
-                    token_batch
-            ) != 0) {
-
+            if (decision_sampler == nullptr) {
                 MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: decision token decode failed"
+                        "nativeGenerateDirectorAwareStream: director grammar init failed"
                 );
-
-                break;
+                return false;
             }
 
-            if (is_complete_inventory_tool_call(
-                    decision_output
-            )) {
-                tool_call_complete =
-                        true;
+            raw_tool_call.clear();
+            generated_tokens = 0;
+            bool complete = false;
 
-                break;
-            }
-        }
+            for (int i = 0; i < decision_max_tokens; i++) {
+                if (handle->cancel_requested.load()) {
+                    break;
+                }
 
-        auto decision_end =
-                std::chrono::steady_clock::now();
+                if (context_tokens_used
+                        + tool_response_min_reserve
+                        + post_tool_narrative_reserve
+                        + 1
+                    >= static_cast<int>(n_ctx)) {
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: director action stopped at context boundary"
+                    );
+                    break;
+                }
 
-        auto decision_ms =
-                std::chrono::duration_cast<
-                        std::chrono::milliseconds
-                >(
-                        decision_end
-                        - decision_start
-                ).count();
-
-        llama_sampler_free(
-                decision_sampler
-        );
-
-        MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: decision = %lld ms, tokens=%d, tool=%s",
-                static_cast<long long>(
-                        decision_ms
-                ),
-                decision_tokens,
-                tool_call_complete
-                        ? "YES"
-                        : "NO"
-        );
-
-        MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: TOOL RAW = %s",
-                decision_output.c_str()
-        );
-
-        if (handle->cancel_requested.load()) {
-            return string_to_jstring(
-                    env,
-                    ""
-            );
-        }
-
-        if (!tool_call_complete) {
-            /*
-             * Безопасный fallback:
-             * если модель нарушила протокол и сразу написала текст,
-             * не ломаем игру и показываем его как обычный ответ.
-             */
-            MYDND_LOGE(
-                    "nativeGenerateInventoryToolAwareStream: no complete tool call; fallback to direct output"
-            );
-
-            if (!decision_output.empty()) {
-                jstring jText =
-                        string_to_jstring(
-                                env,
-                                decision_output
+                llama_token token =
+                        llama_sampler_sample(
+                                decision_sampler,
+                                handle->ctx,
+                                -1
                         );
 
-                if (jText != nullptr) {
-                    env->CallVoidMethod(
-                            tokenCallbackObject,
-                            onTokenMethod,
-                            jText
-                    );
+                if (llama_vocab_is_eog(handle->vocab, token)) {
+                    break;
+                }
 
-                    env->DeleteLocalRef(
-                            jText
+                generated_tokens++;
+
+                char buffer[256];
+                int piece_length =
+                        llama_token_to_piece(
+                                handle->vocab,
+                                token,
+                                buffer,
+                                sizeof(buffer),
+                                0,
+                                true
+                        );
+
+                if (piece_length > 0) {
+                    raw_tool_call.append(buffer, piece_length);
+                }
+
+                llama_batch token_batch =
+                        llama_batch_get_one(&token, 1);
+
+                if (llama_decode(handle->ctx, token_batch) != 0) {
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: director action token decode failed"
                     );
+                    break;
+                }
+
+                context_tokens_used++;
+
+                if (is_complete_tool_call(raw_tool_call)) {
+                    complete = true;
+                    break;
                 }
             }
 
-            return string_to_jstring(
-                    env,
-                    decision_output
-            );
-        }
+            llama_sampler_free(decision_sampler);
+            return complete;
+        };
 
-        /*
-         * Фаза 2: синхронно отдаём raw tool call Java-коду.
-         * Java валидирует команду, меняет Room и возвращает
-         * уже готовый Gemma 4 <|tool_response>... блок.
-         */
-        jstring jToolCall =
-                string_to_jstring(
-                        env,
-                        decision_output
+        auto execute_and_decode_tool_response =
+                [&](const std::string & raw_tool_call,
+                    int tool_number,
+                    bool & confirmed_done) -> bool {
+
+            confirmed_done = false;
+
+            MYDND_LOGI(
+                    "nativeGenerateDirectorAwareStream: DIRECTOR TOOL #%d RAW = %s",
+                    tool_number,
+                    raw_tool_call.c_str()
+            );
+
+            jstring jToolCall =
+                    string_to_jstring(env, raw_tool_call);
+
+            jobject toolResponseObject =
+                    env->CallObjectMethod(
+                            toolCallbackObject,
+                            onToolCallMethod,
+                            jToolCall
+                    );
+
+            env->DeleteLocalRef(jToolCall);
+
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: Java Director callback failed for #%d",
+                        tool_number
                 );
+                return false;
+            }
 
-        jobject toolResponseObject =
-                env->CallObjectMethod(
-                        toolCallbackObject,
-                        onToolCallMethod,
-                        jToolCall
+            if (toolResponseObject == nullptr) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: Java Director callback returned null for #%d",
+                        tool_number
                 );
+                return false;
+            }
 
-        env->DeleteLocalRef(
-                jToolCall
-        );
+            std::string tool_response =
+                    jstring_to_string(
+                            env,
+                            static_cast<jstring>(toolResponseObject)
+                    );
+            env->DeleteLocalRef(toolResponseObject);
 
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-
-            return string_to_jstring(
-                    env,
-                    "Ошибка: Java tool callback завершился с исключением."
-            );
-        }
-
-        if (toolResponseObject == nullptr) {
-            return string_to_jstring(
-                    env,
-                    "Ошибка: Java tool callback вернул null."
-            );
-        }
-
-        std::string tool_response =
-                jstring_to_string(
-                        env,
-                        static_cast<jstring>(
-                                toolResponseObject
-                        )
+            if (tool_response.empty()) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: empty Director response for #%d",
+                        tool_number
                 );
+                return false;
+            }
 
-        env->DeleteLocalRef(
-                toolResponseObject
-        );
-
-        if (tool_response.empty()) {
-            return string_to_jstring(
-                    env,
-                    "Ошибка: Java tool callback вернул пустой ответ."
+            MYDND_LOGI(
+                    "nativeGenerateDirectorAwareStream: DIRECTOR RESPONSE #%d = %s",
+                    tool_number,
+                    tool_response.c_str()
             );
-        }
 
-        MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: TOOL RESPONSE = %s",
-                tool_response.c_str()
-        );
+            confirmed_done =
+                    is_director_done_call(raw_tool_call)
+                    && tool_response.find(
+                            "status:<|\"|>NO_CHANGE<|\"|>"
+                    ) != std::string::npos;
 
-        /*
-         * Продолжаем ТОТ ЖЕ llama_context.
-         * add_special=false: BOS в середине контекста не нужен.
-         * parse_special=true: <|tool_response> должен стать special token.
-         */
-        int tool_response_count =
-                -llama_tokenize(
-                        handle->vocab,
-                        tool_response.c_str(),
-                        static_cast<int32_t>(
-                                tool_response.size()
-                        ),
-                        nullptr,
-                        0,
-                        false,
-                        true
+            int response_count =
+                    -llama_tokenize(
+                            handle->vocab,
+                            tool_response.c_str(),
+                            static_cast<int32_t>(tool_response.size()),
+                            nullptr,
+                            0,
+                            false,
+                            true
+                    );
+
+            if (response_count <= 0) {
+                return false;
+            }
+
+            std::vector<llama_token> response_tokens(response_count);
+            int response_tokenized =
+                    llama_tokenize(
+                            handle->vocab,
+                            tool_response.c_str(),
+                            static_cast<int32_t>(tool_response.size()),
+                            response_tokens.data(),
+                            static_cast<int32_t>(response_tokens.size()),
+                            false,
+                            true
+                    );
+
+            if (response_tokenized <= 0) {
+                return false;
+            }
+
+            if (context_tokens_used
+                    + response_tokenized
+                    + post_tool_narrative_reserve
+                >= static_cast<int>(n_ctx)) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: not enough context for Director response #%d",
+                        tool_number
                 );
+                return false;
+            }
 
-        if (tool_response_count <= 0) {
-            return string_to_jstring(
-                    env,
-                    "Ошибка: не удалось токенизировать tool response."
-            );
-        }
+            for (int pos = 0; pos < response_tokenized; pos += prompt_chunk_size) {
+                if (handle->cancel_requested.load()) {
+                    return false;
+                }
 
-        std::vector<llama_token> tool_response_tokens(
-                tool_response_count
-        );
+                int chunk_size = prompt_chunk_size;
+                if (pos + chunk_size > response_tokenized) {
+                    chunk_size = response_tokenized - pos;
+                }
 
-        int tool_response_tokenized =
-                llama_tokenize(
-                        handle->vocab,
-                        tool_response.c_str(),
-                        static_cast<int32_t>(
-                                tool_response.size()
-                        ),
-                        tool_response_tokens.data(),
-                        static_cast<int32_t>(
-                                tool_response_tokens.size()
-                        ),
-                        false,
-                        true
-                );
+                llama_batch response_batch =
+                        llama_batch_get_one(
+                                response_tokens.data() + pos,
+                                chunk_size
+                        );
 
-        if (tool_response_tokenized < 0) {
-            return string_to_jstring(
-                    env,
-                    "Ошибка: tokenizer не обработал tool response."
-            );
-        }
+                if (llama_decode(handle->ctx, response_batch) != 0) {
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: Director response decode failed for #%d",
+                            tool_number
+                    );
+                    return false;
+                }
+            }
 
-        auto response_decode_start =
-                std::chrono::steady_clock::now();
+            context_tokens_used += response_tokenized;
+            return true;
+        };
+
+        bool director_done = false;
+        bool director_protocol_ok = true;
+        int director_action_count = 0;
+
+        auto director_start = std::chrono::steady_clock::now();
 
         for (
-                int pos = 0;
-                pos < tool_response_tokenized;
-                pos += prompt_chunk_size
+                int tool_number = 1;
+                tool_number <= max_director_actions_per_turn;
+                tool_number++
                 ) {
 
             if (handle->cancel_requested.load()) {
-                return string_to_jstring(
-                        env,
-                        ""
-                );
+                director_protocol_ok = false;
+                break;
             }
 
-            int chunk_size =
-                    prompt_chunk_size;
+            std::string raw_tool_call;
+            int action_tokens = 0;
 
-            if (pos + chunk_size
-                > tool_response_tokenized) {
+            const bool force_done =
+                    tool_number == max_director_actions_per_turn;
 
-                chunk_size =
-                        tool_response_tokenized
-                        - pos;
-            }
-
-            llama_batch response_batch =
-                    llama_batch_get_one(
-                            tool_response_tokens.data()
-                            + pos,
-                            chunk_size
-                    );
-
-            if (llama_decode(
-                    handle->ctx,
-                    response_batch
-            ) != 0) {
-
+            if (!generate_director_action(
+                    raw_tool_call,
+                    action_tokens,
+                    force_done
+            )) {
                 MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: tool response decode failed, pos=%d",
-                        pos
+                        "nativeGenerateDirectorAwareStream: incomplete Director action #%d: %s",
+                        tool_number,
+                        raw_tool_call.c_str()
                 );
+                director_protocol_ok = false;
+                break;
+            }
 
-                return string_to_jstring(
-                        env,
-                        "Ошибка: llama_decode не смог добавить tool response в текущий context."
+            director_action_count++;
+
+            if (!is_director_tool_call_text(raw_tool_call)) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: non-Director action rejected: %s",
+                        raw_tool_call.c_str()
                 );
+                director_protocol_ok = false;
+                break;
+            }
+
+            bool confirmed_done = false;
+            if (!execute_and_decode_tool_response(
+                    raw_tool_call,
+                    tool_number,
+                    confirmed_done
+            )) {
+                director_protocol_ok = false;
+                break;
+            }
+
+            if (confirmed_done) {
+                director_done = true;
+                break;
             }
         }
 
-        auto response_decode_end =
-                std::chrono::steady_clock::now();
-
-        auto response_decode_ms =
-                std::chrono::duration_cast<
-                        std::chrono::milliseconds
-                >(
-                        response_decode_end
-                        - response_decode_start
+        auto director_end = std::chrono::steady_clock::now();
+        auto director_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                        director_end - director_start
                 ).count();
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: SAME CONTEXT tool response decode = %lld ms, tokens=%d",
-                static_cast<long long>(
-                        response_decode_ms
-                ),
-                tool_response_tokenized
+                "nativeGenerateDirectorAwareStream: DIRECTOR = %lld ms, actions=%d, done=%s, protocol=%s",
+                static_cast<long long>(director_ms),
+                director_action_count,
+                director_done ? "YES" : "NO",
+                director_protocol_ok ? "OK" : "ERROR"
         );
 
-        int context_tokens_used =
-                tokenized
-                + decision_tokens
-                + tool_response_tokenized;
+        if (handle->cancel_requested.load()) {
+            return string_to_jstring(env, "");
+        }
 
-        const int world_event_context_reserve =
-                should_run_world_event_phase
-                        ? world_event_instruction_reserve
-                          + world_event_max_tokens
-                        : 0;
-
-        const int post_tool_narrative_reserve =
-                48;
+        if (!director_done) {
+            MYDND_LOGE(
+                    "nativeGenerateDirectorAwareStream: Director cycle ended without DONE"
+            );
+            return string_to_jstring(
+                    env,
+                    "Ошибка: Режиссёр не завершил цикл действий."
+            );
+        }
 
         /*
-         * Фаза 3: event loop поверх того же llama_context.
-         * Обычный текст стримим игроку. Если модель выдаёт ещё один inventory
-         * tool call, не показываем его, а синхронно отправляем в Java listener,
-         * декодируем tool response и продолжаем генерацию в том же context.
+         * NARRATIVE PHASE.
+         * Only starts after the Director cycle. Any new tool marker here is a
+         * protocol error and is suppressed instead of leaking into the chat.
          */
         llama_sampler * narrative_sampler =
                 create_sampler(
@@ -2558,337 +2574,24 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
 
         std::string narrative_output;
         std::string streaming_pending;
-        std::string late_tool_call_output;
+        bool narrative_protocol_stop = false;
+        const int soft_min_tokens = narrative_predict * 3 / 4;
+        int narrative_text_tokens = 0;
+        int generated_phase_tokens = 0;
 
-        bool capturing_late_tool_call =
-                false;
+        auto narrative_start = std::chrono::steady_clock::now();
 
-        bool stop_after_protocol_error =
-                false;
-
-        int inventory_tool_call_count =
-                1;
-
-        int late_tool_call_tokens =
-                0;
-
-        const int soft_min_tokens =
-                narrative_predict * 3 / 4;
-
-        const int narrative_generation_hard_max =
-                narrative_hard_max
-                + decision_max_tokens
-                  * max_additional_inventory_tool_calls;
-
-        auto stream_narrative_text =
-                [&](const std::string & text) -> bool {
-
-            if (text.empty()) {
-                return true;
-            }
-
-            narrative_output.append(
-                    text
-            );
-
-            streaming_pending.append(
-                    text
-            );
-
-            size_t ready_length =
-                    complete_utf8_prefix_length(
-                            streaming_pending
-                    );
-
-            if (ready_length <= 0) {
-                return true;
-            }
-
-            std::string ready_text =
-                    streaming_pending.substr(
-                            0,
-                            ready_length
-                    );
-
-            streaming_pending.erase(
-                    0,
-                    ready_length
-            );
-
-            jstring jToken =
-                    string_to_jstring(
-                            env,
-                            ready_text
-                    );
-
-            if (jToken != nullptr) {
-                env->CallVoidMethod(
-                        tokenCallbackObject,
-                        onTokenMethod,
-                        jToken
-                );
-
-                env->DeleteLocalRef(
-                        jToken
-                );
-            }
-
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
-                return false;
-            }
-
-            return true;
-        };
-
-        auto handle_late_inventory_tool_call =
-                [&](const std::string & raw_tool_call,
-                    int tool_number) -> bool {
-
-            MYDND_LOGI(
-                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_CALL #%d RAW = %s",
-                    tool_number,
-                    raw_tool_call.c_str()
-            );
-
-            jstring jLateToolCall =
-                    string_to_jstring(
-                            env,
-                            raw_tool_call
-                    );
-
-            jobject lateToolResponseObject =
-                    env->CallObjectMethod(
-                            toolCallbackObject,
-                            onToolCallMethod,
-                            jLateToolCall
-                    );
-
-            env->DeleteLocalRef(
-                    jLateToolCall
-            );
-
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
-
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: Java listener failed for TOOL_CALL #%d",
-                        tool_number
-                );
-
-                return false;
-            }
-
-            if (lateToolResponseObject == nullptr) {
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: Java listener returned null for TOOL_CALL #%d",
-                        tool_number
-                );
-
-                return false;
-            }
-
-            std::string late_tool_response =
-                    jstring_to_string(
-                            env,
-                            static_cast<jstring>(
-                                    lateToolResponseObject
-                            )
-                    );
-
-            env->DeleteLocalRef(
-                    lateToolResponseObject
-            );
-
-            if (late_tool_response.empty()) {
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: Java listener returned empty response for TOOL_CALL #%d",
-                        tool_number
-                );
-
-                return false;
-            }
-
-            MYDND_LOGI(
-                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_RESPONSE #%d = %s",
-                    tool_number,
-                    late_tool_response.c_str()
-            );
-
-            int late_response_count =
-                    -llama_tokenize(
-                            handle->vocab,
-                            late_tool_response.c_str(),
-                            static_cast<int32_t>(
-                                    late_tool_response.size()
-                            ),
-                            nullptr,
-                            0,
-                            false,
-                            true
-                    );
-
-            if (late_response_count <= 0) {
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: cannot tokenize TOOL_RESPONSE #%d",
-                        tool_number
-                );
-
-                return false;
-            }
-
-            std::vector<llama_token> late_response_tokens(
-                    late_response_count
-            );
-
-            int late_response_tokenized =
-                    llama_tokenize(
-                            handle->vocab,
-                            late_tool_response.c_str(),
-                            static_cast<int32_t>(
-                                    late_tool_response.size()
-                            ),
-                            late_response_tokens.data(),
-                            static_cast<int32_t>(
-                                    late_response_tokens.size()
-                            ),
-                            false,
-                            true
-                    );
-
-            if (late_response_tokenized < 0) {
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: tokenizer failed for TOOL_RESPONSE #%d",
-                        tool_number
-                );
-
-                return false;
-            }
-
-            if (context_tokens_used
-                    + late_response_tokenized
-                    + world_event_context_reserve
-                    + post_tool_narrative_reserve
-                >= static_cast<int>(n_ctx)) {
-
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: not enough context for TOOL_RESPONSE #%d; used=%d, response=%d, reserve=%d, ctx=%u",
-                        tool_number,
-                        context_tokens_used,
-                        late_response_tokenized,
-                        world_event_context_reserve
-                                + post_tool_narrative_reserve,
-                        n_ctx
-                );
-
-                return false;
-            }
-
-            auto late_response_decode_start =
-                    std::chrono::steady_clock::now();
-
-            for (
-                    int pos = 0;
-                    pos < late_response_tokenized;
-                    pos += prompt_chunk_size
-                    ) {
-
-                if (handle->cancel_requested.load()) {
-                    return false;
-                }
-
-                int chunk_size =
-                        prompt_chunk_size;
-
-                if (pos + chunk_size
-                    > late_response_tokenized) {
-
-                    chunk_size =
-                            late_response_tokenized
-                            - pos;
-                }
-
-                llama_batch late_response_batch =
-                        llama_batch_get_one(
-                                late_response_tokens.data()
-                                + pos,
-                                chunk_size
-                        );
-
-                if (llama_decode(
-                        handle->ctx,
-                        late_response_batch
-                ) != 0) {
-
-                    MYDND_LOGE(
-                            "nativeGenerateInventoryToolAwareStream: decode failed for TOOL_RESPONSE #%d at pos=%d",
-                            tool_number,
-                            pos
-                    );
-
-                    return false;
-                }
-            }
-
-            auto late_response_decode_end =
-                    std::chrono::steady_clock::now();
-
-            auto late_response_decode_ms =
-                    std::chrono::duration_cast<
-                            std::chrono::milliseconds
-                    >(
-                            late_response_decode_end
-                            - late_response_decode_start
-                    ).count();
-
-            context_tokens_used +=
-                    late_response_tokenized;
-
-            MYDND_LOGI(
-                    "nativeGenerateInventoryToolAwareStream: EVENT TOOL_RESPONSE #%d decode = %lld ms, tokens=%d",
-                    tool_number,
-                    static_cast<long long>(
-                            late_response_decode_ms
-                    ),
-                    late_response_tokenized
-            );
-
-            return true;
-        };
-
-        auto narrative_start =
-                std::chrono::steady_clock::now();
-
-        int narrative_text_tokens =
-                0;
-
-        int generated_phase_tokens =
-                0;
-
-        for (
-                int i = 0;
-                i < narrative_generation_hard_max;
-                i++
-                ) {
-
+        for (int i = 0; i < narrative_hard_max; i++) {
             if (handle->cancel_requested.load()) {
                 break;
             }
 
             if (context_tokens_used
-                    + world_event_context_reserve
                     + 1
                 >= static_cast<int>(n_ctx)) {
-
                 MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: narrative event loop stopped at context boundary; used=%d, reserve=%d, ctx=%u",
-                        context_tokens_used,
-                        world_event_context_reserve,
-                        n_ctx
+                        "nativeGenerateDirectorAwareStream: narrative stopped at context boundary"
                 );
-
                 break;
             }
 
@@ -2899,17 +2602,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                             -1
                     );
 
-            if (llama_vocab_is_eog(
-                    handle->vocab,
-                    token
-            )) {
+            if (llama_vocab_is_eog(handle->vocab, token)) {
                 break;
             }
 
             generated_phase_tokens++;
 
             char buffer[256];
-
             int piece_length =
                     llama_token_to_piece(
                             handle->vocab,
@@ -2921,268 +2620,107 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     );
 
             std::string piece;
-
             if (piece_length > 0) {
-                piece.assign(
-                        buffer,
-                        piece_length
-                );
+                piece.assign(buffer, piece_length);
             }
 
             llama_batch token_batch =
-                    llama_batch_get_one(
-                            &token,
-                            1
-                    );
+                    llama_batch_get_one(&token, 1);
 
-            if (llama_decode(
-                    handle->ctx,
-                    token_batch
-            ) != 0) {
-
+            if (llama_decode(handle->ctx, token_batch) != 0) {
                 MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: narrative token decode failed"
+                        "nativeGenerateDirectorAwareStream: narrative token decode failed"
                 );
-
                 break;
             }
 
             context_tokens_used++;
 
-            bool handled_tool_event =
-                    false;
-
             if (!piece.empty()) {
-                if (capturing_late_tool_call) {
-                    late_tool_call_output.append(
-                            piece
+                size_t tool_start = piece.find("<|tool_call>");
+                if (tool_start != std::string::npos) {
+                    std::string prefix = piece.substr(0, tool_start);
+                    if (!prefix.empty()) {
+                        narrative_output.append(prefix);
+                        streaming_pending.append(prefix);
+                    }
+                    narrative_protocol_stop = true;
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: late tool call suppressed after DONE"
                     );
+                    break;
+                }
 
-                    late_tool_call_tokens++;
+                narrative_output.append(piece);
+                streaming_pending.append(piece);
+                narrative_text_tokens++;
 
-                } else {
-                    size_t tool_start =
-                            piece.find(
-                                    "<|tool_call>"
-                            );
+                size_t ready_length =
+                        complete_utf8_prefix_length(streaming_pending);
 
-                    if (tool_start
-                        != std::string::npos) {
+                if (ready_length > 0) {
+                    std::string ready_text =
+                            streaming_pending.substr(0, ready_length);
+                    streaming_pending.erase(0, ready_length);
 
-                        std::string narrative_prefix =
-                                piece.substr(
-                                        0,
-                                        tool_start
-                                );
-
-                        if (!narrative_prefix.empty()) {
-                            narrative_text_tokens++;
-
-                            if (!stream_narrative_text(
-                                    narrative_prefix
-                            )) {
-                                break;
-                            }
-                        }
-
-                        capturing_late_tool_call =
-                                true;
-
-                        late_tool_call_output =
-                                piece.substr(
-                                        tool_start
-                                );
-
-                        late_tool_call_tokens =
-                                1;
-
-                        MYDND_LOGI(
-                                "nativeGenerateInventoryToolAwareStream: EVENT TOOL_CALL candidate detected"
+                    jstring jToken = string_to_jstring(env, ready_text);
+                    if (jToken != nullptr) {
+                        env->CallVoidMethod(
+                                tokenCallbackObject,
+                                onTokenMethod,
+                                jToken
                         );
+                        env->DeleteLocalRef(jToken);
+                    }
 
-                    } else {
-                        narrative_text_tokens++;
-
-                        if (!stream_narrative_text(
-                                piece
-                        )) {
-                            break;
-                        }
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionDescribe();
+                        env->ExceptionClear();
+                        narrative_protocol_stop = true;
+                        break;
                     }
                 }
             }
 
-            if (capturing_late_tool_call
-                && is_complete_inventory_tool_call(
-                        late_tool_call_output
-                )) {
-
-                if (!is_inventory_tool_call_text(
-                        late_tool_call_output
-                )) {
-
-                    MYDND_LOGE(
-                            "nativeGenerateInventoryToolAwareStream: unexpected late non-inventory TOOL_CALL suppressed: %s",
-                            late_tool_call_output.c_str()
-                    );
-
-                    stop_after_protocol_error =
-                            true;
-
-                    break;
-                }
-
-                if (inventory_tool_call_count
-                    >= max_inventory_tool_calls_per_turn) {
-
-                    MYDND_LOGE(
-                            "nativeGenerateInventoryToolAwareStream: tool limit reached (%d); extra TOOL_CALL suppressed: %s",
-                            max_inventory_tool_calls_per_turn,
-                            late_tool_call_output.c_str()
-                    );
-
-                    stop_after_protocol_error =
-                            true;
-
-                    break;
-                }
-
-                inventory_tool_call_count++;
-
-                bool handled =
-                        handle_late_inventory_tool_call(
-                                late_tool_call_output,
-                                inventory_tool_call_count
-                        );
-
-                late_tool_call_output.clear();
-
-                late_tool_call_tokens =
-                        0;
-
-                capturing_late_tool_call =
-                        false;
-
-                if (!handled) {
-                    stop_after_protocol_error =
-                            true;
-
-                    break;
-                }
-
-                llama_sampler_free(
-                        narrative_sampler
-                );
-
-                narrative_sampler =
-                        create_sampler(
-                                safe_temperature,
-                                safe_top_p,
-                                safe_top_k,
-                                safe_repeat_penalty
-                        );
-
-                handled_tool_event =
-                        true;
-            }
-
-            if (capturing_late_tool_call
-                && late_tool_call_tokens
-                   >= decision_max_tokens) {
-
-                MYDND_LOGE(
-                        "nativeGenerateInventoryToolAwareStream: incomplete late TOOL_CALL suppressed after %d tokens: %s",
-                        late_tool_call_tokens,
-                        late_tool_call_output.c_str()
-                );
-
-                stop_after_protocol_error =
-                        true;
-
+            if (narrative_text_tokens >= soft_min_tokens
+                && ends_with_sentence_mark(narrative_output)) {
                 break;
             }
-
-            if (handled_tool_event) {
-                continue;
-            }
-
-            if (!capturing_late_tool_call
-                && narrative_text_tokens
-                   >= soft_min_tokens
-                && ends_with_sentence_mark(
-                        narrative_output
-                )) {
-
-                break;
-            }
-        }
-
-        if (capturing_late_tool_call
-            && !late_tool_call_output.empty()) {
-
-            MYDND_LOGE(
-                    "nativeGenerateInventoryToolAwareStream: unfinished late TOOL_CALL suppressed at generation end: %s",
-                    late_tool_call_output.c_str()
-            );
         }
 
         if (!streaming_pending.empty()) {
-            jstring jToken =
-                    string_to_jstring(
-                            env,
-                            streaming_pending
-                    );
-
+            jstring jToken = string_to_jstring(env, streaming_pending);
             if (jToken != nullptr) {
                 env->CallVoidMethod(
                         tokenCallbackObject,
                         onTokenMethod,
                         jToken
                 );
-
-                env->DeleteLocalRef(
-                        jToken
-                );
+                env->DeleteLocalRef(jToken);
             }
         }
 
-        auto narrative_end =
-                std::chrono::steady_clock::now();
-
+        auto narrative_end = std::chrono::steady_clock::now();
         auto narrative_ms =
-                std::chrono::duration_cast<
-                        std::chrono::milliseconds
-                >(
-                        narrative_end
-                        - narrative_start
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                        narrative_end - narrative_start
                 ).count();
 
-        double tokens_per_second =
-                0.0;
-
+        double tokens_per_second = 0.0;
         if (narrative_ms > 0) {
             tokens_per_second =
                     generated_phase_tokens * 1000.0
-                    / static_cast<double>(
-                            narrative_ms
-                    );
+                    / static_cast<double>(narrative_ms);
         }
 
-        llama_sampler_free(
-                narrative_sampler
-        );
+        llama_sampler_free(narrative_sampler);
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: narrative event loop = %lld ms, textTokens=%d, generatedTokens=%d, inventoryTools=%d, protocolStop=%s, speed=%.2f tok/s",
-                static_cast<long long>(
-                        narrative_ms
-                ),
+                "nativeGenerateDirectorAwareStream: narrative = %lld ms, textTokens=%d, generatedTokens=%d, protocolStop=%s, speed=%.2f tok/s",
+                static_cast<long long>(narrative_ms),
                 narrative_text_tokens,
                 generated_phase_tokens,
-                inventory_tool_call_count,
-                stop_after_protocol_error
-                        ? "YES"
-                        : "NO",
+                narrative_protocol_stop ? "YES" : "NO",
                 tokens_per_second
         );
 
@@ -3221,7 +2759,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     "\n<turn|>\n<|turn>model\n";
 
             MYDND_LOGI(
-                    "nativeGenerateInventoryToolAwareStream: WORLD EVENT CHECK ENABLED, batchChars=%zu",
+                    "nativeGenerateDirectorAwareStream: WORLD EVENT CHECK ENABLED, batchChars=%zu",
                     world_event_batch_text.size()
             );
 
@@ -3237,8 +2775,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                     );
 
             if (event_instruction_count > 0
-                && static_cast<uint32_t>(event_instruction_count + world_event_max_tokens)
-                   < n_ctx) {
+                && context_tokens_used
+                   + event_instruction_count
+                   + world_event_max_tokens
+                   + 1
+                   < static_cast<int>(n_ctx)) {
 
                 std::vector<llama_token> event_instruction_tokens(
                         event_instruction_count
@@ -3287,7 +2828,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                         event_instruction_ok = false;
 
                         MYDND_LOGE(
-                                "nativeGenerateInventoryToolAwareStream: world event instruction decode failed, pos=%d",
+                                "nativeGenerateDirectorAwareStream: world event instruction decode failed, pos=%d",
                                 pos
                         );
                     }
@@ -3363,13 +2904,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                             ) != 0) {
 
                                 MYDND_LOGE(
-                                        "nativeGenerateInventoryToolAwareStream: world event token decode failed"
+                                        "nativeGenerateDirectorAwareStream: world event token decode failed"
                                 );
 
                                 break;
                             }
 
-                            if (is_complete_inventory_tool_call(
+                            if (is_complete_tool_call(
                                     world_event_output
                             )) {
                                 world_event_complete = true;
@@ -3393,7 +2934,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                                 ).count();
 
                         MYDND_LOGI(
-                                "nativeGenerateInventoryToolAwareStream: WORLD EVENT = %lld ms, tokens=%d, complete=%s, raw=%s",
+                                "nativeGenerateDirectorAwareStream: WORLD EVENT = %lld ms, tokens=%d, complete=%s, raw=%s",
                                 static_cast<long long>(event_phase_ms),
                                 world_event_tokens,
                                 world_event_complete ? "YES" : "NO",
@@ -3434,15 +2975,23 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
                         }
                     }
                 }
+            } else {
+                MYDND_LOGI(
+                        "nativeGenerateDirectorAwareStream: WORLD EVENT SKIPPED, not enough remaining context (used=%d, instruction=%d, maxOutput=%d, ctx=%u)",
+                        context_tokens_used,
+                        event_instruction_count,
+                        world_event_max_tokens,
+                        n_ctx
+                );
             }
         } else {
             MYDND_LOGI(
-                    "nativeGenerateInventoryToolAwareStream: WORLD EVENT SKIPPED"
+                    "nativeGenerateDirectorAwareStream: WORLD EVENT SKIPPED"
             );
         }
 
         MYDND_LOGI(
-                "nativeGenerateInventoryToolAwareStream: FINISH, narrative length=%zu",
+                "nativeGenerateDirectorAwareStream: FINISH, narrative length=%zu",
                 narrative_output.size()
         );
 
@@ -3455,13 +3004,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateInventoryToolAwareStrea
         return string_to_jstring(
                 env,
                 std::string(
-                        "Ошибка nativeGenerateInventoryToolAwareStream: "
+                        "Ошибка nativeGenerateDirectorAwareStream: "
                 ) + ex.what()
         );
     } catch (...) {
         return string_to_jstring(
                 env,
-                "Ошибка nativeGenerateInventoryToolAwareStream: неизвестная ошибка."
+                "Ошибка nativeGenerateDirectorAwareStream: неизвестная ошибка."
         );
     }
 }

@@ -133,7 +133,7 @@ public class LlmModelManager {
     }
 
 
-    public void generateInventoryToolAware(
+    public void generateDirectorAware(
             ModelRole role,
             String prompt,
             GenerationProfile profile,
@@ -160,10 +160,10 @@ public class LlmModelManager {
 
         Log.d(
                 TAG,
-                "generateInventoryToolAware(): role=" + role
+                "generateDirectorAware(): role=" + role
         );
 
-        engine.generateInventoryToolAware(
+        engine.generateDirectorAware(
                 prompt,
                 profile,
                 runWorldEventPhase,
@@ -187,7 +187,7 @@ public class LlmModelManager {
 
                         Log.d(
                                 TAG,
-                                "generateInventoryToolAware(): completed, role="
+                                "generateDirectorAware(): completed, role="
                                         + role
                         );
 
@@ -203,7 +203,7 @@ public class LlmModelManager {
 
                         Log.e(
                                 TAG,
-                                "generateInventoryToolAware(): failed, role="
+                                "generateDirectorAware(): failed, role="
                                         + role,
                                 throwable
                         );
