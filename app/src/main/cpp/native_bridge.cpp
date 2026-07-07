@@ -296,7 +296,8 @@ static bool get_single_special_token(
 
 
 static std::string build_director_action_grammar(
-        const llama_vocab * vocab
+        const llama_vocab * vocab,
+        bool allow_world_update
 ) {
     llama_token tool_call_open = 0;
     llama_token tool_call_close = 0;
@@ -339,7 +340,11 @@ static std::string build_director_action_grammar(
     grammar += close;
     grammar += "\n\n";
 
-    grammar += "action-type ::= \"DONE\" | \"CHECK\" | \"INV_ADD\" | \"INV_REMOVE\" | \"HP\" | \"MONEY\" | \"NPC_UPSERT\" | \"NPC_MEMORY\" | \"NPC_STATUS\" | \"WORLD_ADD\" | \"WORLD_UPDATE\" | \"WORLD_RESOLVE\" | \"QUEST_START\" | \"QUEST_UPDATE\" | \"QUEST_COMPLETE\" | \"QUEST_FAIL\" | \"ABILITY_ADD\" | \"ABILITY_UPDATE\" | \"ABILITY_REMOVE\" | \"EFFECT_ADD\" | \"EFFECT_REMOVE\" | \"LOCATION\"\n";
+    grammar += "action-type ::= \"DONE\" | \"CHECK\" | \"INV_ADD\" | \"INV_REMOVE\" | \"HP\" | \"MONEY\" | \"NPC_UPSERT\" | \"NPC_MEMORY\" | \"NPC_STATUS\" | \"WORLD_ADD\"";
+    if (allow_world_update) {
+        grammar += " | \"WORLD_UPDATE\"";
+    }
+    grammar += " | \"WORLD_RESOLVE\" | \"QUEST_START\" | \"QUEST_UPDATE\" | \"QUEST_COMPLETE\" | \"QUEST_FAIL\" | \"ABILITY_ADD\" | \"ABILITY_UPDATE\" | \"ABILITY_REMOVE\" | \"EFFECT_ADD\" | \"EFFECT_REMOVE\" | \"LOCATION\"\n";
     grammar += "name-text ::= [^<>{}\\r\\n]{0,96}\n";
     grammar += "value-text ::= [^<>{}\\r\\n]{0,40}\n";
     grammar += "details-text ::= [^<>{}\\r\\n]{0,180}\n";
@@ -395,11 +400,13 @@ static std::string build_director_done_grammar(
 
 
 static llama_sampler * create_director_action_sampler(
-        const llama_vocab * vocab
+        const llama_vocab * vocab,
+        bool allow_world_update
 ) {
     std::string grammar =
             build_director_action_grammar(
-                    vocab
+                    vocab,
+                    allow_world_update
             );
 
     if (grammar.empty()) {
@@ -2242,12 +2249,16 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         auto generate_director_action =
                 [&](std::string & raw_tool_call,
                     int & generated_tokens,
-                    bool force_done) -> bool {
+                    bool force_done,
+                    bool allow_world_update) -> bool {
 
             llama_sampler * decision_sampler =
                     force_done
                             ? create_director_done_sampler(handle->vocab)
-                            : create_director_action_sampler(handle->vocab);
+                            : create_director_action_sampler(
+                                    handle->vocab,
+                                    allow_world_update
+                            );
 
             if (decision_sampler == nullptr) {
                 MYDND_LOGE(
@@ -2329,9 +2340,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         auto execute_and_decode_tool_response =
                 [&](const std::string & raw_tool_call,
                     int tool_number,
-                    bool & confirmed_done) -> bool {
+                    bool & confirmed_done,
+                    bool & action_applied) -> bool {
 
             confirmed_done = false;
+            action_applied = false;
 
             MYDND_LOGI(
                     "nativeGenerateDirectorAwareStream: DIRECTOR TOOL #%d RAW = %s",
@@ -2394,6 +2407,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     is_director_done_call(raw_tool_call)
                     && tool_response.find(
                             "status:<|\"|>NO_CHANGE<|\"|>"
+                    ) != std::string::npos;
+
+            action_applied =
+                    tool_response.find(
+                            "status:<|\"|>APPLIED<|\"|>"
                     ) != std::string::npos;
 
             int response_count =
@@ -2469,6 +2487,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
         bool director_done = false;
         bool director_protocol_ok = true;
+        bool has_applied_action = false;
         int director_action_count = 0;
 
         auto director_start = std::chrono::steady_clock::now();
@@ -2516,10 +2535,22 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 );
             }
 
+            const bool allow_world_update =
+                    !has_applied_action;
+
+            if (!force_done) {
+                MYDND_LOGI(
+                        "nativeGenerateDirectorAwareStream: Director tool #%d WORLD_UPDATE=%s",
+                        tool_number,
+                        allow_world_update ? "ON" : "OFF"
+                );
+            }
+
             if (!generate_director_action(
                     raw_tool_call,
                     action_tokens,
-                    force_done
+                    force_done,
+                    allow_world_update
             )) {
                 MYDND_LOGE(
                         "nativeGenerateDirectorAwareStream: incomplete Director action #%d: %s",
@@ -2542,13 +2573,19 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             }
 
             bool confirmed_done = false;
+            bool action_applied = false;
             if (!execute_and_decode_tool_response(
                     raw_tool_call,
                     tool_number,
-                    confirmed_done
+                    confirmed_done,
+                    action_applied
             )) {
                 director_protocol_ok = false;
                 break;
+            }
+
+            if (action_applied) {
+                has_applied_action = true;
             }
 
             if (confirmed_done) {
