@@ -188,23 +188,23 @@ public class PromptBuilder {
 
 
     /**
-     * Narrative-only continuation after a resolved dice check.
-     * The Director has already paused on CHECK and Java has stored the roll
-     * result as a SYSTEM event, so this prompt must not request the same check
-     * again or perform another structural pass.
+     * Tool-aware continuation after a resolved dice check.
+     * The first phase already requested CHECK and paused. This second pass may
+     * persist at most one immediate mechanical consequence (for example HP
+     * loss after a fall) before narrating the resolved outcome.
      */
-    public String buildDiceContinuationPrompt(
+    public String buildDiceContinuationDirectorPrompt(
             MemoryContext memoryContext,
-            List<String> inventory,
+            DirectorPromptState directorState,
             CampaignPromptState campaignState
     ) {
         MemoryContext memory = memoryContext;
+        DirectorPromptState state = directorState == null
+                ? DirectorPromptState.empty()
+                : directorState;
         CampaignPromptState campaign = campaignState == null
                 ? CampaignPromptState.empty()
                 : campaignState;
-        List<String> safeInventory = inventory == null
-                ? Collections.emptyList()
-                : inventory;
 
         String summary = memory != null && memory.hasSummary()
                 ? limitFromStart(memory.getLatestSummary(), MAX_SUMMARY_CHARS)
@@ -217,19 +217,14 @@ public class PromptBuilder {
                 : limitFromStart(buildRelevantFacts(memory), MAX_RELEVANT_FACTS_CHARS);
 
         StringBuilder prompt = new StringBuilder();
-        prompt.append("SYSTEM:\nТы мастер DnD.");
-        prompt.append("\nПоследние RECENT_EVENTS содержат действие игрока и SYSTEM-результат уже выполненной проверки.");
-        prompt.append("\nПродолжи сцену строго по результату проверки: успех не превращай в провал и наоборот.");
-        prompt.append("\nНе проси повторно ту же проверку и не печатай служебные блоки или плашки.");
-        prompt.append("\nНе решай новое действие за игрока. Кратко, атмосферно, по-русски.");
+        prompt.append("SYSTEM:");
+        prompt.append(DirectorToolSpec.compactRules(DirectorMode.CHECK_RESULT));
+        prompt.append(DirectorToolSpec.declaration());
 
         prompt.append("\n\nCURRENT_SCENE:\n");
         prompt.append(limitFromStart(campaign.getCurrentScene(), MAX_SCENE_CHARS));
 
-        appendOptionalBlock(prompt, "WORLD", limitFromStart(campaign.getWorld(), MAX_WORLD_CHARS));
         appendOptionalBlock(prompt, "CHARACTER", limitFromStart(campaign.getCharacter(), MAX_CHARACTER_CHARS));
-        appendOptionalBlock(prompt, "ACTIVE_SITUATIONS", limitFromStart(campaign.getActiveSituations(), MAX_SITUATIONS_CHARS));
-        appendOptionalBlock(prompt, "ACTIVE_NPCS", limitFromStart(campaign.getActiveNpcs(), MAX_NPCS_CHARS));
 
         if (!summary.isEmpty()) {
             prompt.append("\n\nSUMMARY:\n").append(summary);
@@ -241,11 +236,16 @@ public class PromptBuilder {
             prompt.append("\n\nRELEVANT_FACTS:\n").append(relevantFacts);
         }
 
-        prompt.append("\n\nINVENTORY:");
-        appendInventory(prompt, safeInventory);
-        prompt.append("\n\nTASK:\nОпиши непосредственный итог уже завершённой проверки и остановись перед следующим выбором игрока.");
+        prompt.append("\n\nSTATE AFTER ROLL (REFERENCE ONLY):");
+        appendStateLine(prompt, "LOCATION", state.getLocation());
+        appendStateLine(prompt, "HP", state.getHealth());
+        appendStateList(prompt, "NPCS", state.getActiveNpcs());
+        appendStateList(prompt, "EFFECTS", state.getEffects());
+
+        prompt.append("\n\nTASK:\nЗафиксируй непосредственное механическое последствие уже выполненной проверки, затем расскажи её итог.");
         return prompt.toString();
     }
+
 
     private void appendStateLine(StringBuilder prompt, String title, String value) {
         String safe = value == null ? "" : value.trim();

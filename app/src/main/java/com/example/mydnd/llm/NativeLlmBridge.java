@@ -34,6 +34,7 @@ public class NativeLlmBridge {
     public native String nativeGenerateDirectorAwareStream(
             long handle,
             String prompt,
+            String directorMode,
             int maxTokens,
             float temperature,
             float topP,

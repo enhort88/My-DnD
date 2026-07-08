@@ -170,6 +170,7 @@ public class LocalLlmEngine implements LlmEngine {
 
     public void generateDirectorAware(
             String prompt,
+            String directorMode,
             GenerationProfile profile,
             boolean runWorldEventPhase,
             String worldEventBatchText,
@@ -218,6 +219,7 @@ public class LocalLlmEngine implements LlmEngine {
                                 nativeBridge.nativeGenerateDirectorAwareStream(
                                         handle,
                                         prompt,
+                                        directorMode,
                                         profile.getMaxTokens(),
                                         profile.getTemperature(),
                                         profile.getTopP(),

@@ -106,6 +106,9 @@ public final class DirectorActionValidator {
                 return DirectorValidation.valid();
 
             case QUEST_UPDATE:
+                if (!isBlank(action.getValue())) {
+                    return DirectorValidation.invalid("UNUSED_VALUE_MUST_BE_EMPTY");
+                }
                 if (isBlank(action.getName())) {
                     return DirectorValidation.invalid("NAME_REQUIRED");
                 }
@@ -125,6 +128,9 @@ public final class DirectorActionValidator {
             case EFFECT_ADD:
             case EFFECT_REMOVE:
             case LOCATION_SET:
+                if (!isBlank(action.getValue())) {
+                    return DirectorValidation.invalid("UNUSED_VALUE_MUST_BE_EMPTY");
+                }
                 return requireName(action);
 
             default:

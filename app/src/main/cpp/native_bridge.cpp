@@ -295,8 +295,147 @@ static bool get_single_special_token(
 }
 
 
+static std::string trim_copy(std::string value) {
+    const char * whitespace = " \t\r\n";
+    size_t start = value.find_first_not_of(whitespace);
+    if (start == std::string::npos) {
+        return "";
+    }
+    size_t end = value.find_last_not_of(whitespace);
+    return value.substr(start, end - start + 1);
+}
+
+
+static std::vector<std::string> unique_non_empty(
+        const std::vector<std::string> & values
+) {
+    std::vector<std::string> result;
+    for (const std::string & value : values) {
+        std::string clean = trim_copy(value);
+        if (clean.empty()) {
+            continue;
+        }
+        if (std::find(result.begin(), result.end(), clean) == result.end()) {
+            result.push_back(clean);
+        }
+    }
+    return result;
+}
+
+
+static std::vector<std::string> extract_prompt_list(
+        const std::string & prompt,
+        const std::string & header,
+        bool take_name_before_pipe
+) {
+    size_t state_start = prompt.rfind("\nSTATE BEFORE");
+    size_t roll_state_start = prompt.rfind("\nSTATE AFTER ROLL");
+    if (roll_state_start != std::string::npos
+        && (state_start == std::string::npos || roll_state_start > state_start)) {
+        state_start = roll_state_start;
+    }
+    if (state_start == std::string::npos) {
+        return {};
+    }
+
+    size_t state_end = prompt.find("\n\nPLAYER_ACTION:", state_start);
+    size_t task_end = prompt.find("\n\nTASK:", state_start);
+    if (state_end == std::string::npos
+        || (task_end != std::string::npos && task_end < state_end)) {
+        state_end = task_end;
+    }
+    if (state_end == std::string::npos) {
+        state_end = prompt.size();
+    }
+
+    const std::string marker = "\n" + header + ":";
+    size_t marker_pos = prompt.find(marker, state_start);
+    if (marker_pos == std::string::npos || marker_pos >= state_end) {
+        return {};
+    }
+
+    size_t line_end = prompt.find('\n', marker_pos + marker.size());
+    if (line_end == std::string::npos || line_end >= state_end) {
+        return {};
+    }
+
+    std::vector<std::string> values;
+    size_t pos = line_end + 1;
+
+    while (pos < state_end) {
+        size_t next = prompt.find('\n', pos);
+        if (next == std::string::npos || next > state_end) {
+            next = state_end;
+        }
+        std::string line = trim_copy(prompt.substr(pos, next - pos));
+
+        if (line.rfind("- ", 0) != 0) {
+            break;
+        }
+
+        std::string value = trim_copy(line.substr(2));
+        if (take_name_before_pipe) {
+            size_t pipe = value.find(" | ");
+            if (pipe != std::string::npos) {
+                value = trim_copy(value.substr(0, pipe));
+            }
+        }
+        if (!value.empty()) {
+            values.push_back(value);
+        }
+
+        if (next >= state_end) {
+            break;
+        }
+        pos = next + 1;
+    }
+
+    return unique_non_empty(values);
+}
+
+
+static std::string gbnf_escape_literal(const std::string & value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (char ch : value) {
+        switch (ch) {
+            case '\\': escaped += "\\\\"; break;
+            case '"': escaped += "\\\""; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default: escaped.push_back(ch); break;
+        }
+    }
+    return escaped;
+}
+
+
+static void append_literal_rule(
+        std::string & grammar,
+        const std::string & rule_name,
+        const std::vector<std::string> & raw_values
+) {
+    const std::vector<std::string> values = unique_non_empty(raw_values);
+    if (values.empty()) {
+        return;
+    }
+
+    grammar += rule_name + " ::= ";
+    for (size_t i = 0; i < values.size(); i++) {
+        if (i > 0) {
+            grammar += " | ";
+        }
+        grammar += "\"" + gbnf_escape_literal(values[i]) + "\"";
+    }
+    grammar += "\n";
+}
+
+
 static std::string build_director_action_grammar(
         const llama_vocab * vocab,
+        const std::string & prompt,
+        const std::string & director_mode,
         bool allow_world_update
 ) {
     llama_token tool_call_open = 0;
@@ -309,53 +448,185 @@ static std::string build_director_action_grammar(
         return "";
     }
 
-    const std::string open =
-            "<[" + std::to_string(tool_call_open) + "]>";
-    const std::string close =
-            "<[" + std::to_string(tool_call_close) + "]>";
-    const std::string quote =
-            "<[" + std::to_string(tool_string_quote) + "]>";
+    const std::string open = "<[" + std::to_string(tool_call_open) + "]>";
+    const std::string close = "<[" + std::to_string(tool_call_close) + "]>";
+    const std::string quote = "<[" + std::to_string(tool_string_quote) + "]>";
 
-    std::string grammar;
-    grammar += "root ::= action\n\n";
-    grammar += "action ::= ";
-    grammar += open;
-    grammar += " \"call:director_action{type:\" ";
-    grammar += quote;
-    grammar += " action-type ";
-    grammar += quote;
-    grammar += " \",name:\" ";
-    grammar += quote;
-    grammar += " name-text ";
-    grammar += quote;
-    grammar += " \",value:\" ";
-    grammar += quote;
-    grammar += " value-text ";
-    grammar += quote;
-    grammar += " \",details:\" ";
-    grammar += quote;
-    grammar += " details-text ";
-    grammar += quote;
-    grammar += " \"}\" ";
-    grammar += close;
+    const std::vector<std::string> inventory =
+            extract_prompt_list(prompt, "INVENTORY", false);
+    const std::vector<std::string> npcs =
+            extract_prompt_list(prompt, "NPCS", true);
+    const std::vector<std::string> quests =
+            extract_prompt_list(prompt, "QUESTS", true);
+    const std::vector<std::string> world_events =
+            extract_prompt_list(prompt, "WORLD_EVENTS", true);
+    const std::vector<std::string> abilities =
+            extract_prompt_list(prompt, "ABILITIES", true);
+    const std::vector<std::string> effects =
+            extract_prompt_list(prompt, "EFFECTS", true);
+
+    std::vector<std::string> hp_targets = {"PLAYER"};
+    hp_targets.insert(hp_targets.end(), npcs.begin(), npcs.end());
+    hp_targets = unique_non_empty(hp_targets);
+
+    const bool check_result_mode = director_mode == "CHECK_RESULT";
+    const bool random_world_mode = director_mode == "RANDOM_WORLD_EVENT";
+    const bool player_action_mode = !check_result_mode && !random_world_mode;
+
+    std::vector<std::string> branches;
+    branches.push_back("done");
+
+    if (player_action_mode) {
+        branches.push_back("check");
+        branches.push_back("inv-add");
+        if (!inventory.empty()) branches.push_back("inv-remove");
+        branches.push_back("hp");
+        branches.push_back("money");
+        branches.push_back("npc-upsert");
+        if (!npcs.empty()) {
+            branches.push_back("npc-memory");
+            branches.push_back("npc-status");
+        }
+        branches.push_back("world-add");
+        if (allow_world_update && !world_events.empty()) branches.push_back("world-update");
+        if (!world_events.empty()) branches.push_back("world-resolve");
+        branches.push_back("quest-start");
+        if (!quests.empty()) {
+            branches.push_back("quest-update");
+            branches.push_back("quest-complete");
+            branches.push_back("quest-fail");
+        }
+        branches.push_back("ability-add");
+        if (!abilities.empty()) {
+            branches.push_back("ability-update");
+            branches.push_back("ability-remove");
+        }
+        branches.push_back("effect-add");
+        if (!effects.empty()) branches.push_back("effect-remove");
+        branches.push_back("location");
+    } else if (check_result_mode) {
+        branches.push_back("hp");
+        branches.push_back("effect-add");
+        branches.push_back("location");
+    } else {
+        branches.push_back("world-add");
+        branches.push_back("npc-upsert");
+        branches.push_back("quest-start");
+        branches.push_back("effect-add");
+    }
+
+    auto field = [&](const std::string & rule) -> std::string {
+        if (rule.empty()) {
+            return quote + " " + quote;
+        }
+        return quote + " " + rule + " " + quote;
+    };
+
+    auto action_rhs = [&](const std::string & type,
+                          const std::string & name_rule,
+                          const std::string & value_rule,
+                          const std::string & details_rule) -> std::string {
+        std::string rhs;
+        rhs += open;
+        rhs += " \"call:director_action{type:\" ";
+        rhs += quote;
+        rhs += " \"" + type + "\" ";
+        rhs += quote;
+        rhs += " \",name:\" ";
+        rhs += field(name_rule);
+        rhs += " \",value:\" ";
+        rhs += field(value_rule);
+        rhs += " \",details:\" ";
+        rhs += field(details_rule);
+        rhs += " \"}\" ";
+        rhs += close;
+        return rhs;
+    };
+
+    std::string grammar = "root ::= ";
+    for (size_t i = 0; i < branches.size(); i++) {
+        if (i > 0) grammar += " | ";
+        grammar += branches[i];
+    }
     grammar += "\n\n";
 
-    grammar += "action-type ::= \"DONE\" | \"CHECK\" | \"INV_ADD\" | \"INV_REMOVE\" | \"HP\" | \"MONEY\" | \"NPC_UPSERT\" | \"NPC_MEMORY\" | \"NPC_STATUS\" | \"WORLD_ADD\"";
-    if (allow_world_update) {
-        grammar += " | \"WORLD_UPDATE\"";
+    grammar += "done ::= " + action_rhs("DONE", "", "", "") + "\n";
+    grammar += "check ::= " + action_rhs("CHECK", "check-stat", "check-dc", "details-text") + "\n";
+    grammar += "inv-add ::= " + action_rhs("INV_ADD", "free-name", "", "details-opt") + "\n";
+    if (!inventory.empty()) {
+        grammar += "inv-remove ::= " + action_rhs("INV_REMOVE", "inventory-name", "", "details-opt") + "\n";
     }
-    grammar += " | \"WORLD_RESOLVE\" | \"QUEST_START\" | \"QUEST_UPDATE\" | \"QUEST_COMPLETE\" | \"QUEST_FAIL\" | \"ABILITY_ADD\" | \"ABILITY_UPDATE\" | \"ABILITY_REMOVE\" | \"EFFECT_ADD\" | \"EFFECT_REMOVE\" | \"LOCATION\"\n";
-    grammar += "name-text ::= [^<>{}\\r\\n]{0,96}\n";
-    grammar += "value-text ::= [^<>{}\\r\\n]{0,40}\n";
-    grammar += "details-text ::= [^<>{}\\r\\n]{0,180}\n";
+    grammar += "hp ::= " + action_rhs("HP", "hp-target", "signed-int", "details-text") + "\n";
+    grammar += "money ::= " + action_rhs("MONEY", "player-target", "signed-int", "details-text") + "\n";
+    grammar += "npc-upsert ::= " + action_rhs("NPC_UPSERT", "free-name", "", "details-text") + "\n";
+    if (!npcs.empty()) {
+        grammar += "npc-memory ::= " + action_rhs("NPC_MEMORY", "npc-name", "memory-tone", "details-text") + "\n";
+        grammar += "npc-status ::= " + action_rhs("NPC_STATUS", "npc-name", "npc-status-value", "details-opt") + "\n";
+    }
+    grammar += "world-add ::= " + action_rhs("WORLD_ADD", "free-name", "importance-opt", "details-text") + "\n";
+    if (allow_world_update && !world_events.empty()) {
+        grammar += "world-update ::= " + action_rhs("WORLD_UPDATE", "world-event-name", "importance-opt", "details-text") + "\n";
+    }
+    if (!world_events.empty()) {
+        grammar += "world-resolve ::= " + action_rhs("WORLD_RESOLVE", "world-event-name", "", "details-opt") + "\n";
+    }
+    grammar += "quest-start ::= " + action_rhs("QUEST_START", "free-name", "", "details-text") + "\n";
+    if (!quests.empty()) {
+        grammar += "quest-update ::= " + action_rhs("QUEST_UPDATE", "quest-name", "", "details-text") + "\n";
+        grammar += "quest-complete ::= " + action_rhs("QUEST_COMPLETE", "quest-name", "", "details-opt") + "\n";
+        grammar += "quest-fail ::= " + action_rhs("QUEST_FAIL", "quest-name", "", "details-opt") + "\n";
+    }
+    grammar += "ability-add ::= " + action_rhs("ABILITY_ADD", "free-name", "ability-category", "details-opt") + "\n";
+    if (!abilities.empty()) {
+        grammar += "ability-update ::= " + action_rhs("ABILITY_UPDATE", "ability-name", "ability-category", "details-opt") + "\n";
+        grammar += "ability-remove ::= " + action_rhs("ABILITY_REMOVE", "ability-name", "", "details-opt") + "\n";
+    }
+    grammar += "effect-add ::= " + action_rhs("EFFECT_ADD", "free-name", "", "details-text") + "\n";
+    if (!effects.empty()) {
+        grammar += "effect-remove ::= " + action_rhs("EFFECT_REMOVE", "effect-name", "", "details-opt") + "\n";
+    }
+    grammar += "location ::= " + action_rhs("LOCATION", "free-name", "", "details-opt") + "\n\n";
+
+    grammar += "free-name ::= [^<>{};=\\r\\n]{1,96}\n";
+    grammar += "details-text ::= [^<>{}\\r\\n]{1,180}\n";
+    grammar += "details-opt ::= [^<>{}\\r\\n]{0,180}\n";
+    grammar += "signed-int ::= (\"+\" | \"-\") [0-9]{1,4}\n";
+    grammar += "check-stat ::= \"STR\" | \"DEX\" | \"INT\" | \"CHA\"\n";
+    grammar += "check-dc ::= \"5\" | \"6\" | \"7\" | \"8\" | \"9\" | \"10\" | \"11\" | \"12\" | \"13\" | \"14\" | \"15\" | \"16\" | \"17\" | \"18\" | \"19\" | \"20\" | \"21\" | \"22\" | \"23\" | \"24\" | \"25\"\n";
+    grammar += "player-target ::= \"PLAYER\"\n";
+    grammar += "memory-tone ::= \"GOOD\" | \"BAD\" | \"NEUTRAL\"\n";
+    grammar += "npc-status-value ::= \"ACTIVE\" | \"KNOWN\" | \"INACTIVE\" | \"DEAD\" | \"MISSING\" | \"HOSTILE\" | \"ALLY\"\n";
+    grammar += "ability-category ::= \"SKILL\" | \"SPELL\" | \"TRAIT\" | \"POWER\"\n";
+    grammar += "importance-opt ::= \"\" | \"1\" | \"2\" | \"3\"\n";
+
+    append_literal_rule(grammar, "inventory-name", inventory);
+    append_literal_rule(grammar, "npc-name", npcs);
+    append_literal_rule(grammar, "hp-target", hp_targets);
+    append_literal_rule(grammar, "quest-name", quests);
+    append_literal_rule(grammar, "world-event-name", world_events);
+    append_literal_rule(grammar, "ability-name", abilities);
+    append_literal_rule(grammar, "effect-name", effects);
 
     MYDND_LOGI(
-            "director action grammar:\n%s",
+            "director strict grammar context: mode=%s inventory=%zu npcs=%zu quests=%zu world=%zu abilities=%zu effects=%zu worldUpdate=%s",
+            director_mode.c_str(),
+            inventory.size(),
+            npcs.size(),
+            quests.size(),
+            world_events.size(),
+            abilities.size(),
+            effects.size(),
+            allow_world_update ? "ON" : "OFF"
+    );
+
+    MYDND_LOGI(
+            "director strict typed grammar:\n%s",
             grammar.c_str()
     );
 
     return grammar;
 }
+
 
 static std::string build_director_done_grammar(
         const llama_vocab * vocab
@@ -401,11 +672,15 @@ static std::string build_director_done_grammar(
 
 static llama_sampler * create_director_action_sampler(
         const llama_vocab * vocab,
+        const std::string & prompt,
+        const std::string & director_mode,
         bool allow_world_update
 ) {
     std::string grammar =
             build_director_action_grammar(
                     vocab,
+                    prompt,
+                    director_mode,
                     allow_world_update
             );
 
@@ -1871,6 +2146,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         jobject /* this */,
         jlong nativeHandle,
         jstring promptText,
+        jstring directorModeText,
         jint maxTokens,
         jfloat temperature,
         jfloat topP,
@@ -1977,6 +2253,15 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                         env,
                         promptText
                 );
+
+        std::string director_mode =
+                jstring_to_string(
+                        env,
+                        directorModeText
+                );
+        if (director_mode.empty()) {
+            director_mode = "PLAYER_ACTION";
+        }
 
         const bool should_run_world_event_phase =
                 runWorldEventPhase == JNI_TRUE;
@@ -2244,7 +2529,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
          * actual token count after the narrative is complete.
          */
         const int post_tool_narrative_reserve = narrative_min_reserve;
-        const int max_director_actions_per_turn = 5;
+        const int max_director_actions_per_turn =
+                director_mode == "CHECK_RESULT" ? 3 : 5;
 
         auto generate_director_action =
                 [&](std::string & raw_tool_call,
@@ -2257,6 +2543,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                             ? create_director_done_sampler(handle->vocab)
                             : create_director_action_sampler(
                                     handle->vocab,
+                                    prompt,
+                                    director_mode,
                                     allow_world_update
                             );
 
@@ -2342,11 +2630,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     int tool_number,
                     bool & confirmed_done,
                     bool & action_applied,
-                    bool & check_requested) -> bool {
+                    bool & check_requested,
+                    bool & force_done_next) -> bool {
 
             confirmed_done = false;
             action_applied = false;
             check_requested = false;
+            force_done_next = false;
 
             MYDND_LOGI(
                     "nativeGenerateDirectorAwareStream: DIRECTOR TOOL #%d RAW = %s",
@@ -2420,6 +2710,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     action_applied
                     && tool_response.find(
                             "code:<|\"|>CHECK_REQUESTED<|\"|>"
+                    ) != std::string::npos;
+
+            force_done_next =
+                    tool_response.find(
+                            "next:<|\"|>DONE_ONLY<|\"|>"
                     ) != std::string::npos;
 
             /*
@@ -2511,6 +2806,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         bool director_check_pending = false;
         bool director_protocol_ok = true;
         bool has_applied_action = false;
+        bool force_done_next_action = false;
         int director_action_count = 0;
 
         auto director_start = std::chrono::steady_clock::now();
@@ -2545,7 +2841,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     + decision_max_tokens;
 
             const bool force_done =
-                    tool_number == max_director_actions_per_turn
+                    force_done_next_action
+                    || tool_number == max_director_actions_per_turn
                     || remaining_context <= force_done_threshold;
 
             if (force_done
@@ -2598,12 +2895,14 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             bool confirmed_done = false;
             bool action_applied = false;
             bool check_requested = false;
+            bool force_done_after_response = false;
             if (!execute_and_decode_tool_response(
                     raw_tool_call,
                     tool_number,
                     confirmed_done,
                     action_applied,
-                    check_requested
+                    check_requested,
+                    force_done_after_response
             )) {
                 director_protocol_ok = false;
                 break;
@@ -2612,6 +2911,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             if (action_applied) {
                 has_applied_action = true;
             }
+
+            force_done_next_action = force_done_after_response;
 
             if (check_requested) {
                 director_check_pending = true;

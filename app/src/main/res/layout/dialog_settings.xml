@@ -36,30 +36,6 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:fontFamily="@font/philosopher_bold"
-                android:text="ЗАДНИЙ ФОН"
-                android:textColor="#E0BE78"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/settingsBackgroundButton"
-                style="@style/FantasyButton"
-                android:layout_width="match_parent"
-                android:layout_height="50dp"
-                android:layout_marginTop="14dp"
-                android:text="ФОН ИГРЫ: 1" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="16dp"
-                android:background="#5C4932" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="@font/philosopher_bold"
                 android:text="МУЗЫКА"
                 android:textColor="#E0BE78"
                 android:textSize="18sp"
@@ -184,7 +160,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Три одинаково ограниченных вопроса с коротким, средним и длинным входом. Игра и база не меняются; результаты пишутся в Logcat с тегом MyDND_BENCH."
+                android:text="Восемь типовых игровых действий: осмотр, предметы, проверка, NPC, сложный ход и изменение мира. База не меняется; результаты пишутся в Logcat с тегом MyDND_BEHAVIOR_TEST."
                 android:textColor="#A9A092"
                 android:textSize="13sp" />
 
@@ -194,7 +170,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="50dp"
                 android:layout_marginTop="10dp"
-                android:text="ТЕСТ СКОРОСТИ ×3" />
+                android:text="ТЕСТ ПОВЕДЕНИЯ ×9" />
 
             <View
                 android:layout_width="match_parent"
@@ -219,6 +195,13 @@
                 android:text="Удаляет все миры, героев, кампании, журнал, инвентарь и память. Модели и настройки приложения останутся."
                 android:textColor="#A9A092"
                 android:textSize="13sp" />
+            <Button
+                android:id="@+id/settingsBackgroundButton"
+                style="@style/FantasyButton"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="14dp"
+                android:text="ФОН ИГРЫ: 1" />
 
             <Button
                 android:id="@+id/settingsResetDataButton"

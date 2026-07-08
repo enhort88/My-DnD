@@ -4,6 +4,22 @@ package com.example.mydnd.director;
 public final class DirectorToolResponseBuilder {
 
     public String build(DirectorResult result) {
+        return build(result, false, "");
+    }
+
+    public String build(DirectorResult result, boolean forceDoneNext) {
+        return build(result, forceDoneNext, "");
+    }
+
+    /**
+     * confirmedChanges is emitted only with an accepted DONE response. It is
+     * Java-authoritative and becomes the narrative gate for the same context.
+     */
+    public String build(
+            DirectorResult result,
+            boolean forceDoneNext,
+            String confirmedChanges
+    ) {
         StringBuilder response = new StringBuilder();
         response.append("<|tool_response>response:director_action{")
                 .append("status:<|\"|>").append(safe(result.getStatus().name())).append("<|\"|>,")
@@ -11,13 +27,32 @@ public final class DirectorToolResponseBuilder {
                 .append("state_after:<|\"|>").append(safeState(result.getStateAfter())).append("<|\"|>");
 
         if (result.getStatus() == DirectorStatus.APPLIED) {
-            response.append(",next:<|\"|>DIRECT_OR_DONE<|\"|>");
+            response.append(forceDoneNext
+                    ? ",next:<|\"|>DONE_ONLY<|\"|>"
+                    : ",next:<|\"|>DIRECT_OR_DONE<|\"|>");
         } else if (result.getStatus() == DirectorStatus.REJECTED) {
             response.append(",next:<|\"|>DIRECT_FIX_OR_DONE<|\"|>");
         }
 
+        if (result.getStatus() == DirectorStatus.NO_CHANGE
+                && result.getAction().getType() == DirectorActionType.NO_CHANGE) {
+            String confirmed = safeConfirmed(confirmedChanges);
+            response.append(",confirmed:<|\"|>")
+                    .append(confirmed.isEmpty() ? "NONE" : confirmed)
+                    .append("<|\"|>,narrative_rule:<|\"|>CONFIRMED_ONLY<|\"|>");
+        }
+
         response.append("}<tool_response|>");
         return response.toString();
+    }
+
+    private String safeConfirmed(String value) {
+        String safe = safe(value);
+        final int maxChars = 220;
+        if (safe.length() <= maxChars) {
+            return safe;
+        }
+        return safe.substring(0, maxChars - 1).trim() + "…";
     }
 
     private String safeState(String value) {

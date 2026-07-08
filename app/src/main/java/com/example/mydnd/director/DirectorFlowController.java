@@ -1,6 +1,8 @@
 package com.example.mydnd.director;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -20,6 +22,7 @@ public final class DirectorFlowController {
     private final Listener listener;
 
     private final Set<String> appliedActionFingerprints = new HashSet<>();
+    private final List<String> confirmedChanges = new ArrayList<>();
 
     private DirectorMode mode = DirectorMode.PLAYER_ACTION;
     private int actionCount;
@@ -46,6 +49,7 @@ public final class DirectorFlowController {
         actionCount = 0;
         appliedActionCount = 0;
         appliedActionFingerprints.clear();
+        confirmedChanges.clear();
     }
 
     /** Called by the native callback for one forced director_action. */
@@ -76,7 +80,7 @@ public final class DirectorFlowController {
                     mode.name()
             );
             dispatch(result);
-            return responseBuilder.build(result);
+            return buildResponse(result);
         }
 
         if (action.getType() != DirectorActionType.NO_CHANGE
@@ -88,7 +92,7 @@ public final class DirectorFlowController {
                     mode.name()
             );
             dispatch(result);
-            return responseBuilder.build(result);
+            return buildResponse(result);
         }
 
         String fingerprint = fingerprint(action);
@@ -107,11 +111,55 @@ public final class DirectorFlowController {
             if (result.getStatus() == DirectorStatus.APPLIED) {
                 appliedActionFingerprints.add(fingerprint);
                 appliedActionCount++;
+                confirmedChanges.add(confirmedChange(result));
             }
         }
 
         dispatch(result);
-        return responseBuilder.build(result);
+        return buildResponse(result);
+    }
+
+
+
+    private String buildResponse(DirectorResult result) {
+        String confirmed = result != null
+                && result.getStatus() == DirectorStatus.NO_CHANGE
+                && result.getAction().getType() == DirectorActionType.NO_CHANGE
+                ? String.join(" ; ", confirmedChanges)
+                : "";
+        return responseBuilder.build(
+                result,
+                shouldForceDoneNext(result),
+                confirmed
+        );
+    }
+
+    private String confirmedChange(DirectorResult result) {
+        DirectorAction action = result.getAction();
+        StringBuilder summary = new StringBuilder(action.getType().getToolCode());
+
+        if (!action.getName().isEmpty()) {
+            summary.append(':').append(action.getName());
+        }
+        if (!action.getValue().isEmpty()) {
+            summary.append(':').append(action.getValue());
+        }
+
+        String state = result.getStateAfter() == null ? "" : result.getStateAfter().trim();
+        if (state.length() > 60) {
+            state = state.substring(0, 59).trim() + "…";
+        }
+        if (!state.isEmpty()) {
+            summary.append("=").append(state);
+        }
+
+        return summary.toString();
+    }
+
+    private boolean shouldForceDoneNext(DirectorResult result) {
+        return mode == DirectorMode.CHECK_RESULT
+                && result != null
+                && result.getStatus() == DirectorStatus.APPLIED;
     }
 
     public synchronized DirectorMode getMode() {
@@ -154,7 +202,7 @@ public final class DirectorFlowController {
                 mode.name()
         );
         dispatch(result);
-        return responseBuilder.build(result);
+        return buildResponse(result);
     }
 
     private void dispatch(DirectorResult result) {

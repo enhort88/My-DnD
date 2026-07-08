@@ -136,6 +136,7 @@ public class LlmModelManager {
     public void generateDirectorAware(
             ModelRole role,
             String prompt,
+            String directorMode,
             GenerationProfile profile,
             boolean runWorldEventPhase,
             String worldEventBatchText,
@@ -165,6 +166,7 @@ public class LlmModelManager {
 
         engine.generateDirectorAware(
                 prompt,
+                directorMode,
                 profile,
                 runWorldEventPhase,
                 worldEventBatchText,

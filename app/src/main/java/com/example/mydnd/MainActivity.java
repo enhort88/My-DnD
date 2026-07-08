@@ -19,12 +19,17 @@ import com.example.mydnd.game.InventoryActionHintResolver;
 import com.example.mydnd.game.StateChangeRepository;
 import com.example.mydnd.game.CampaignPromptRepository;
 import com.example.mydnd.game.CampaignPromptState;
+import com.example.mydnd.director.DirectorAction;
+import com.example.mydnd.director.DirectorActionParser;
+import com.example.mydnd.director.DirectorActionType;
 import com.example.mydnd.director.DirectorFlowController;
 import com.example.mydnd.director.DirectorMode;
 import com.example.mydnd.director.DirectorPromptState;
 import com.example.mydnd.director.DirectorPromptStateRepository;
 import com.example.mydnd.director.DirectorResult;
 import com.example.mydnd.director.RoomDirectorStore;
+import com.example.mydnd.diagnostics.BehaviorTestCase;
+import com.example.mydnd.diagnostics.BehaviorTestDataset;
 import com.example.mydnd.game.save.SavedGameRepository;
 import com.example.mydnd.game.world.WorldMemoryRepository;
 import com.example.mydnd.game.world.WorldMaintenanceService;
@@ -42,6 +47,8 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.Date;
 import java.util.Locale;
 import java.text.SimpleDateFormat;
@@ -111,7 +118,7 @@ public class MainActivity extends ComponentActivity {
     private SummaryService summaryService;
 
     private static final String TAG_MEMORY = "MyDND_MEMORY";
-    private static final String TAG_BENCH = "MyDND_BENCH";
+    private static final String TAG_BEHAVIOR_TEST = "MyDND_BEHAVIOR_TEST";
     private static final String DIRECTOR_CHECK_PENDING_MARKER =
             "__MYDND_CHECK_PENDING__";
 
@@ -163,7 +170,7 @@ public class MainActivity extends ComponentActivity {
     private volatile long pendingDirectorCheckId = 0L;
     private volatile long pendingDirectorCheckCampaignId = 0L;
     private volatile boolean diceContinuationTurnActive = false;
-    private volatile boolean benchmarkInProgress = false;
+    private volatile boolean behaviorTestInProgress = false;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final StringBuilder pendingTokenBuffer = new StringBuilder();
@@ -204,9 +211,6 @@ public class MainActivity extends ComponentActivity {
 
     private int COLOR_CARD_REVERTED_BG;
     private int COLOR_CARD_REVERTED_TEXT;
-    private int COLOR_INPUT_TEXT;
-    private int COLOR_INPUT_HINT;
-    private int COLOR_INPUT_TINT;
 
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
@@ -257,6 +261,7 @@ public class MainActivity extends ComponentActivity {
         gameBackground =
                 findViewById(R.id.gameBackground);
 
+        applyGamePalette();
 
         GameBackgroundManager.apply(
                 this,
@@ -332,8 +337,6 @@ public class MainActivity extends ComponentActivity {
         journalButton = findViewById(R.id.journalButton);
         diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
-
-        applyGamePalette();
 
         chatTextView.setMovementMethod(LinkMovementMethod.getInstance());
         chatTextView.setHighlightColor(Color.TRANSPARENT);
@@ -1821,6 +1824,7 @@ public class MainActivity extends ComponentActivity {
         modelManager.generateDirectorAware(
                 ModelRole.MASTER,
                 preparedPrompt,
+                DirectorMode.PLAYER_ACTION.name(),
                 generationProfile,
                 runWorldEventPhase,
                 worldEventBatchText,
@@ -1986,19 +1990,19 @@ public class MainActivity extends ComponentActivity {
 
         DbExecutor.execute(() -> {
             try {
-                List<String> inventory =
-                        inventoryRepository.getItemNames(campaignId);
-
                 MemoryContext memoryContext =
                         campaignMemory.buildContext(campaignId, "");
 
                 CampaignPromptState campaignState =
                         campaignPromptRepository.build(campaignId);
 
+                DirectorPromptState directorState =
+                        directorPromptStateRepository.build(campaignId, "NONE");
+
                 String prompt =
-                        promptBuilder.buildDiceContinuationPrompt(
+                        promptBuilder.buildDiceContinuationDirectorPrompt(
                                 memoryContext,
-                                inventory,
+                                directorState,
                                 campaignState
                         );
 
@@ -2954,7 +2958,7 @@ public class MainActivity extends ComponentActivity {
         benchmarkButton.setOnClickListener(v -> {
             if (generationInProgress
                     || modelManager.isBusy()
-                    || benchmarkInProgress) {
+                    || behaviorTestInProgress) {
                 Toast.makeText(
                         this,
                         "Сначала завершите текущую генерацию.",
@@ -2964,7 +2968,7 @@ public class MainActivity extends ComponentActivity {
             }
 
             dialog.dismiss();
-            runSpeedBenchmark();
+            runBehaviorTestSuite();
         });
 
         resetDataButton.setOnClickListener(v ->
@@ -3089,44 +3093,49 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private void runSpeedBenchmark() {
-        if (benchmarkInProgress
+    private void runBehaviorTestSuite() {
+        if (behaviorTestInProgress
                 || generationInProgress
                 || modelManager.isBusy()) {
             return;
         }
 
-        benchmarkInProgress = true;
+        List<BehaviorTestCase> cases = BehaviorTestDataset.create();
+        if (cases.isEmpty()) {
+            return;
+        }
+
+        behaviorTestInProgress = true;
         generationInProgress = true;
         generationCancelledByUser = false;
 
         sendButton.setEnabled(false);
-        sendButton.setText("Тест 1/3...");
+        sendButton.setText("Тест 1/" + cases.size() + "...");
 
-        List<String> prompts = buildSpeedBenchmarkPrompts();
         long suiteStartedAt = System.currentTimeMillis();
 
         Log.i(
-                TAG_BENCH,
-                "SUITE START | cases=" + prompts.size()
+                TAG_BEHAVIOR_TEST,
+                "SUITE START | cases=" + cases.size()
                         + " | model=" + MASTER_MODEL_FILE
+                        + " | database=UNTOUCHED"
         );
 
-        runSpeedBenchmarkCase(
-                prompts,
+        runBehaviorTestCase(
+                cases,
                 0,
                 suiteStartedAt
         );
     }
 
 
-    private void runSpeedBenchmarkCase(
-            List<String> prompts,
+    private void runBehaviorTestCase(
+            List<BehaviorTestCase> cases,
             int index,
             long suiteStartedAt
     ) {
-        if (prompts == null || index >= prompts.size()) {
-            finishSpeedBenchmark(
+        if (cases == null || index >= cases.size()) {
+            finishBehaviorTestSuite(
                     true,
                     suiteStartedAt,
                     null
@@ -3134,76 +3143,173 @@ public class MainActivity extends ComponentActivity {
             return;
         }
 
-        final String preparedPrompt =
-                prepareMasterPrompt(prompts.get(index));
+        final BehaviorTestCase testCase = cases.get(index);
 
+        final String rawPrompt = testCase.getMode() == DirectorMode.CHECK_RESULT
+                ? promptBuilder.buildDiceContinuationDirectorPrompt(
+                        testCase.getMemoryContext(),
+                        testCase.getState(),
+                        BehaviorTestDataset.campaignState()
+                )
+                : promptBuilder.buildDirectorToolAwarePrompt(
+                        testCase.getPlayerAction(),
+                        testCase.getMemoryContext(),
+                        testCase.getState(),
+                        BehaviorTestDataset.campaignState()
+                );
+
+        final String preparedPrompt = prepareMasterPrompt(rawPrompt);
+        final List<String> actions = Collections.synchronizedList(new ArrayList<>());
+        final Set<String> seenFingerprints = Collections.synchronizedSet(new HashSet<>());
+        final int[] toolNumber = {0};
         final long caseStartedAt = System.currentTimeMillis();
-        final long[] firstTokenAt = {0L};
-        final int[] streamedChars = {0};
 
         runOnUiThread(() -> {
             sendButton.setEnabled(false);
-            sendButton.setText("Тест " + (index + 1) + "/" + prompts.size() + "...");
+            sendButton.setText("Тест " + (index + 1) + "/" + cases.size() + "...");
         });
 
         Log.i(
-                TAG_BENCH,
+                TAG_BEHAVIOR_TEST,
                 "CASE START | index=" + (index + 1)
+                        + " | id=" + testCase.getId()
+                        + " | mode=" + testCase.getMode()
                         + " | promptChars=" + preparedPrompt.length()
         );
+        Log.i(
+                TAG_BEHAVIOR_TEST,
+                "INPUT | id=" + testCase.getId()
+                        + " | text=" + compactBehaviorLog(testCase.getPlayerAction())
+        );
+        Log.i(
+                TAG_BEHAVIOR_TEST,
+                "EXPECT | id=" + testCase.getId()
+                        + " | " + testCase.expectedSummary()
+        );
 
-        GenerationProfile benchmarkProfile =
-                new GenerationProfile(
-                        "Benchmark",
-                        80,
-                        0.20f,
-                        0.80f,
-                        20,
-                        1.05f
-                );
-
-        modelManager.generate(
+        modelManager.generateDirectorAware(
                 ModelRole.MASTER,
                 preparedPrompt,
-                benchmarkProfile,
+                testCase.getMode().name(),
+                GenerationProfile.fast(),
+                false,
+                "",
+                rawToolCall -> {
+                    toolNumber[0]++;
+
+                    try {
+                        DirectorAction action = new DirectorActionParser().parse(rawToolCall);
+                        String toolCode = action.getType().getToolCode();
+                        actions.add(toolCode);
+
+                        String fingerprint = toolCode
+                                + "\u001F" + action.getName()
+                                + "\u001F" + action.getValue()
+                                + "\u001F" + action.getDetails();
+
+                        boolean duplicate = !seenFingerprints.add(fingerprint);
+
+                        Log.i(
+                                TAG_BEHAVIOR_TEST,
+                                "TOOL | id=" + testCase.getId()
+                                        + " | #=" + toolNumber[0]
+                                        + " | type=" + toolCode
+                                        + " | name=" + compactBehaviorLog(action.getName())
+                                        + " | value=" + compactBehaviorLog(action.getValue())
+                                        + " | details=" + compactBehaviorLog(action.getDetails())
+                                        + (duplicate ? " | duplicate=YES" : "")
+                        );
+
+                        if (duplicate) {
+                            return buildBehaviorToolResponse(
+                                    "REJECTED",
+                                    "DUPLICATE_ACTION_IN_TEST",
+                                    "",
+                                    false,
+                                    false
+                            );
+                        }
+
+                        if (action.getType() == DirectorActionType.NO_CHANGE) {
+                            return buildBehaviorToolResponse(
+                                    "NO_CHANGE",
+                                    "NO_CHANGE",
+                                    "",
+                                    false,
+                                    false
+                            );
+                        }
+
+                        if (action.getType() == DirectorActionType.CHECK_REQUEST) {
+                            return buildBehaviorToolResponse(
+                                    "APPLIED",
+                                    "CHECK_REQUESTED",
+                                    action.getName() + " DC " + action.getValue(),
+                                    true,
+                                    false
+                            );
+                        }
+
+                        return buildBehaviorToolResponse(
+                                "APPLIED",
+                                "TEST_APPLIED",
+                                toolCode + " " + action.getName() + " " + action.getValue(),
+                                false,
+                                testCase.getMode() == DirectorMode.CHECK_RESULT
+                        );
+
+                    } catch (Throwable throwable) {
+                        Log.e(
+                                TAG_BEHAVIOR_TEST,
+                                "TOOL PARSE ERROR | id=" + testCase.getId(),
+                                throwable
+                        );
+
+                        return buildBehaviorToolResponse(
+                                "REJECTED",
+                                "TEST_PARSE_ERROR",
+                                "",
+                                false,
+                                false
+                        );
+                    }
+                },
                 new LlmCallback() {
                     @Override
                     public void onToken(String token) {
-                        if (firstTokenAt[0] == 0L) {
-                            firstTokenAt[0] = System.currentTimeMillis();
-                        }
-
-                        if (token != null) {
-                            streamedChars[0] += token.length();
-                        }
+                        // Behaviour test stays out of the visible chat.
                     }
 
                     @Override
                     public void onComplete(String fullText) {
-                        long finishedAt = System.currentTimeMillis();
-                        long totalMs = finishedAt - caseStartedAt;
-                        long firstTokenMs = firstTokenAt[0] == 0L
-                                ? -1L
-                                : firstTokenAt[0] - caseStartedAt;
-                        int answerChars = fullText == null ? 0 : fullText.length();
+                        long totalMs = System.currentTimeMillis() - caseStartedAt;
+                        boolean passed = behaviorCasePassed(testCase, actions);
 
                         Log.i(
-                                TAG_BENCH,
+                                TAG_BEHAVIOR_TEST,
                                 "CASE END | index=" + (index + 1)
+                                        + " | id=" + testCase.getId()
+                                        + " | pass=" + (passed ? "YES" : "NO")
                                         + " | totalMs=" + totalMs
-                                        + " | firstTokenMs=" + firstTokenMs
-                                        + " | streamedChars=" + streamedChars[0]
-                                        + " | answerChars=" + answerChars
+                                        + " | actions=" + actions
                         );
+
+                        String narrative = fullText == null
+                                ? ""
+                                : fullText;
+
+                        if (DIRECTOR_CHECK_PENDING_MARKER.equals(narrative.trim())) {
+                            narrative = "[PAUSED_FOR_CHECK]";
+                        }
 
                         Log.d(
-                                TAG_BENCH,
-                                "CASE ANSWER #" + (index + 1) + ": "
-                                        + compactBenchmarkAnswer(fullText)
+                                TAG_BEHAVIOR_TEST,
+                                "NARRATIVE | id=" + testCase.getId()
+                                        + " | text=" + compactBehaviorLog(narrative)
                         );
 
-                        runSpeedBenchmarkCase(
-                                prompts,
+                        runBehaviorTestCase(
+                                cases,
                                 index + 1,
                                 suiteStartedAt
                         );
@@ -3212,12 +3318,13 @@ public class MainActivity extends ComponentActivity {
                     @Override
                     public void onError(Throwable throwable) {
                         Log.e(
-                                TAG_BENCH,
-                                "CASE ERROR | index=" + (index + 1),
+                                TAG_BEHAVIOR_TEST,
+                                "CASE ERROR | index=" + (index + 1)
+                                        + " | id=" + testCase.getId(),
                                 throwable
                         );
 
-                        finishSpeedBenchmark(
+                        finishBehaviorTestSuite(
                                 false,
                                 suiteStartedAt,
                                 throwable
@@ -3228,7 +3335,103 @@ public class MainActivity extends ComponentActivity {
     }
 
 
-    private void finishSpeedBenchmark(
+    private boolean behaviorCasePassed(
+            BehaviorTestCase testCase,
+            List<String> actions
+    ) {
+        List<String> safeActions = actions == null
+                ? Collections.emptyList()
+                : new ArrayList<>(actions);
+
+        if (testCase.isOnlyDoneExpected()) {
+            return safeActions.size() == 1
+                    && "DONE".equals(safeActions.get(0));
+        }
+
+        if (!safeActions.containsAll(testCase.getRequiredAll())) {
+            return false;
+        }
+
+        if (!testCase.getRequiredAny().isEmpty()) {
+            boolean anyFound = false;
+            for (String expected : testCase.getRequiredAny()) {
+                if (safeActions.contains(expected)) {
+                    anyFound = true;
+                    break;
+                }
+            }
+            if (!anyFound) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+
+    private String buildBehaviorToolResponse(
+            String status,
+            String code,
+            String stateAfter,
+            boolean checkRequested,
+            boolean forceDoneNext
+    ) {
+        StringBuilder response = new StringBuilder();
+        response.append("<|tool_response>response:director_action{")
+                .append("status:<|\"|>").append(safeBehaviorToolValue(status)).append("<|\"|>,")
+                .append("code:<|\"|>").append(safeBehaviorToolValue(code)).append("<|\"|>,")
+                .append("state_after:<|\"|>").append(safeBehaviorToolValue(stateAfter)).append("<|\"|>");
+
+        if ("APPLIED".equals(status) && !checkRequested) {
+            response.append(forceDoneNext
+                    ? ",next:<|\"|>DONE_ONLY<|\"|>"
+                    : ",next:<|\"|>DIRECT_OR_DONE<|\"|>");
+        } else if ("REJECTED".equals(status)) {
+            response.append(",next:<|\"|>DIRECT_FIX_OR_DONE<|\"|>");
+        }
+
+        response.append("}<tool_response|>");
+        return response.toString();
+    }
+
+
+    private String safeBehaviorToolValue(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        String safe = value
+                .replace("<", "")
+                .replace(">", "")
+                .replace("{", "(")
+                .replace("}", ")")
+                .replace('\n', ' ')
+                .replace('\r', ' ')
+                .trim();
+
+        return safe.length() <= 160
+                ? safe
+                : safe.substring(0, 160).trim();
+    }
+
+
+    private String compactBehaviorLog(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        String compact = value
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        return compact.length() <= 260
+                ? compact
+                : compact.substring(0, 260) + "...";
+    }
+
+
+    private void finishBehaviorTestSuite(
             boolean success,
             long suiteStartedAt,
             Throwable error
@@ -3236,14 +3439,14 @@ public class MainActivity extends ComponentActivity {
         long totalMs = System.currentTimeMillis() - suiteStartedAt;
 
         Log.i(
-                TAG_BENCH,
+                TAG_BEHAVIOR_TEST,
                 "SUITE END | success=" + success
                         + " | totalMs=" + totalMs
                         + (error == null ? "" : " | error=" + error.getClass().getSimpleName())
         );
 
         runOnUiThread(() -> {
-            benchmarkInProgress = false;
+            behaviorTestInProgress = false;
             generationInProgress = false;
             generationCancelledByUser = false;
             sendButton.setEnabled(true);
@@ -3252,83 +3455,11 @@ public class MainActivity extends ComponentActivity {
             Toast.makeText(
                     this,
                     success
-                            ? "Тест завершён: " + (totalMs / 1000f) + " с. Лог: MyDND_BENCH"
-                            : "Тест завершился с ошибкой. Лог: MyDND_BENCH",
+                            ? "Тест поведения завершён. Лог: MyDND_BEHAVIOR_TEST"
+                            : "Тест поведения завершился с ошибкой. Лог: MyDND_BEHAVIOR_TEST",
                     Toast.LENGTH_LONG
             ).show();
         });
-    }
-
-
-    private List<String> buildSpeedBenchmarkPrompts() {
-        List<String> prompts = new ArrayList<>();
-
-        prompts.add(buildSpeedBenchmarkPrompt(
-                "Короткий вход. Путник стоит у закрытой двери.",
-                "Что он замечает первым?"
-        ));
-
-        prompts.add(buildSpeedBenchmarkPrompt(
-                repeatBenchmarkContext(
-                        "В старом городе мокрые камни отражают свет фонарей, а пустые окна скрывают следы недавнего бегства. ",
-                        12
-                ),
-                "Какое одно обстоятельство делает путь опасным?"
-        ));
-
-        prompts.add(buildSpeedBenchmarkPrompt(
-                repeatBenchmarkContext(
-                        "На окраине мёртвого леса стоят ржавые машины, ветер проходит через провода, в пыли заметны старые следы, а дальние башни скрываются в сыром тумане. ",
-                        24
-                ),
-                "Кратко опиши, что герой понимает после внимательного осмотра."
-        ));
-
-        return prompts;
-    }
-
-
-    private String buildSpeedBenchmarkPrompt(
-            String context,
-            String question
-    ) {
-        return "SYSTEM:\n"
-                + "Это тест скорости локальной модели. Ответь по-русски шестью короткими предложениями, без списков и служебных блоков."
-                + "\n\nCURRENT_SCENE:\n"
-                + (context == null ? "" : context.trim())
-                + "\n\nQUESTION:\n"
-                + (question == null ? "" : question.trim());
-    }
-
-
-    private String repeatBenchmarkContext(
-            String sentence,
-            int count
-    ) {
-        StringBuilder builder = new StringBuilder();
-        String safeSentence = sentence == null ? "" : sentence;
-
-        for (int i = 0; i < count; i++) {
-            builder.append(safeSentence);
-        }
-
-        return builder.toString();
-    }
-
-
-    private String compactBenchmarkAnswer(String answer) {
-        if (answer == null) {
-            return "";
-        }
-
-        String compact = answer
-                .replace('\n', ' ')
-                .replaceAll("\\s+", " ")
-                .trim();
-
-        return compact.length() <= 220
-                ? compact
-                : compact.substring(0, 220) + "...";
     }
 
 
@@ -4762,21 +4893,31 @@ public class MainActivity extends ComponentActivity {
     ) {
         masterStreamingStartPosition = -1;
 
+        final long campaignId = currentCampaignId;
+        activeDirectorCampaignId = campaignId;
+        directorFlowController.startTurn(DirectorMode.CHECK_RESULT);
+
         String preparedPrompt =
                 prepareMasterPrompt(prompt);
 
         Log.d(
                 "MyDND_DICE_FLOW",
-                "CONTINUATION MODEL START | promptChars="
+                "CONTINUATION DIRECTOR START | promptChars="
                         + preparedPrompt.length()
-                        + " | maxTokens="
-                        + GenerationProfile.fast().getMaxTokens()
+                        + " | mode=CHECK_RESULT"
         );
 
-        modelManager.generate(
+        modelManager.generateDirectorAware(
                 ModelRole.MASTER,
                 preparedPrompt,
+                DirectorMode.CHECK_RESULT.name(),
                 GenerationProfile.fast(),
+                false,
+                "",
+                rawToolCall -> executeDirectorToolCallForContinuation(
+                        campaignId,
+                        rawToolCall
+                ),
                 createMasterGenerationCallback()
         );
     }
@@ -5042,6 +5183,7 @@ public class MainActivity extends ComponentActivity {
                                     runWorldMaintenanceAfterMasterTurn();
                                 } else if (isDiceContinuationTurn) {
                                     diceContinuationTurnActive = false;
+                                    activeDirectorCampaignId = 0L;
                                     runWorldMaintenanceAfterMasterTurn();
                                 } else {
                                     applyNarrativeDirectives(
@@ -6021,12 +6163,9 @@ public class MainActivity extends ComponentActivity {
         String backgroundName =
                 GameBackgroundManager.getSelectedBackgroundName(this);
 
-        boolean lightTheme =
-                "game_bg2".equals(backgroundName);
+        if ("game_bg2".equals(backgroundName)) {
 
-        if (lightTheme) {
-
-            // Светлый фон — тёмные чернила.
+            // Светлый фон — тёмные чернила и светлые плашки.
             COLOR_MASTER =
                     Color.rgb(48, 36, 25);
 
@@ -6035,6 +6174,7 @@ public class MainActivity extends ComponentActivity {
 
             COLOR_SYSTEM =
                     Color.rgb(100, 91, 80);
+
 
             COLOR_CARD_BG =
                     Color.argb(
@@ -6056,6 +6196,7 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_NEUTRAL =
                     Color.rgb(112, 79, 42);
 
+
             COLOR_CARD_REVERTED_BG =
                     Color.argb(
                             205,
@@ -6067,82 +6208,51 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_REVERTED_TEXT =
                     Color.rgb(100, 96, 90);
 
-            COLOR_INPUT_TEXT =
-                    Color.rgb(48, 36, 25);
-
-            COLOR_INPUT_HINT =
-                    Color.rgb(115, 100, 84);
-
-            COLOR_INPUT_TINT =
-                    Color.rgb(112, 79, 42);
-
-        } else {
-
-            // Исходный тёмный фон.
-            COLOR_MASTER =
-                    Color.rgb(232, 224, 208);
-
-            COLOR_PLAYER =
-                    Color.rgb(150, 190, 255);
-
-            COLOR_SYSTEM =
-                    Color.rgb(120, 120, 120);
-
-            COLOR_CARD_BG =
-                    Color.argb(
-                            178,
-                            30,
-                            27,
-                            22
-                    );
-
-            COLOR_CARD_BORDER =
-                    Color.rgb(199, 166, 106);
-
-            COLOR_CARD_GOOD =
-                    Color.rgb(132, 176, 125);
-
-            COLOR_CARD_BAD =
-                    Color.rgb(190, 124, 112);
-
-            COLOR_CARD_NEUTRAL =
-                    Color.rgb(199, 166, 106);
-
-            COLOR_CARD_REVERTED_BG =
-                    Color.argb(
-                            150,
-                            48,
-                            48,
-                            48
-                    );
-
-            COLOR_CARD_REVERTED_TEXT =
-                    Color.rgb(145, 145, 145);
-
-            COLOR_INPUT_TEXT =
-                    Color.WHITE;
-
-            COLOR_INPUT_HINT =
-                    Color.rgb(119, 119, 119);
-
-            COLOR_INPUT_TINT =
-                    Color.rgb(169, 138, 85);
+            return;
         }
 
-        if (inputEditText != null) {
-            inputEditText.setTextColor(
-                    COLOR_INPUT_TEXT
-            );
 
-            inputEditText.setHintTextColor(
-                    COLOR_INPUT_HINT
-            );
+        // game_bg — исходная тёмная палитра.
+        COLOR_MASTER =
+                Color.rgb(232, 224, 208);
 
-            inputEditText.setBackgroundTintList(
-                    android.content.res.ColorStateList.valueOf(
-                            COLOR_INPUT_TINT
-                    )
-            );
-        }
+        COLOR_PLAYER =
+                Color.rgb(150, 190, 255);
+
+        COLOR_SYSTEM =
+                Color.rgb(120, 120, 120);
+
+
+        COLOR_CARD_BG =
+                Color.argb(
+                        178,
+                        30,
+                        27,
+                        22
+                );
+
+        COLOR_CARD_BORDER =
+                Color.rgb(199, 166, 106);
+
+        COLOR_CARD_GOOD =
+                Color.rgb(132, 176, 125);
+
+        COLOR_CARD_BAD =
+                Color.rgb(190, 124, 112);
+
+        COLOR_CARD_NEUTRAL =
+                Color.rgb(199, 166, 106);
+
+
+        COLOR_CARD_REVERTED_BG =
+                Color.argb(
+                        150,
+                        48,
+                        48,
+                        48
+                );
+
+        COLOR_CARD_REVERTED_TEXT =
+                Color.rgb(145, 145, 145);
     }
 }
