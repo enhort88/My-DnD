@@ -936,6 +936,319 @@ static llama_sampler * create_director_done_sampler(
 }
 
 
+struct CompactAliasRef {
+    std::string alias;
+    std::string name;
+};
+
+
+static std::vector<CompactAliasRef> extract_compact_alias_refs(
+        const std::string & prompt,
+        const std::string & header
+) {
+    const std::string marker = "\n" + header + ":";
+    size_t start = prompt.find(marker);
+    if (start == std::string::npos) {
+        return {};
+    }
+
+    start = prompt.find('\n', start + marker.size());
+    if (start == std::string::npos) {
+        return {};
+    }
+    start++;
+
+    std::vector<CompactAliasRef> result;
+    size_t pos = start;
+    while (pos < prompt.size()) {
+        size_t end = prompt.find('\n', pos);
+        if (end == std::string::npos) {
+            end = prompt.size();
+        }
+
+        std::string line = trim_copy(prompt.substr(pos, end - pos));
+        if (line.empty()) {
+            break;
+        }
+
+        size_t equals = line.find('=');
+        if (equals == std::string::npos || equals == 0) {
+            break;
+        }
+
+        std::string alias = trim_copy(line.substr(0, equals));
+        std::string name_and_meta = trim_copy(line.substr(equals + 1));
+        size_t meta = name_and_meta.find('|');
+        std::string name = meta == std::string::npos
+                ? name_and_meta
+                : trim_copy(name_and_meta.substr(0, meta));
+
+        if (!alias.empty() && !name.empty()) {
+            result.push_back({alias, name});
+        }
+
+        if (end >= prompt.size()) {
+            break;
+        }
+        pos = end + 1;
+    }
+
+    return result;
+}
+
+
+static std::vector<std::string> aliases_of(
+        const std::vector<CompactAliasRef> & refs
+) {
+    std::vector<std::string> result;
+    result.reserve(refs.size());
+    for (const CompactAliasRef & ref : refs) {
+        if (!ref.alias.empty()) {
+            result.push_back(ref.alias);
+        }
+    }
+    return unique_non_empty(result);
+}
+
+
+static std::vector<std::string> extract_eligible_aliases(
+        const std::string & prompt
+) {
+    const std::string marker = "ELIGIBLE_REFS=";
+    size_t start = prompt.find(marker);
+    if (start == std::string::npos) {
+        return {};
+    }
+
+    start += marker.size();
+    size_t end = prompt.find('\n', start);
+    if (end == std::string::npos) {
+        end = prompt.size();
+    }
+
+    std::string value = trim_copy(prompt.substr(start, end - start));
+    if (value.empty() || value == "NONE") {
+        return {};
+    }
+
+    std::vector<std::string> result;
+    size_t pos = 0;
+    while (pos < value.size()) {
+        size_t comma = value.find(',', pos);
+        if (comma == std::string::npos) {
+            comma = value.size();
+        }
+
+        std::string alias = trim_copy(value.substr(pos, comma - pos));
+        if (!alias.empty()) {
+            result.push_back(alias);
+        }
+
+        if (comma >= value.size()) {
+            break;
+        }
+        pos = comma + 1;
+    }
+
+    return unique_non_empty(result);
+}
+
+
+static bool contains_literal(
+        const std::vector<std::string> & values,
+        const std::string & value
+) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
+
+
+static std::vector<std::string> filter_aliases(
+        const std::vector<std::string> & aliases,
+        const std::vector<std::string> & eligible
+) {
+    if (aliases.empty() || eligible.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> result;
+    result.reserve(aliases.size());
+    for (const std::string & alias : aliases) {
+        if (contains_literal(eligible, alias)) {
+            result.push_back(alias);
+        }
+    }
+    return unique_non_empty(result);
+}
+
+
+static std::string build_change_set_grammar(
+        const llama_vocab * vocab,
+        const std::string & prompt
+) {
+    llama_token tool_call_open = 0;
+    llama_token tool_call_close = 0;
+
+    if (!get_single_special_token(vocab, "<|tool_call>", tool_call_open)
+        || !get_single_special_token(vocab, "<tool_call|>", tool_call_close)) {
+        return "";
+    }
+
+    const std::string open = "<[" + std::to_string(tool_call_open) + "]>";
+    const std::string close = "<[" + std::to_string(tool_call_close) + "]>";
+
+    const std::vector<std::string> eligible = extract_eligible_aliases(prompt);
+    const bool failed_check = prompt.find("OUTCOME=FAILURE") != std::string::npos;
+
+    const std::vector<std::string> all_inventory = aliases_of(extract_compact_alias_refs(prompt, "INV"));
+    const std::vector<std::string> all_npcs = aliases_of(extract_compact_alias_refs(prompt, "NPC"));
+    const std::vector<std::string> all_quests = aliases_of(extract_compact_alias_refs(prompt, "QUEST"));
+    const std::vector<std::string> all_world_events = aliases_of(extract_compact_alias_refs(prompt, "WORLD_EVENT"));
+    const std::vector<std::string> all_abilities = aliases_of(extract_compact_alias_refs(prompt, "ABILITY"));
+    const std::vector<std::string> all_effects = aliases_of(extract_compact_alias_refs(prompt, "EFFECT"));
+
+    // Normal turns can mutate only existing entities explicitly grounded in the source text.
+    // A failed check is the one exception: any carried item may be lost by the narrated failure.
+    const std::vector<std::string> inventory = failed_check
+            ? all_inventory
+            : filter_aliases(all_inventory, eligible);
+    const std::vector<std::string> npcs = filter_aliases(all_npcs, eligible);
+    const std::vector<std::string> quests = filter_aliases(all_quests, eligible);
+    const std::vector<std::string> world_events = filter_aliases(all_world_events, eligible);
+    const std::vector<std::string> abilities = filter_aliases(all_abilities, eligible);
+    const std::vector<std::string> effects = filter_aliases(all_effects, eligible);
+
+    std::vector<std::string> hp_targets = {"PLAYER"};
+    hp_targets.insert(hp_targets.end(), npcs.begin(), npcs.end());
+
+    MYDND_LOGI(
+            "change-set candidates: eligible=%zu inv=%zu npc=%zu quest=%zu world=%zu ability=%zu effect=%zu failedCheck=%s",
+            eligible.size(),
+            inventory.size(),
+            npcs.size(),
+            quests.size(),
+            world_events.size(),
+            abilities.size(),
+            effects.size(),
+            failed_check ? "YES" : "NO"
+    );
+
+    std::vector<std::string> branches;
+    branches.push_back("inv-add");
+    if (!inventory.empty()) branches.push_back("inv-remove");
+    branches.push_back("hp");
+    branches.push_back("money");
+    branches.push_back("npc-upsert");
+    if (!npcs.empty()) {
+        branches.push_back("npc-memory");
+        branches.push_back("npc-status");
+    }
+    branches.push_back("world-add");
+    if (!world_events.empty()) {
+        branches.push_back("world-update");
+        branches.push_back("world-resolve");
+    }
+    branches.push_back("quest-start");
+    if (!quests.empty()) {
+        branches.push_back("quest-update");
+        branches.push_back("quest-complete");
+        branches.push_back("quest-fail");
+    }
+    branches.push_back("ability-add");
+    if (!abilities.empty()) {
+        branches.push_back("ability-update");
+        branches.push_back("ability-remove");
+    }
+    branches.push_back("effect-add");
+    if (!effects.empty()) branches.push_back("effect-remove");
+    branches.push_back("location");
+
+    std::string grammar;
+    grammar += "root ::= empty-set | nonempty-set\n";
+    grammar += "empty-set ::= " + open + " \"call:change_set{ops:[]}\" " + close + "\n";
+    grammar += "nonempty-set ::= " + open + " \"call:change_set{ops:[\" op-list \"]}\" " + close + "\n";
+    grammar += "op-list ::= op | op \",\" op | op \",\" op \",\" op | op \",\" op \",\" op \",\" op | op \",\" op \",\" op \",\" op \",\" op | op \",\" op \",\" op \",\" op \",\" op \",\" op\n";
+
+    grammar += "op ::= ";
+    for (size_t i = 0; i < branches.size(); i++) {
+        if (i > 0) grammar += " | ";
+        grammar += branches[i];
+    }
+    grammar += "\n";
+
+    grammar += "inv-add ::= \"INV_ADD(\\\"\" free-name \"\\\")\"\n";
+    if (!inventory.empty()) grammar += "inv-remove ::= \"INV_REMOVE(\" inventory-ref \")\"\n";
+    grammar += "hp ::= \"HP(\" hp-target \",\" signed-int \")\"\n";
+    grammar += "money ::= \"MONEY(PLAYER,\" signed-int \")\"\n";
+    grammar += "npc-upsert ::= \"NPC_UPSERT(\\\"\" free-name \"\\\")\"\n";
+    if (!npcs.empty()) {
+        grammar += "npc-memory ::= \"NPC_MEMORY(\" npc-ref \",\" memory-tone \")\"\n";
+        grammar += "npc-status ::= \"NPC_STATUS(\" npc-ref \",\" npc-status-value \")\"\n";
+    }
+    grammar += "world-add ::= \"WORLD_ADD(\\\"\" free-name \"\\\",\" importance \")\"\n";
+    if (!world_events.empty()) {
+        grammar += "world-update ::= \"WORLD_UPDATE(\" world-ref \",\" importance \")\"\n";
+        grammar += "world-resolve ::= \"WORLD_RESOLVE(\" world-ref \")\"\n";
+    }
+    grammar += "quest-start ::= \"QUEST_START(\\\"\" free-name \"\\\")\"\n";
+    if (!quests.empty()) {
+        grammar += "quest-update ::= \"QUEST_UPDATE(\" quest-ref \")\"\n";
+        grammar += "quest-complete ::= \"QUEST_COMPLETE(\" quest-ref \")\"\n";
+        grammar += "quest-fail ::= \"QUEST_FAIL(\" quest-ref \")\"\n";
+    }
+    grammar += "ability-add ::= \"ABILITY_ADD(\\\"\" free-name \"\\\",\" ability-category \")\"\n";
+    if (!abilities.empty()) {
+        grammar += "ability-update ::= \"ABILITY_UPDATE(\" ability-ref \",\" ability-category \")\"\n";
+        grammar += "ability-remove ::= \"ABILITY_REMOVE(\" ability-ref \")\"\n";
+    }
+    grammar += "effect-add ::= \"EFFECT_ADD(\\\"\" free-name \"\\\")\"\n";
+    if (!effects.empty()) grammar += "effect-remove ::= \"EFFECT_REMOVE(\" effect-ref \")\"\n";
+    grammar += "location ::= \"LOCATION(\\\"\" free-name \"\\\")\"\n";
+
+    grammar += "free-name ::= [^\\\"(),<>;=\\r\\n]{1,80}\n";
+    grammar += "signed-int ::= (\"+\" | \"-\") [0-9]{1,3}\n";
+    grammar += "memory-tone ::= \"GOOD\" | \"BAD\" | \"NEUTRAL\"\n";
+    grammar += "npc-status-value ::= \"ACTIVE\" | \"KNOWN\" | \"INACTIVE\" | \"MISSING\" | \"HOSTILE\" | \"ALLY\"\n";
+    grammar += "ability-category ::= \"SKILL\" | \"SPELL\" | \"TRAIT\" | \"POWER\"\n";
+    grammar += "importance ::= \"1\" | \"2\" | \"3\"\n";
+
+    append_literal_rule(grammar, "inventory-ref", inventory);
+    append_literal_rule(grammar, "npc-ref", npcs);
+    append_literal_rule(grammar, "hp-target", hp_targets);
+    append_literal_rule(grammar, "quest-ref", quests);
+    append_literal_rule(grammar, "world-ref", world_events);
+    append_literal_rule(grammar, "ability-ref", abilities);
+    append_literal_rule(grammar, "effect-ref", effects);
+
+    MYDND_LOGI("narrative-first change-set grammar:\n%s", grammar.c_str());
+    return grammar;
+}
+
+
+static llama_sampler * create_change_set_sampler(
+        const llama_vocab * vocab,
+        const std::string & prompt
+) {
+    std::string grammar = build_change_set_grammar(vocab, prompt);
+    if (grammar.empty()) {
+        return nullptr;
+    }
+
+    llama_sampler_chain_params params = llama_sampler_chain_default_params();
+    params.no_perf = true;
+    llama_sampler * sampler = llama_sampler_chain_init(params);
+    llama_sampler * grammar_sampler = llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+    if (grammar_sampler == nullptr) {
+        llama_sampler_free(sampler);
+        return nullptr;
+    }
+
+    llama_sampler_chain_add(sampler, grammar_sampler);
+    // Extraction is bookkeeping, not creative writing: deterministic and slightly cheaper.
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    return sampler;
+}
+
+
 static std::string build_world_event_grammar(
         const llama_vocab * vocab
 ) {
@@ -1341,6 +1654,409 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
         return 0;
     }
 }
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateNarrativeFirstStream(
+        JNIEnv * env,
+        jobject /* this */,
+        jlong nativeHandle,
+        jstring promptText,
+        jstring modeText,
+        jint maxTokens,
+        jfloat temperature,
+        jfloat topP,
+        jint topK,
+        jfloat repeatPenalty,
+        jobject tokenCallbackObject,
+        jobject checkToolCallbackObject) {
+
+    MYDND_LOGI("nativeGenerateNarrativeFirstStream: ENTER");
+
+    if (nativeHandle == 0) {
+        return string_to_jstring(env, "Ошибка: модель не загружена.");
+    }
+    if (tokenCallbackObject == nullptr || checkToolCallbackObject == nullptr) {
+        return string_to_jstring(env, "Ошибка: narrative-first callback == nullptr.");
+    }
+
+    jclass tokenCallbackClass = env->GetObjectClass(tokenCallbackObject);
+    jclass toolCallbackClass = env->GetObjectClass(checkToolCallbackObject);
+    if (tokenCallbackClass == nullptr || toolCallbackClass == nullptr) {
+        return string_to_jstring(env, "Ошибка: narrative-first callback class not found.");
+    }
+
+    jmethodID onTokenMethod = env->GetMethodID(
+            tokenCallbackClass,
+            "onToken",
+            "(Ljava/lang/String;)V"
+    );
+    jmethodID onToolCallMethod = env->GetMethodID(
+            toolCallbackClass,
+            "onToolCall",
+            "(Ljava/lang/String;)Ljava/lang/String;"
+    );
+    if (onTokenMethod == nullptr || onToolCallMethod == nullptr) {
+        return string_to_jstring(env, "Ошибка: narrative-first callback method not found.");
+    }
+
+    MyDndLlamaHandle * handle = reinterpret_cast<MyDndLlamaHandle *>(nativeHandle);
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    handle->cancel_requested.store(false);
+
+    try {
+        const std::string prompt = jstring_to_string(env, promptText);
+        std::string mode = jstring_to_string(env, modeText);
+        if (mode.empty()) {
+            mode = "PLAYER_ACTION";
+        }
+        const bool player_action_mode = mode == "PLAYER_ACTION";
+
+        if (prompt.empty()) {
+            return string_to_jstring(env, "");
+        }
+
+        const int narrative_max = maxTokens > 0 ? maxTokens : 140;
+        const int narrative_hard_max = narrative_max + 40;
+        const int gate_max_tokens = 96;
+        const int change_set_max_tokens = 180;
+        const int prompt_chunk_size = 16;
+        const int extraction_reserve = 320;
+
+        const float safe_temperature = temperature > 0.0f ? temperature : 0.75f;
+        const float safe_top_p = topP > 0.0f && topP <= 1.0f ? topP : 0.90f;
+        const int safe_top_k = topK > 0 ? topK : 40;
+        const float safe_repeat_penalty = repeatPenalty >= 1.0f ? repeatPenalty : 1.12f;
+
+        llama_memory_clear(llama_get_memory(handle->ctx), true);
+        const uint32_t n_ctx = llama_n_ctx(handle->ctx);
+
+        auto tokenize_text = [&](const std::string & text,
+                                 bool add_special,
+                                 std::vector<llama_token> & tokens) -> bool {
+            int count = -llama_tokenize(
+                    handle->vocab,
+                    text.c_str(),
+                    static_cast<int32_t>(text.size()),
+                    nullptr,
+                    0,
+                    add_special,
+                    true
+            );
+            if (count <= 0) {
+                return false;
+            }
+            tokens.resize(count);
+            int tokenized = llama_tokenize(
+                    handle->vocab,
+                    text.c_str(),
+                    static_cast<int32_t>(text.size()),
+                    tokens.data(),
+                    static_cast<int32_t>(tokens.size()),
+                    add_special,
+                    true
+            );
+            if (tokenized <= 0) {
+                return false;
+            }
+            tokens.resize(tokenized);
+            return true;
+        };
+
+        int context_tokens_used = 0;
+
+        auto decode_tokens = [&](std::vector<llama_token> & tokens) -> bool {
+            for (int pos = 0; pos < static_cast<int>(tokens.size()); pos += prompt_chunk_size) {
+                if (handle->cancel_requested.load()) {
+                    return false;
+                }
+                int chunk = std::min(
+                        prompt_chunk_size,
+                        static_cast<int>(tokens.size()) - pos
+                );
+                llama_batch batch = llama_batch_get_one(tokens.data() + pos, chunk);
+                if (llama_decode(handle->ctx, batch) != 0) {
+                    return false;
+                }
+                context_tokens_used += chunk;
+            }
+            return true;
+        };
+
+        auto decode_text = [&](const std::string & text, bool add_special) -> bool {
+            std::vector<llama_token> tokens;
+            return tokenize_text(text, add_special, tokens) && decode_tokens(tokens);
+        };
+
+        std::vector<llama_token> prompt_tokens;
+        if (!tokenize_text(prompt, true, prompt_tokens)) {
+            return string_to_jstring(env, "Ошибка: narrative-first prompt tokenization failed.");
+        }
+
+        if (static_cast<int>(prompt_tokens.size()) + extraction_reserve + 96 >= static_cast<int>(n_ctx)) {
+            return string_to_jstring(env, "Ошибка: narrative-first prompt не помещается в context.");
+        }
+
+        auto prompt_start = std::chrono::steady_clock::now();
+        if (!decode_tokens(prompt_tokens)) {
+            if (handle->cancel_requested.load()) {
+                return string_to_jstring(env, "");
+            }
+            return string_to_jstring(env, "Ошибка: narrative-first prompt decode failed.");
+        }
+        auto prompt_end = std::chrono::steady_clock::now();
+        MYDND_LOGI(
+                "nativeGenerateNarrativeFirstStream: prompt=%zu tokens, decode=%lld ms, mode=%s",
+                prompt_tokens.size(),
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(prompt_end - prompt_start).count()),
+                mode.c_str()
+        );
+
+        auto generate_tool_call = [&](llama_sampler * sampler,
+                                      int max_generated,
+                                      int reserve,
+                                      std::string & output) -> bool {
+            if (sampler == nullptr) {
+                return false;
+            }
+            output.clear();
+            bool complete = false;
+            for (int i = 0; i < max_generated; i++) {
+                if (handle->cancel_requested.load()) {
+                    break;
+                }
+                if (context_tokens_used + reserve + 1 >= static_cast<int>(n_ctx)) {
+                    break;
+                }
+                llama_token token = llama_sampler_sample(sampler, handle->ctx, -1);
+                if (llama_vocab_is_eog(handle->vocab, token)) {
+                    break;
+                }
+
+                char buffer[256];
+                int piece_length = llama_token_to_piece(
+                        handle->vocab,
+                        token,
+                        buffer,
+                        sizeof(buffer),
+                        0,
+                        true
+                );
+                if (piece_length > 0) {
+                    output.append(buffer, piece_length);
+                }
+
+                llama_batch batch = llama_batch_get_one(&token, 1);
+                if (llama_decode(handle->ctx, batch) != 0) {
+                    break;
+                }
+                context_tokens_used++;
+
+                if (is_complete_tool_call(output)) {
+                    complete = true;
+                    break;
+                }
+            }
+            llama_sampler_free(sampler);
+            return complete;
+        };
+
+        if (player_action_mode) {
+            auto gate_start = std::chrono::steady_clock::now();
+            llama_sampler * gate_sampler = create_director_action_sampler(
+                    handle->vocab,
+                    prompt,
+                    "PLAYER_ACTION",
+                    true,
+                    false,
+                    "check",
+                    {}
+            );
+
+            std::string gate_call;
+            if (!generate_tool_call(gate_sampler, gate_max_tokens, extraction_reserve + 96, gate_call)) {
+                return string_to_jstring(env, "Ошибка: check gate generation failed.");
+            }
+
+            auto gate_end = std::chrono::steady_clock::now();
+            MYDND_LOGI(
+                    "nativeGenerateNarrativeFirstStream: GATE = %lld ms | raw=%s",
+                    static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(gate_end - gate_start).count()),
+                    gate_call.c_str()
+            );
+
+            if (extract_director_action_type(gate_call) == "CHECK") {
+                jstring jToolCall = string_to_jstring(env, gate_call);
+                jobject responseObject = env->CallObjectMethod(
+                        checkToolCallbackObject,
+                        onToolCallMethod,
+                        jToolCall
+                );
+                env->DeleteLocalRef(jToolCall);
+
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                    return string_to_jstring(env, "Ошибка: check gate Java callback failed.");
+                }
+
+                std::string response;
+                if (responseObject != nullptr) {
+                    response = jstring_to_string(env, static_cast<jstring>(responseObject));
+                    env->DeleteLocalRef(responseObject);
+                }
+
+                if (response.find("code:<|\"|>CHECK_REQUESTED<|\"|>") != std::string::npos
+                    && response.find("status:<|\"|>APPLIED<|\"|>") != std::string::npos) {
+                    MYDND_LOGI("nativeGenerateNarrativeFirstStream: CHECK PAUSE");
+                    return string_to_jstring(env, "__MYDND_CHECK_PENDING__");
+                }
+
+                MYDND_LOGI("nativeGenerateNarrativeFirstStream: rejected CHECK -> narrate without check");
+            }
+
+            const std::string gate_response =
+                    "<|tool_response>response:director_action{status:<|\"|>NO_CHANGE<|\"|>,next:<|\"|>NARRATE<|\"|>}<tool_response|>";
+            if (!decode_text(gate_response, false)) {
+                return string_to_jstring(env, "Ошибка: gate response decode failed.");
+            }
+        }
+
+        llama_sampler * narrative_sampler = create_sampler(
+                safe_temperature,
+                safe_top_p,
+                safe_top_k,
+                safe_repeat_penalty
+        );
+
+        std::string narrative;
+        std::string streaming_pending;
+        int narrative_tokens = 0;
+        auto narrative_start = std::chrono::steady_clock::now();
+
+        for (int i = 0; i < narrative_hard_max; i++) {
+            if (handle->cancel_requested.load()) {
+                break;
+            }
+            if (context_tokens_used + extraction_reserve + 1 >= static_cast<int>(n_ctx)) {
+                MYDND_LOGI("nativeGenerateNarrativeFirstStream: narrative stopped for extraction reserve");
+                break;
+            }
+
+            llama_token token = llama_sampler_sample(narrative_sampler, handle->ctx, -1);
+            if (llama_vocab_is_eog(handle->vocab, token)) {
+                break;
+            }
+
+            char buffer[256];
+            int piece_length = llama_token_to_piece(
+                    handle->vocab,
+                    token,
+                    buffer,
+                    sizeof(buffer),
+                    0,
+                    true
+            );
+            std::string piece;
+            if (piece_length > 0) {
+                piece.assign(buffer, piece_length);
+            }
+
+            llama_batch batch = llama_batch_get_one(&token, 1);
+            if (llama_decode(handle->ctx, batch) != 0) {
+                break;
+            }
+            context_tokens_used++;
+            narrative_tokens++;
+
+            if (!piece.empty()) {
+                narrative.append(piece);
+                streaming_pending.append(piece);
+
+                size_t ready_length = complete_utf8_prefix_length(streaming_pending);
+                if (ready_length > 0) {
+                    std::string ready = streaming_pending.substr(0, ready_length);
+                    streaming_pending.erase(0, ready_length);
+                    jstring jToken = string_to_jstring(env, ready);
+                    env->CallVoidMethod(tokenCallbackObject, onTokenMethod, jToken);
+                    env->DeleteLocalRef(jToken);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionDescribe();
+                        env->ExceptionClear();
+                        break;
+                    }
+                }
+            }
+        }
+        llama_sampler_free(narrative_sampler);
+
+        if (!streaming_pending.empty()) {
+            jstring jToken = string_to_jstring(env, streaming_pending);
+            env->CallVoidMethod(tokenCallbackObject, onTokenMethod, jToken);
+            env->DeleteLocalRef(jToken);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+            }
+        }
+
+        auto narrative_end = std::chrono::steady_clock::now();
+        MYDND_LOGI(
+                "nativeGenerateNarrativeFirstStream: NARRATIVE = %lld ms | tokens=%d | chars=%zu",
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(narrative_end - narrative_start).count()),
+                narrative_tokens,
+                narrative.size()
+        );
+
+        if (handle->cancel_requested.load()) {
+            return string_to_jstring(env, narrative);
+        }
+
+        const std::string extraction_suffix =
+                "<turn|>\n<|turn>user\nPROTOCOL: Выпиши только уже явно произошедшие изменения. Не добавляй новых. HP/MONEY — только при явном изменении здоровья или денег; INV_REMOVE — только если предмет явно вышел из владения. ops может быть пустым.<turn|>\n<|turn>model\n";
+
+        if (!decode_text(extraction_suffix, false)) {
+            MYDND_LOGE("nativeGenerateNarrativeFirstStream: extraction suffix decode failed");
+            const std::string fallback = "<|tool_call>call:change_set{ops:[]}<tool_call|>";
+            return string_to_jstring(env, narrative + "\n__MYDND_CHANGESET__\n" + fallback);
+        }
+
+        auto extraction_start = std::chrono::steady_clock::now();
+        llama_sampler * change_sampler = create_change_set_sampler(handle->vocab, prompt);
+        std::string raw_change_set;
+        bool extraction_ok = generate_tool_call(
+                change_sampler,
+                change_set_max_tokens,
+                8,
+                raw_change_set
+        );
+        if (!extraction_ok) {
+            raw_change_set = "<|tool_call>call:change_set{ops:[]}<tool_call|>";
+        }
+        auto extraction_end = std::chrono::steady_clock::now();
+
+        MYDND_LOGI(
+                "nativeGenerateNarrativeFirstStream: EXTRACT = %lld ms | ok=%s | raw=%s",
+                static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(extraction_end - extraction_start).count()),
+                extraction_ok ? "YES" : "NO",
+                raw_change_set.c_str()
+        );
+
+        return string_to_jstring(
+                env,
+                narrative + "\n__MYDND_CHANGESET__\n" + raw_change_set
+        );
+
+    } catch (const std::exception & ex) {
+        return string_to_jstring(
+                env,
+                std::string("Ошибка nativeGenerateNarrativeFirstStream: ") + ex.what()
+        );
+    } catch (...) {
+        return string_to_jstring(env, "Ошибка nativeGenerateNarrativeFirstStream: неизвестная ошибка.");
+    }
+}
+
 
 extern "C"
 JNIEXPORT void JNICALL

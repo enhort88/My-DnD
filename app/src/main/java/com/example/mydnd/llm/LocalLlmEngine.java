@@ -168,6 +168,63 @@ public class LocalLlmEngine implements LlmEngine {
     }
 
 
+    public void generateNarrativeFirst(
+            String prompt,
+            String mode,
+            GenerationProfile profile,
+            NativeToolCallback checkToolCallback,
+            LlmCallback callback
+    ) {
+        cancelled = false;
+
+        new Thread(
+                () -> {
+                    try {
+                        Log.d(TAG, "generateNarrativeFirst(): started | mode=" + mode);
+                        load();
+
+                        if (cancelled) {
+                            callback.onComplete("");
+                            return;
+                        }
+
+                        NativeTokenCallback nativeTokenCallback = new NativeTokenCallback() {
+                            @Override
+                            public void onToken(String token) {
+                                callback.onToken(token);
+                            }
+                        };
+
+                        String answer = nativeBridge.nativeGenerateNarrativeFirstStream(
+                                handle,
+                                prompt,
+                                mode == null ? "PLAYER_ACTION" : mode,
+                                profile.getMaxTokens(),
+                                profile.getTemperature(),
+                                profile.getTopP(),
+                                profile.getTopK(),
+                                profile.getRepeatPenalty(),
+                                nativeTokenCallback,
+                                checkToolCallback
+                        );
+
+                        if (answer != null && answer.startsWith("Ошибка:")) {
+                            throw new IllegalStateException(answer);
+                        }
+
+                        Log.d(TAG, "generateNarrativeFirst(): finished | mode=" + mode);
+                        callback.onComplete(answer);
+
+                    } catch (Throwable throwable) {
+                        Log.e(TAG, "generateNarrativeFirst(): error", throwable);
+                        callback.onError(throwable);
+                    }
+                },
+                "LocalLlmNarrativeFirstThread"
+        ).start();
+    }
+
+
     public void generateDirectorAware(
             String prompt,
             String directorMode,

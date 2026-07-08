@@ -13,6 +13,11 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import com.example.mydnd.changeset.ChangeSetExecutionReport;
+import com.example.mydnd.changeset.ChangeSetExecutor;
+import com.example.mydnd.changeset.ChangeSetPromptBuilder;
+import com.example.mydnd.changeset.ChangeSetPromptState;
+import com.example.mydnd.changeset.ChangeSetPromptStateRepository;
 import com.example.mydnd.game.CharacterLifeRepository;
 import com.example.mydnd.game.CharacterLifeState;
 import com.example.mydnd.game.GameEvent;
@@ -43,6 +48,7 @@ import com.example.mydnd.llm.LlmCallback;
 import com.example.mydnd.llm.NativeToolCallback;
 import com.example.mydnd.llm.ResponseCleaner;
 import com.example.mydnd.llm.NarrativeDirectiveParser;
+import com.example.mydnd.llm.NarrativeFirstResult;
 import com.example.mydnd.prompt.PromptBuilder;
 import com.example.mydnd.prompt.GemmaToolPromptBuilder;
 import java.io.File;
@@ -134,6 +140,8 @@ public class MainActivity extends ComponentActivity {
     private CampaignPromptRepository campaignPromptRepository;
     private DirectorFlowController directorFlowController;
     private DirectorPromptStateRepository directorPromptStateRepository;
+    private ChangeSetPromptStateRepository changeSetPromptStateRepository;
+    private ChangeSetExecutor changeSetExecutor;
     private SavedGameRepository savedGameRepository;
     private WorldMemoryRepository worldMemoryRepository;
     private WorldMaintenanceService worldMaintenanceService;
@@ -215,6 +223,10 @@ public class MainActivity extends ComponentActivity {
     private int COLOR_CARD_REVERTED_BG;
     private int COLOR_CARD_REVERTED_TEXT;
 
+    private int COLOR_INPUT_TEXT;
+    private int COLOR_INPUT_HINT;
+    private int COLOR_INPUT_TINT;
+
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
     private int thinkingFrameIndex = 0;
@@ -240,6 +252,7 @@ public class MainActivity extends ComponentActivity {
 
     private final List<GameEvent> gameEvents = new ArrayList<>();
     private final PromptBuilder promptBuilder = new PromptBuilder();
+    private final ChangeSetPromptBuilder changeSetPromptBuilder = new ChangeSetPromptBuilder();
 
     private final GemmaToolPromptBuilder gemmaToolPromptBuilder =
             new GemmaToolPromptBuilder();
@@ -284,14 +297,17 @@ public class MainActivity extends ComponentActivity {
                 database,
                 inventoryRepository
         );
+        changeSetPromptStateRepository = new ChangeSetPromptStateRepository(database);
+        RoomDirectorStore roomDirectorStore = new RoomDirectorStore(
+                database,
+                inventoryRepository,
+                stateChangeRepository
+        );
         directorFlowController = new DirectorFlowController(
-                new RoomDirectorStore(
-                        database,
-                        inventoryRepository,
-                        stateChangeRepository
-                ),
+                roomDirectorStore,
                 this::onDirectorResult
         );
+        changeSetExecutor = new ChangeSetExecutor(roomDirectorStore);
         savedGameRepository = new SavedGameRepository(database);
         worldMemoryRepository = new WorldMemoryRepository(database);
 
@@ -345,8 +361,12 @@ public class MainActivity extends ComponentActivity {
         diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
 
+        applyGamePalette();
+
         chatTextView.setMovementMethod(LinkMovementMethod.getInstance());
         chatTextView.setHighlightColor(Color.TRANSPARENT);
+
+
 
         chatScrollView.setOnTouchListener((view, event) -> {
             int action = event.getActionMasked();
@@ -569,7 +589,7 @@ public class MainActivity extends ComponentActivity {
 
             showThinkingIndicator();
 
-            processDirectorAndGenerate(action);
+            processNarrativeFirstAndGenerate(action);
             return;
         }
 
@@ -665,7 +685,7 @@ public class MainActivity extends ComponentActivity {
         sendButton.setText("Стоп");
 
         showThinkingIndicator();
-        processDirectorAndGenerate(playerText);
+        processNarrativeFirstAndGenerate(playerText);
     }
 
     private void tryOpenDeathSaveFromLifeState() {
@@ -1800,6 +1820,59 @@ public class MainActivity extends ComponentActivity {
     }
 
 
+    private void saveEventToDbForCampaign(
+            long campaignId,
+            GameEvent event,
+            Runnable onSaved
+    ) {
+        if (campaignId <= 0L || event == null) {
+            Log.w(
+                    "MyDND_DB",
+                    "Event not saved: invalid fixed campaign"
+            );
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            try {
+                GameEventEntity entity = new GameEventEntity();
+                entity.campaignId = campaignId;
+                entity.speaker = event.getSpeaker().name();
+                entity.text = event.getText();
+                entity.includeInPrompt = event.isIncludeInPrompt();
+                entity.createdAt = event.getCreatedAtMillis();
+
+                database.gameEventDao().insert(entity);
+                database.campaignDao().touchCampaign(
+                        campaignId,
+                        System.currentTimeMillis()
+                );
+
+                Log.d(
+                        "MyDND_DB",
+                        "Event saved: speaker=" + entity.speaker
+                                + " | campaignId=" + campaignId
+                );
+
+                if (onSaved != null) {
+                    runOnUiThread(onSaved);
+                }
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_DB",
+                        "Failed to save event for campaignId=" + campaignId,
+                        throwable
+                );
+                runOnUiThread(() -> {
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
+                    finishNarrativeFirstTurn(false);
+                });
+            }
+        });
+    }
+
+
     private void saveEventToDb(
             GameEvent event,
             Runnable onSaved
@@ -2027,6 +2100,267 @@ public class MainActivity extends ComponentActivity {
 
 
     /**
+     * New production loop:
+     * check gate -> narrative -> one compact ChangeSet extraction in the SAME native context.
+     * Structural cards are applied only after the narrative is already visible.
+     */
+    private void processNarrativeFirstAndGenerate(String playerText) {
+        if (currentCampaignId <= 0L) {
+            finishOnePassPreparationError(new IllegalStateException("campaignId <= 0"));
+            return;
+        }
+
+        final long campaignId = currentCampaignId;
+
+        DbExecutor.execute(() -> {
+            try {
+                MemoryContext memoryContext = campaignMemory.buildContext(campaignId, playerText);
+                CampaignPromptState campaignState = campaignPromptRepository.build(campaignId);
+                ChangeSetPromptState changeState = changeSetPromptStateRepository.build(campaignId);
+
+                String rawPrompt = changeSetPromptBuilder.buildPlayerTurn(
+                        playerText,
+                        memoryContext,
+                        changeState,
+                        campaignState
+                );
+                String preparedPrompt = prepareMasterPrompt(rawPrompt);
+
+                Log.d(
+                        "MyDND_NARRATIVE_FIRST",
+                        "START | campaignId=" + campaignId
+                                + " | promptChars=" + preparedPrompt.length()
+                                + " | inventoryRefs=" + changeState.getInventory().size()
+                                + " | npcRefs=" + changeState.getNpcs().size()
+                );
+                Log.d("MyDND_NARRATIVE_FIRST_PROMPT", "\n" + preparedPrompt);
+
+                runOnUiThread(() -> startNarrativeFirstGeneration(
+                        preparedPrompt,
+                        campaignId,
+                        changeState,
+                        playerText,
+                        false
+                ));
+
+            } catch (Throwable throwable) {
+                finishOnePassPreparationError(throwable);
+            }
+        });
+    }
+
+
+    private void startNarrativeFirstGeneration(
+            String preparedPrompt,
+            long campaignId,
+            ChangeSetPromptState changeState,
+            String sourceAction,
+            boolean resolvedCheck
+    ) {
+        masterStreamingStartPosition = -1;
+        pendingDirectorCheckId = 0L;
+        pendingDirectorCheckCampaignId = 0L;
+        activeDirectorCampaignId = campaignId;
+        directorTurnActive = !resolvedCheck;
+        diceContinuationTurnActive = resolvedCheck;
+
+        if (!resolvedCheck) {
+            directorFlowController.startTurn(DirectorMode.PLAYER_ACTION);
+        }
+
+        modelManager.generateNarrativeFirst(
+                ModelRole.MASTER,
+                preparedPrompt,
+                resolvedCheck ? "CHECK_RESULT" : "PLAYER_ACTION",
+                resolvedCheck ? GenerationProfile.fast() : generationProfile,
+                rawToolCall -> executeNarrativeFirstCheckGate(
+                        campaignId,
+                        rawToolCall,
+                        sourceAction
+                ),
+                createNarrativeFirstGenerationCallback(
+                        campaignId,
+                        changeState,
+                        sourceAction,
+                        resolvedCheck
+                )
+        );
+    }
+
+
+    private LlmCallback createNarrativeFirstGenerationCallback(
+            long campaignId,
+            ChangeSetPromptState changeState,
+            String sourceAction,
+            boolean resolvedCheck
+    ) {
+        return new LlmCallback() {
+            @Override
+            public void onToken(String token) {
+                runOnUiThread(() -> {
+                    if (token == null || token.isEmpty()) {
+                        return;
+                    }
+
+                    if (!masterStreamingStarted) {
+                        removeThinkingIndicator();
+                        masterStreamingStartPosition = chatTextView.getText().length();
+                        masterStreamingStarted = true;
+                    }
+
+                    appendStreamingToken(token);
+                });
+            }
+
+            @Override
+            public void onComplete(String fullText) {
+                Log.d("MyDND_NARRATIVE_FIRST_RAW", "RAW:\n" + fullText);
+
+                if (!resolvedCheck
+                        && DIRECTOR_CHECK_PENDING_MARKER.equals(
+                                fullText == null ? "" : fullText.trim()
+                        )) {
+                    runOnUiThread(() -> finishDirectorCheckPause());
+                    return;
+                }
+
+                NarrativeFirstResult result = NarrativeFirstResult.parse(fullText);
+                String visibleText = responseCleaner.clean(result.getNarrative());
+                String rawChangeSet = result.getRawChangeSet();
+
+                Log.d(
+                        "MyDND_CHANGESET",
+                        "EXTRACTED | chars=" + rawChangeSet.length()
+                                + " | raw=" + rawChangeSet
+                );
+
+                runOnUiThread(() -> {
+                    removeThinkingIndicator();
+                    flushStreamingTokens();
+
+                    if (generationCancelledByUser) {
+                        if (!resolvedCheck) {
+                            removeLastPlayerEvent();
+                        }
+                        finishNarrativeFirstTurn(false);
+                        return;
+                    }
+
+                    if (masterStreamingStarted) {
+                        replaceStreamedMasterText(visibleText);
+                    } else {
+                        appendColoredText(visibleText + "\n\n", COLOR_MASTER);
+                    }
+
+                    GameEvent masterEvent = GameEvent.master(visibleText);
+                    gameEvents.add(masterEvent);
+
+                    masterStreamingStarted = false;
+                    masterStreamingStartPosition = -1;
+
+                    sendButton.setEnabled(false);
+                    sendButton.setText("Фиксирую последствия...");
+                    updateChat();
+
+                    saveEventToDbForCampaign(
+                            campaignId,
+                            masterEvent,
+                            () -> applyNarrativeChangeSet(
+                                    campaignId,
+                                    changeState,
+                                    sourceAction,
+                                    visibleText,
+                                    rawChangeSet,
+                                    resolvedCheck
+                            )
+                    );
+                });
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                runOnUiThread(() -> {
+                    removeThinkingIndicator();
+                    flushStreamingTokens();
+                    Log.e("MyDND_NARRATIVE_FIRST", "Generation failed", throwable);
+                    finishNarrativeFirstTurn(false);
+                });
+            }
+        };
+    }
+
+
+    private void applyNarrativeChangeSet(
+            long campaignId,
+            ChangeSetPromptState changeState,
+            String sourceAction,
+            String narrative,
+            String rawChangeSet,
+            boolean resolvedCheck
+    ) {
+        DbExecutor.execute(() -> {
+            ChangeSetExecutionReport report = changeSetExecutor.execute(
+                    campaignId,
+                    changeState,
+                    sourceAction,
+                    narrative,
+                    rawChangeSet
+            );
+
+            if (report.hasParseError()) {
+                Log.e("MyDND_CHANGESET", "PARSE ERROR | " + report.getParseError());
+            }
+
+            List<StateChangeEntity> cards = new ArrayList<>();
+            for (DirectorResult result : report.getResults()) {
+                Log.d(
+                        "MyDND_CHANGESET",
+                        "RESULT | status=" + result.getStatus()
+                                + " | type=" + result.getAction().getType().getToolCode()
+                                + " | code=" + result.getCode()
+                                + " | cardId=" + result.getStateChangeId()
+                );
+
+                if (result.getStateChangeId() > 0L) {
+                    StateChangeEntity change = stateChangeRepository.get(result.getStateChangeId());
+                    if (change != null) {
+                        cards.add(change);
+                    }
+                }
+            }
+
+            runOnUiThread(() -> {
+                if (currentCampaignId == campaignId) {
+                    for (StateChangeEntity card : cards) {
+                        appendStateChangeCard(card);
+                    }
+                    updateChat();
+                }
+
+                finishNarrativeFirstTurn(true);
+            });
+        });
+    }
+
+
+    private void finishNarrativeFirstTurn(boolean runMaintenance) {
+        generationInProgress = false;
+        directorTurnActive = false;
+        diceContinuationTurnActive = false;
+        activeDirectorCampaignId = 0L;
+        generationCancelledByUser = false;
+        masterStreamingStarted = false;
+        masterStreamingStartPosition = -1;
+
+        if (runMaintenance) {
+            runWorldMaintenanceAfterMasterTurn();
+        }
+        refreshCharacterLifeUi();
+        updateChat();
+    }
+
+
+    /**
      * Эксперимент /cont:
      * один prompt decode, затем tool call -> Java/Room -> tool response
      * и художественное продолжение в том же native context.
@@ -2155,6 +2489,47 @@ public class MainActivity extends ComponentActivity {
                 },
                 createMasterGenerationCallback()
         );
+    }
+
+
+    private String executeNarrativeFirstCheckGate(
+            long campaignId,
+            String rawToolCall,
+            String sourceAction
+    ) {
+        try {
+            DirectorAction action = new DirectorActionParser().parse(rawToolCall);
+            if (action.getType() != DirectorActionType.CHECK_REQUEST) {
+                return executeDirectorToolCallForContinuation(campaignId, rawToolCall);
+            }
+
+            String reason = sourceAction == null ? "" : sourceAction.trim();
+            if (reason.length() > 180) {
+                reason = reason.substring(0, 180).trim();
+            }
+            reason = reason
+                    .replace("<|\"|>", "'")
+                    .replace("<|tool_call>", "")
+                    .replace("<tool_call|>", "");
+
+            String sanitized =
+                    "<|tool_call>call:director_action{type:<|\"|>CHECK<|\"|>,"
+                            + "name:<|\"|>" + action.getName() + "<|\"|>,"
+                            + "value:<|\"|>" + action.getValue() + "<|\"|>,"
+                            + "details:<|\"|>" + reason + "<|\"|>}<tool_call|>";
+
+            Log.d(
+                    "MyDND_DICE_FLOW",
+                    "CHECK GATE SANITIZED | stat=" + action.getName()
+                            + " | dc=" + action.getValue()
+                            + " | reason=" + reason
+            );
+
+            return executeDirectorToolCallForContinuation(campaignId, sanitized);
+        } catch (Throwable throwable) {
+            Log.e("MyDND_DICE_FLOW", "Check gate sanitize failed", throwable);
+            return executeDirectorToolCallForContinuation(campaignId, rawToolCall);
+        }
     }
 
 
@@ -2314,37 +2689,24 @@ public class MainActivity extends ComponentActivity {
             try {
                 CampaignPromptState campaignState =
                         campaignPromptRepository.build(campaignId);
+                ChangeSetPromptState changeState =
+                        changeSetPromptStateRepository.build(campaignId);
 
-                final String prompt;
-                if (success) {
-                    prompt = promptBuilder.buildFastDiceSuccessNarrativePrompt(
-                            campaignState,
-                            resolvedCheck.subjectName,
-                            resolvedCheck.beforeNumber,
-                            resolvedCheck.description,
-                            roll
-                    );
-                } else {
-                    DirectorPromptState directorState =
-                            directorPromptStateRepository.build(campaignId, "NONE");
-
-                    prompt = promptBuilder.buildFastDiceContinuationDirectorPrompt(
-                            directorState,
-                            campaignState,
-                            resolvedCheck.subjectName,
-                            resolvedCheck.beforeNumber,
-                            resolvedCheck.description,
-                            roll,
-                            false
-                    );
-                }
+                final String prompt = changeSetPromptBuilder.buildResolvedCheckTurn(
+                        changeState,
+                        campaignState,
+                        resolvedCheck.subjectName,
+                        resolvedCheck.beforeNumber,
+                        resolvedCheck.description,
+                        roll,
+                        success
+                );
 
                 Log.d(
                         "MyDND_DICE_FLOW",
-                        (success
-                                ? "SUCCESS NARRATIVE PROMPT | chars="
-                                : "FAILURE DIRECTOR PROMPT | chars=")
+                        "RESOLVED CHECK NARRATIVE-FIRST PROMPT | chars="
                                 + prompt.length()
+                                + " | success=" + success
                 );
 
                 runOnUiThread(() -> {
@@ -2363,11 +2725,14 @@ public class MainActivity extends ComponentActivity {
                                     + " | success=" + success
                     );
 
-                    if (success) {
-                        startDiceSuccessNarrativeGeneration(prompt);
-                    } else {
-                        startDiceContinuationGeneration(prompt);
-                    }
+                    String preparedPrompt = prepareMasterPrompt(prompt);
+                    startNarrativeFirstGeneration(
+                            preparedPrompt,
+                            campaignId,
+                            changeState,
+                            resolvedCheck.description,
+                            true
+                    );
                 });
 
             } catch (Throwable throwable) {
@@ -6505,7 +6870,6 @@ public class MainActivity extends ComponentActivity {
                                     selected.getResourceName()
                             );
 
-                            applyGamePalette();
 
                             GameBackgroundManager.apply(
                                     this,
@@ -6575,6 +6939,14 @@ public class MainActivity extends ComponentActivity {
 
             COLOR_CARD_REVERTED_TEXT =
                     Color.rgb(100, 96, 90);
+            COLOR_INPUT_TEXT =
+                    Color.rgb(48, 36, 25);
+
+            COLOR_INPUT_HINT =
+                    Color.rgb(115, 100, 84);
+
+            COLOR_INPUT_TINT =
+                    Color.rgb(112, 79, 42);
 
             return;
         }
@@ -6622,5 +6994,29 @@ public class MainActivity extends ComponentActivity {
 
         COLOR_CARD_REVERTED_TEXT =
                 Color.rgb(145, 145, 145);
+        COLOR_INPUT_TEXT =
+                Color.WHITE;
+
+        COLOR_INPUT_HINT =
+                Color.rgb(119, 119, 119);
+
+        COLOR_INPUT_TINT =
+                Color.rgb(169, 138, 85);
+
+        if (inputEditText != null) {
+            inputEditText.setTextColor(
+                    COLOR_INPUT_TEXT
+            );
+
+            inputEditText.setHintTextColor(
+                    COLOR_INPUT_HINT
+            );
+
+            inputEditText.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            COLOR_INPUT_TINT
+                    )
+            );
+        }
     }
 }

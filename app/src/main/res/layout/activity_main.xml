@@ -56,20 +56,21 @@
 
         <!-- Заголовок -->
 
-<!--        <TextView-->
-<!--            android:id="@+id/titleTextView"-->
-<!--            android:layout_width="match_parent"-->
-<!--            android:layout_height="wrap_content"-->
-<!--            android:gravity="center"-->
-<!--            android:text="Pocket D&amp;D"-->
-<!--            android:textColor="#E8D8A8"-->
-<!--            android:textSize="36sp"-->
-<!--            android:fontFamily="@font/philosopher_bold"-->
-<!--            android:letterSpacing="0.05"-->
-<!--            android:shadowColor="#CC000000"-->
-<!--            android:shadowDx="0"-->
-<!--            android:shadowDy="3"-->
-<!--            android:shadowRadius="8" />-->
+        <TextView
+            android:id="@+id/titleTextView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:translationY="-110dp"
+            android:text="Pocket"
+            android:textColor="#E7C77C"
+            android:textSize="54sp"
+            android:fontFamily="@font/cinzel_decorative_black"
+            android:letterSpacing="0.08"
+            android:shadowColor="#E0000000"
+            android:shadowDx="0"
+            android:shadowDy="4"
+            android:shadowRadius="10" />
 
 
         <!-- Подзаголовок -->

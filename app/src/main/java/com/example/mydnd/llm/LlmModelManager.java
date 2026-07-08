@@ -133,6 +133,56 @@ public class LlmModelManager {
     }
 
 
+    public void generateNarrativeFirst(
+            ModelRole role,
+            String prompt,
+            String mode,
+            GenerationProfile profile,
+            NativeToolCallback checkToolCallback,
+            LlmCallback callback
+    ) {
+        final LocalLlmEngine engine;
+
+        synchronized (lock) {
+            if (busy) {
+                callback.onError(new IllegalStateException("Другая генерация уже выполняется"));
+                return;
+            }
+            engine = switchToLocked(role);
+            busy = true;
+        }
+
+        Log.d(TAG, "generateNarrativeFirst(): role=" + role + " | mode=" + mode);
+
+        engine.generateNarrativeFirst(
+                prompt,
+                mode,
+                profile,
+                checkToolCallback,
+                new LlmCallback() {
+                    @Override
+                    public void onToken(String token) {
+                        callback.onToken(token);
+                    }
+
+                    @Override
+                    public void onComplete(String fullText) {
+                        finishGeneration();
+                        Log.d(TAG, "generateNarrativeFirst(): completed, role=" + role);
+                        callback.onComplete(fullText);
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        finishGeneration();
+                        Log.e(TAG, "generateNarrativeFirst(): failed, role=" + role, throwable);
+                        callback.onError(throwable);
+                    }
+                }
+        );
+    }
+
+
     public void generateDirectorAware(
             ModelRole role,
             String prompt,

@@ -31,6 +31,20 @@ public class NativeLlmBridge {
             NativeTokenCallback callback
     );
 
+
+    public native String nativeGenerateNarrativeFirstStream(
+            long handle,
+            String prompt,
+            String mode,
+            int maxTokens,
+            float temperature,
+            float topP,
+            int topK,
+            float repeatPenalty,
+            NativeTokenCallback tokenCallback,
+            NativeToolCallback checkToolCallback
+    );
+
     public native String nativeGenerateDirectorAwareStream(
             long handle,
             String prompt,
