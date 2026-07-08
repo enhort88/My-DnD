@@ -2341,10 +2341,12 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 [&](const std::string & raw_tool_call,
                     int tool_number,
                     bool & confirmed_done,
-                    bool & action_applied) -> bool {
+                    bool & action_applied,
+                    bool & check_requested) -> bool {
 
             confirmed_done = false;
             action_applied = false;
+            check_requested = false;
 
             MYDND_LOGI(
                     "nativeGenerateDirectorAwareStream: DIRECTOR TOOL #%d RAW = %s",
@@ -2413,6 +2415,26 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     tool_response.find(
                             "status:<|\"|>APPLIED<|\"|>"
                     ) != std::string::npos;
+
+            check_requested =
+                    action_applied
+                    && tool_response.find(
+                            "code:<|\"|>CHECK_REQUESTED<|\"|>"
+                    ) != std::string::npos;
+
+            /*
+             * CHECK is a hard phase boundary. The Java card is already stored
+             * and shown; no tool response needs to be decoded because the
+             * current native context will not continue. This saves time and,
+             * more importantly, prevents narrative generation before the roll.
+             */
+            if (check_requested) {
+                MYDND_LOGI(
+                        "nativeGenerateDirectorAwareStream: CHECK requested at tool #%d; pausing before narrative",
+                        tool_number
+                );
+                return true;
+            }
 
             int response_count =
                     -llama_tokenize(
@@ -2486,6 +2508,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         };
 
         bool director_done = false;
+        bool director_check_pending = false;
         bool director_protocol_ok = true;
         bool has_applied_action = false;
         int director_action_count = 0;
@@ -2574,11 +2597,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
             bool confirmed_done = false;
             bool action_applied = false;
+            bool check_requested = false;
             if (!execute_and_decode_tool_response(
                     raw_tool_call,
                     tool_number,
                     confirmed_done,
-                    action_applied
+                    action_applied,
+                    check_requested
             )) {
                 director_protocol_ok = false;
                 break;
@@ -2586,6 +2611,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
             if (action_applied) {
                 has_applied_action = true;
+            }
+
+            if (check_requested) {
+                director_check_pending = true;
+                break;
             }
 
             if (confirmed_done) {
@@ -2601,15 +2631,23 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 ).count();
 
         MYDND_LOGI(
-                "nativeGenerateDirectorAwareStream: DIRECTOR = %lld ms, actions=%d, done=%s, protocol=%s",
+                "nativeGenerateDirectorAwareStream: DIRECTOR = %lld ms, actions=%d, done=%s, check=%s, protocol=%s",
                 static_cast<long long>(director_ms),
                 director_action_count,
                 director_done ? "YES" : "NO",
+                director_check_pending ? "YES" : "NO",
                 director_protocol_ok ? "OK" : "ERROR"
         );
 
         if (handle->cancel_requested.load()) {
             return string_to_jstring(env, "");
+        }
+
+        if (director_check_pending) {
+            MYDND_LOGI(
+                    "nativeGenerateDirectorAwareStream: PAUSED FOR CHECK; narrative skipped"
+            );
+            return string_to_jstring(env, "__MYDND_CHECK_PENDING__");
         }
 
         if (!director_done) {

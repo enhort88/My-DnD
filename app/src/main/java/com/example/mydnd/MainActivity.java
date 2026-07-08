@@ -111,6 +111,9 @@ public class MainActivity extends ComponentActivity {
     private SummaryService summaryService;
 
     private static final String TAG_MEMORY = "MyDND_MEMORY";
+    private static final String TAG_BENCH = "MyDND_BENCH";
+    private static final String DIRECTOR_CHECK_PENDING_MARKER =
+            "__MYDND_CHECK_PENDING__";
 
     private CampaignMemory campaignMemory;
 
@@ -157,6 +160,10 @@ public class MainActivity extends ComponentActivity {
     private boolean generationInProgress = false;
     private volatile boolean directorTurnActive = false;
     private volatile long activeDirectorCampaignId = 0L;
+    private volatile long pendingDirectorCheckId = 0L;
+    private volatile long pendingDirectorCheckCampaignId = 0L;
+    private volatile boolean diceContinuationTurnActive = false;
+    private volatile boolean benchmarkInProgress = false;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final StringBuilder pendingTokenBuffer = new StringBuilder();
@@ -197,6 +204,9 @@ public class MainActivity extends ComponentActivity {
 
     private int COLOR_CARD_REVERTED_BG;
     private int COLOR_CARD_REVERTED_TEXT;
+    private int COLOR_INPUT_TEXT;
+    private int COLOR_INPUT_HINT;
+    private int COLOR_INPUT_TINT;
 
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
@@ -247,7 +257,6 @@ public class MainActivity extends ComponentActivity {
         gameBackground =
                 findViewById(R.id.gameBackground);
 
-        applyGamePalette();
 
         GameBackgroundManager.apply(
                 this,
@@ -323,6 +332,8 @@ public class MainActivity extends ComponentActivity {
         journalButton = findViewById(R.id.journalButton);
         diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
+
+        applyGamePalette();
 
         chatTextView.setMovementMethod(LinkMovementMethod.getInstance());
         chatTextView.setHighlightColor(Color.TRANSPARENT);
@@ -1801,6 +1812,8 @@ public class MainActivity extends ComponentActivity {
             String worldEventBatchText
     ) {
         masterStreamingStartPosition = -1;
+        pendingDirectorCheckId = 0L;
+        pendingDirectorCheckCampaignId = 0L;
         activeDirectorCampaignId = campaignId;
         directorTurnActive = true;
         directorFlowController.startTurn(DirectorMode.PLAYER_ACTION);
@@ -1874,6 +1887,18 @@ public class MainActivity extends ComponentActivity {
                         + " | after=" + result.getStateAfter()
         );
 
+        if ("CHECK_REQUESTED".equals(result.getCode())
+                && result.getStateChangeId() > 0L) {
+            pendingDirectorCheckId = result.getStateChangeId();
+            pendingDirectorCheckCampaignId = activeDirectorCampaignId;
+
+            Log.d(
+                    "MyDND_DICE_FLOW",
+                    "CHECK PAUSE ARMED | changeId=" + pendingDirectorCheckId
+                            + " | campaignId=" + pendingDirectorCheckCampaignId
+            );
+        }
+
         if (result.getStateChangeId() <= 0L) {
             return;
         }
@@ -1891,6 +1916,132 @@ public class MainActivity extends ComponentActivity {
                 campaignId,
                 change
         );
+    }
+
+
+    private void finishDirectorCheckPause() {
+        removeThinkingIndicator();
+        flushStreamingTokens();
+
+        generationInProgress = false;
+        directorTurnActive = false;
+        activeDirectorCampaignId = 0L;
+        generationCancelledByUser = false;
+        masterStreamingStarted = false;
+        masterStreamingStartPosition = -1;
+
+        final long changeId = pendingDirectorCheckId;
+        final long campaignId = pendingDirectorCheckCampaignId;
+
+        Log.d(
+                "MyDND_DICE_FLOW",
+                "GENERATION PAUSED FOR CHECK | changeId=" + changeId
+                        + " | campaignId=" + campaignId
+        );
+
+        updateChat();
+
+        if (changeId <= 0L
+                || campaignId <= 0L
+                || currentCampaignId != campaignId) {
+            sendButton.setEnabled(true);
+            sendButton.setText("Отправить");
+            return;
+        }
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Бросьте d20");
+        openDiceCheck(changeId);
+    }
+
+
+    private void continueAfterResolvedDiceCheck(
+            long campaignId
+    ) {
+        if (campaignId <= 0L
+                || currentCampaignId != campaignId
+                || generationInProgress
+                || modelManager.isBusy()) {
+            return;
+        }
+
+        pendingDirectorCheckId = 0L;
+        pendingDirectorCheckCampaignId = 0L;
+        generationCancelledByUser = false;
+        generationInProgress = true;
+        diceContinuationTurnActive = true;
+        masterStreamingStarted = false;
+        masterStreamingStartPosition = -1;
+
+        sendButton.setEnabled(true);
+        sendButton.setText("Стоп");
+        showThinkingIndicator();
+
+        final long startedAt = System.currentTimeMillis();
+
+        Log.d(
+                "MyDND_DICE_FLOW",
+                "CONTINUATION START | campaignId=" + campaignId
+        );
+
+        DbExecutor.execute(() -> {
+            try {
+                List<String> inventory =
+                        inventoryRepository.getItemNames(campaignId);
+
+                MemoryContext memoryContext =
+                        campaignMemory.buildContext(campaignId, "");
+
+                CampaignPromptState campaignState =
+                        campaignPromptRepository.build(campaignId);
+
+                String prompt =
+                        promptBuilder.buildDiceContinuationPrompt(
+                                memoryContext,
+                                inventory,
+                                campaignState
+                        );
+
+                Log.d(
+                        "MyDND_DICE_FLOW",
+                        "CONTINUATION PROMPT | chars=" + prompt.length()
+                );
+
+                runOnUiThread(() -> {
+                    if (currentCampaignId != campaignId) {
+                        generationInProgress = false;
+                        diceContinuationTurnActive = false;
+                        removeThinkingIndicator();
+                        sendButton.setEnabled(true);
+                        sendButton.setText("Отправить");
+                        return;
+                    }
+
+                    Log.d(
+                            "MyDND_DICE_FLOW",
+                            "CONTINUATION GENERATE | prepareMs="
+                                    + (System.currentTimeMillis() - startedAt)
+                    );
+
+                    startDiceContinuationGeneration(prompt);
+                });
+
+            } catch (Throwable throwable) {
+                Log.e(
+                        "MyDND_DICE_FLOW",
+                        "Failed to build dice continuation",
+                        throwable
+                );
+
+                runOnUiThread(() -> {
+                    generationInProgress = false;
+                    diceContinuationTurnActive = false;
+                    removeThinkingIndicator();
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
+                });
+            }
+        });
     }
 
 
@@ -2791,11 +2942,30 @@ public class MainActivity extends ComponentActivity {
         TextView modelInfoText =
                 dialog.findViewById(R.id.settingsModelInfoText);
 
+        Button benchmarkButton =
+                dialog.findViewById(R.id.settingsBenchmarkButton);
+
         Button resetDataButton =
                 dialog.findViewById(R.id.settingsResetDataButton);
 
         Button closeButton =
                 dialog.findViewById(R.id.settingsCloseButton);
+
+        benchmarkButton.setOnClickListener(v -> {
+            if (generationInProgress
+                    || modelManager.isBusy()
+                    || benchmarkInProgress) {
+                Toast.makeText(
+                        this,
+                        "Сначала завершите текущую генерацию.",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+
+            dialog.dismiss();
+            runSpeedBenchmark();
+        });
 
         resetDataButton.setOnClickListener(v ->
                 showResetAllDataDialog(
@@ -2916,6 +3086,249 @@ public class MainActivity extends ComponentActivity {
         );
 
         dialog.show();
+    }
+
+
+    private void runSpeedBenchmark() {
+        if (benchmarkInProgress
+                || generationInProgress
+                || modelManager.isBusy()) {
+            return;
+        }
+
+        benchmarkInProgress = true;
+        generationInProgress = true;
+        generationCancelledByUser = false;
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Тест 1/3...");
+
+        List<String> prompts = buildSpeedBenchmarkPrompts();
+        long suiteStartedAt = System.currentTimeMillis();
+
+        Log.i(
+                TAG_BENCH,
+                "SUITE START | cases=" + prompts.size()
+                        + " | model=" + MASTER_MODEL_FILE
+        );
+
+        runSpeedBenchmarkCase(
+                prompts,
+                0,
+                suiteStartedAt
+        );
+    }
+
+
+    private void runSpeedBenchmarkCase(
+            List<String> prompts,
+            int index,
+            long suiteStartedAt
+    ) {
+        if (prompts == null || index >= prompts.size()) {
+            finishSpeedBenchmark(
+                    true,
+                    suiteStartedAt,
+                    null
+            );
+            return;
+        }
+
+        final String preparedPrompt =
+                prepareMasterPrompt(prompts.get(index));
+
+        final long caseStartedAt = System.currentTimeMillis();
+        final long[] firstTokenAt = {0L};
+        final int[] streamedChars = {0};
+
+        runOnUiThread(() -> {
+            sendButton.setEnabled(false);
+            sendButton.setText("Тест " + (index + 1) + "/" + prompts.size() + "...");
+        });
+
+        Log.i(
+                TAG_BENCH,
+                "CASE START | index=" + (index + 1)
+                        + " | promptChars=" + preparedPrompt.length()
+        );
+
+        GenerationProfile benchmarkProfile =
+                new GenerationProfile(
+                        "Benchmark",
+                        80,
+                        0.20f,
+                        0.80f,
+                        20,
+                        1.05f
+                );
+
+        modelManager.generate(
+                ModelRole.MASTER,
+                preparedPrompt,
+                benchmarkProfile,
+                new LlmCallback() {
+                    @Override
+                    public void onToken(String token) {
+                        if (firstTokenAt[0] == 0L) {
+                            firstTokenAt[0] = System.currentTimeMillis();
+                        }
+
+                        if (token != null) {
+                            streamedChars[0] += token.length();
+                        }
+                    }
+
+                    @Override
+                    public void onComplete(String fullText) {
+                        long finishedAt = System.currentTimeMillis();
+                        long totalMs = finishedAt - caseStartedAt;
+                        long firstTokenMs = firstTokenAt[0] == 0L
+                                ? -1L
+                                : firstTokenAt[0] - caseStartedAt;
+                        int answerChars = fullText == null ? 0 : fullText.length();
+
+                        Log.i(
+                                TAG_BENCH,
+                                "CASE END | index=" + (index + 1)
+                                        + " | totalMs=" + totalMs
+                                        + " | firstTokenMs=" + firstTokenMs
+                                        + " | streamedChars=" + streamedChars[0]
+                                        + " | answerChars=" + answerChars
+                        );
+
+                        Log.d(
+                                TAG_BENCH,
+                                "CASE ANSWER #" + (index + 1) + ": "
+                                        + compactBenchmarkAnswer(fullText)
+                        );
+
+                        runSpeedBenchmarkCase(
+                                prompts,
+                                index + 1,
+                                suiteStartedAt
+                        );
+                    }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        Log.e(
+                                TAG_BENCH,
+                                "CASE ERROR | index=" + (index + 1),
+                                throwable
+                        );
+
+                        finishSpeedBenchmark(
+                                false,
+                                suiteStartedAt,
+                                throwable
+                        );
+                    }
+                }
+        );
+    }
+
+
+    private void finishSpeedBenchmark(
+            boolean success,
+            long suiteStartedAt,
+            Throwable error
+    ) {
+        long totalMs = System.currentTimeMillis() - suiteStartedAt;
+
+        Log.i(
+                TAG_BENCH,
+                "SUITE END | success=" + success
+                        + " | totalMs=" + totalMs
+                        + (error == null ? "" : " | error=" + error.getClass().getSimpleName())
+        );
+
+        runOnUiThread(() -> {
+            benchmarkInProgress = false;
+            generationInProgress = false;
+            generationCancelledByUser = false;
+            sendButton.setEnabled(true);
+            sendButton.setText("Отправить");
+
+            Toast.makeText(
+                    this,
+                    success
+                            ? "Тест завершён: " + (totalMs / 1000f) + " с. Лог: MyDND_BENCH"
+                            : "Тест завершился с ошибкой. Лог: MyDND_BENCH",
+                    Toast.LENGTH_LONG
+            ).show();
+        });
+    }
+
+
+    private List<String> buildSpeedBenchmarkPrompts() {
+        List<String> prompts = new ArrayList<>();
+
+        prompts.add(buildSpeedBenchmarkPrompt(
+                "Короткий вход. Путник стоит у закрытой двери.",
+                "Что он замечает первым?"
+        ));
+
+        prompts.add(buildSpeedBenchmarkPrompt(
+                repeatBenchmarkContext(
+                        "В старом городе мокрые камни отражают свет фонарей, а пустые окна скрывают следы недавнего бегства. ",
+                        12
+                ),
+                "Какое одно обстоятельство делает путь опасным?"
+        ));
+
+        prompts.add(buildSpeedBenchmarkPrompt(
+                repeatBenchmarkContext(
+                        "На окраине мёртвого леса стоят ржавые машины, ветер проходит через провода, в пыли заметны старые следы, а дальние башни скрываются в сыром тумане. ",
+                        24
+                ),
+                "Кратко опиши, что герой понимает после внимательного осмотра."
+        ));
+
+        return prompts;
+    }
+
+
+    private String buildSpeedBenchmarkPrompt(
+            String context,
+            String question
+    ) {
+        return "SYSTEM:\n"
+                + "Это тест скорости локальной модели. Ответь по-русски шестью короткими предложениями, без списков и служебных блоков."
+                + "\n\nCURRENT_SCENE:\n"
+                + (context == null ? "" : context.trim())
+                + "\n\nQUESTION:\n"
+                + (question == null ? "" : question.trim());
+    }
+
+
+    private String repeatBenchmarkContext(
+            String sentence,
+            int count
+    ) {
+        StringBuilder builder = new StringBuilder();
+        String safeSentence = sentence == null ? "" : sentence;
+
+        for (int i = 0; i < count; i++) {
+            builder.append(safeSentence);
+        }
+
+        return builder.toString();
+    }
+
+
+    private String compactBenchmarkAnswer(String answer) {
+        if (answer == null) {
+            return "";
+        }
+
+        String compact = answer
+                .replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        return compact.length() <= 220
+                ? compact
+                : compact.substring(0, 220) + "...";
     }
 
 
@@ -3823,6 +4236,7 @@ public class MainActivity extends ComponentActivity {
         Dialog dialog = new Dialog(this);
         dialog.setContentView(R.layout.dialog_dice_roll);
         dialog.setCanceledOnTouchOutside(false);
+        dialog.setCancelable(requestedCheck == null);
 
         TextView titleText =
                 dialog.findViewById(R.id.diceTitleText);
@@ -3844,6 +4258,9 @@ public class MainActivity extends ComponentActivity {
         valueText.setText("—");
         hintText.setText("Кубик катится...");
         closeButton.setEnabled(false);
+
+        final boolean[] checkResolved = {requestedCheck == null};
+        final boolean[] continuationStarted = {false};
 
         final long animationDurationMs = 1100L;
         final long animationStartedAt = System.currentTimeMillis();
@@ -3888,6 +4305,11 @@ public class MainActivity extends ComponentActivity {
                                         success
                                 );
 
+                        List<GameEventEntity> refreshedEvents =
+                                Collections.emptyList();
+                        List<StateChangeEntity> refreshedChanges =
+                                Collections.emptyList();
+
                         if (resolved) {
                             saveDiceResultForPrompt(
                                     campaignId,
@@ -3895,17 +4317,41 @@ public class MainActivity extends ComponentActivity {
                                     total,
                                     success
                             );
+
+                            refreshedEvents =
+                                    database.gameEventDao().getEventsForCampaign(campaignId);
+                            refreshedChanges =
+                                    stateChangeRepository.getForCampaign(campaignId);
                         }
 
+                        final List<GameEventEntity> eventsForUi = refreshedEvents;
+                        final List<StateChangeEntity> changesForUi = refreshedChanges;
+
                         runOnUiThread(() -> {
-                            if (resolved && currentCampaignId == campaignId) {
-                                reloadChatTimeline();
+                            if (resolved) {
+                                if (currentCampaignId == campaignId
+                                        && !generationInProgress) {
+                                    chatDisplay.clear();
+                                    chatDisplay.clearSpans();
+                                    gameEvents.clear();
+                                    renderLoadedTimeline(eventsForUi, changesForUi);
+                                    updateChat();
+                                }
+
+                                checkResolved[0] = true;
+                                closeButton.setText("ПРОДОЛЖИТЬ");
+                            } else {
+                                hintText.setText("Не удалось сохранить результат");
                             }
+
+                            closeButton.setEnabled(true);
                         });
                     });
                 }
 
-                closeButton.setEnabled(true);
+                if (requestedCheck == null) {
+                    closeButton.setEnabled(true);
+                }
                 return;
             }
 
@@ -3921,7 +4367,19 @@ public class MainActivity extends ComponentActivity {
             );
         };
 
-        closeButton.setOnClickListener(v -> dialog.dismiss());
+        closeButton.setOnClickListener(v -> {
+            if (requestedCheck != null && !checkResolved[0]) {
+                return;
+            }
+
+            dialog.dismiss();
+
+            if (requestedCheck != null
+                    && !continuationStarted[0]) {
+                continuationStarted[0] = true;
+                continueAfterResolvedDiceCheck(requestedCheck.campaignId);
+            }
+        });
 
         dialog.setOnShowListener(ignored -> {
             configureFantasyDialogWindow(
@@ -3932,7 +4390,9 @@ public class MainActivity extends ComponentActivity {
 
             uiHandler.post(animation[0]);
 
-            runWorldMaintenanceIfDue();
+            if (requestedCheck == null) {
+                runWorldMaintenanceIfDue();
+            }
         });
 
         dialog.setOnDismissListener(ignored ->
@@ -4297,6 +4757,31 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
+    private void startDiceContinuationGeneration(
+            String prompt
+    ) {
+        masterStreamingStartPosition = -1;
+
+        String preparedPrompt =
+                prepareMasterPrompt(prompt);
+
+        Log.d(
+                "MyDND_DICE_FLOW",
+                "CONTINUATION MODEL START | promptChars="
+                        + preparedPrompt.length()
+                        + " | maxTokens="
+                        + GenerationProfile.fast().getMaxTokens()
+        );
+
+        modelManager.generate(
+                ModelRole.MASTER,
+                preparedPrompt,
+                GenerationProfile.fast(),
+                createMasterGenerationCallback()
+        );
+    }
+
+
     private void startLlmGeneration(
             String prompt
     ) {
@@ -4377,6 +4862,13 @@ public class MainActivity extends ComponentActivity {
                                 : fullText;
 
                 final boolean isDirectorTurn = directorTurnActive;
+                final boolean isDiceContinuationTurn = diceContinuationTurnActive;
+
+                if (isDirectorTurn
+                        && DIRECTOR_CHECK_PENDING_MARKER.equals(narrative.trim())) {
+                    runOnUiThread(() -> finishDirectorCheckPause());
+                    return;
+                }
 
                 final NarrativeDirectiveParser.ParseResult directiveResult =
                         narrativeDirectiveParser.parse(narrative);
@@ -4416,8 +4908,11 @@ public class MainActivity extends ComponentActivity {
 
                     if (generationCancelledByUser) {
 
-                        removeLastPlayerEvent();
+                        if (!isDiceContinuationTurn) {
+                            removeLastPlayerEvent();
+                        }
 
+                        diceContinuationTurnActive = false;
 
                         appendColoredText(
                                 "\n\n",
@@ -4545,6 +5040,9 @@ public class MainActivity extends ComponentActivity {
                                     directorTurnActive = false;
                                     activeDirectorCampaignId = 0L;
                                     runWorldMaintenanceAfterMasterTurn();
+                                } else if (isDiceContinuationTurn) {
+                                    diceContinuationTurnActive = false;
+                                    runWorldMaintenanceAfterMasterTurn();
                                 } else {
                                     applyNarrativeDirectives(
                                             currentCampaignId,
@@ -4567,6 +5065,7 @@ public class MainActivity extends ComponentActivity {
                     generationInProgress = false;
                     directorTurnActive = false;
                     activeDirectorCampaignId = 0L;
+                    diceContinuationTurnActive = false;
                     generationCancelledByUser = false;
                     masterStreamingStarted = false;
 
@@ -5522,9 +6021,12 @@ public class MainActivity extends ComponentActivity {
         String backgroundName =
                 GameBackgroundManager.getSelectedBackgroundName(this);
 
-        if ("game_bg2".equals(backgroundName)) {
+        boolean lightTheme =
+                "game_bg2".equals(backgroundName);
 
-            // Светлый фон — тёмные чернила и светлые плашки.
+        if (lightTheme) {
+
+            // Светлый фон — тёмные чернила.
             COLOR_MASTER =
                     Color.rgb(48, 36, 25);
 
@@ -5533,7 +6035,6 @@ public class MainActivity extends ComponentActivity {
 
             COLOR_SYSTEM =
                     Color.rgb(100, 91, 80);
-
 
             COLOR_CARD_BG =
                     Color.argb(
@@ -5555,7 +6056,6 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_NEUTRAL =
                     Color.rgb(112, 79, 42);
 
-
             COLOR_CARD_REVERTED_BG =
                     Color.argb(
                             205,
@@ -5567,51 +6067,82 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_REVERTED_TEXT =
                     Color.rgb(100, 96, 90);
 
-            return;
+            COLOR_INPUT_TEXT =
+                    Color.rgb(48, 36, 25);
+
+            COLOR_INPUT_HINT =
+                    Color.rgb(115, 100, 84);
+
+            COLOR_INPUT_TINT =
+                    Color.rgb(112, 79, 42);
+
+        } else {
+
+            // Исходный тёмный фон.
+            COLOR_MASTER =
+                    Color.rgb(232, 224, 208);
+
+            COLOR_PLAYER =
+                    Color.rgb(150, 190, 255);
+
+            COLOR_SYSTEM =
+                    Color.rgb(120, 120, 120);
+
+            COLOR_CARD_BG =
+                    Color.argb(
+                            178,
+                            30,
+                            27,
+                            22
+                    );
+
+            COLOR_CARD_BORDER =
+                    Color.rgb(199, 166, 106);
+
+            COLOR_CARD_GOOD =
+                    Color.rgb(132, 176, 125);
+
+            COLOR_CARD_BAD =
+                    Color.rgb(190, 124, 112);
+
+            COLOR_CARD_NEUTRAL =
+                    Color.rgb(199, 166, 106);
+
+            COLOR_CARD_REVERTED_BG =
+                    Color.argb(
+                            150,
+                            48,
+                            48,
+                            48
+                    );
+
+            COLOR_CARD_REVERTED_TEXT =
+                    Color.rgb(145, 145, 145);
+
+            COLOR_INPUT_TEXT =
+                    Color.WHITE;
+
+            COLOR_INPUT_HINT =
+                    Color.rgb(119, 119, 119);
+
+            COLOR_INPUT_TINT =
+                    Color.rgb(169, 138, 85);
         }
 
+        if (inputEditText != null) {
+            inputEditText.setTextColor(
+                    COLOR_INPUT_TEXT
+            );
 
-        // game_bg — исходная тёмная палитра.
-        COLOR_MASTER =
-                Color.rgb(232, 224, 208);
+            inputEditText.setHintTextColor(
+                    COLOR_INPUT_HINT
+            );
 
-        COLOR_PLAYER =
-                Color.rgb(150, 190, 255);
-
-        COLOR_SYSTEM =
-                Color.rgb(120, 120, 120);
-
-
-        COLOR_CARD_BG =
-                Color.argb(
-                        178,
-                        30,
-                        27,
-                        22
-                );
-
-        COLOR_CARD_BORDER =
-                Color.rgb(199, 166, 106);
-
-        COLOR_CARD_GOOD =
-                Color.rgb(132, 176, 125);
-
-        COLOR_CARD_BAD =
-                Color.rgb(190, 124, 112);
-
-        COLOR_CARD_NEUTRAL =
-                Color.rgb(199, 166, 106);
-
-
-        COLOR_CARD_REVERTED_BG =
-                Color.argb(
-                        150,
-                        48,
-                        48,
-                        48
-                );
-
-        COLOR_CARD_REVERTED_TEXT =
-                Color.rgb(145, 145, 145);
+            inputEditText.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            COLOR_INPUT_TINT
+                    )
+            );
+        }
     }
 }
