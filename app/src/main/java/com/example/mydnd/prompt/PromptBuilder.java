@@ -13,15 +13,15 @@ import java.util.List;
 public class PromptBuilder {
 
     private static final int MAX_SUMMARY_CHARS = 250;
-    private static final int MAX_RECENT_EVENTS_CHARS = 350;
-    private static final int MAX_RELEVANT_FACTS_CHARS = 450;
+    private static final int MAX_RECENT_EVENTS_CHARS = 220;
+    private static final int MAX_RELEVANT_FACTS_CHARS = 360;
 
-    private static final int MAX_WORLD_CHARS = 220;
-    private static final int MAX_CHARACTER_CHARS = 180;
+    private static final int MAX_WORLD_CHARS = 180;
+    private static final int MAX_CHARACTER_CHARS = 160;
     private static final int MAX_WORLD_CHANGES_CHARS = 220;
     private static final int MAX_SITUATIONS_CHARS = 180;
     private static final int MAX_NPCS_CHARS = 180;
-    private static final int MAX_SCENE_CHARS = 360;
+    private static final int MAX_SCENE_CHARS = 320;
 
 
     public String buildPrompt(
@@ -186,6 +186,98 @@ public class PromptBuilder {
         return prompt.toString();
     }
 
+
+    /**
+     * Fast continuation after a resolved dice check. Unlike a normal turn it
+     * does not rebuild campaign memory: the exact check reason and roll are
+     * already known, so decoding old history again only wastes time.
+     */
+    public String buildFastDiceContinuationDirectorPrompt(
+            DirectorPromptState directorState,
+            CampaignPromptState campaignState,
+            String attributeCode,
+            int difficulty,
+            String reason,
+            int roll,
+            boolean success
+    ) {
+        DirectorPromptState state = directorState == null
+                ? DirectorPromptState.empty()
+                : directorState;
+        CampaignPromptState campaign = campaignState == null
+                ? CampaignPromptState.empty()
+                : campaignState;
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("SYSTEM:");
+        prompt.append(DirectorToolSpec.compactRules(DirectorMode.CHECK_RESULT));
+        prompt.append(DirectorToolSpec.declaration());
+
+        prompt.append("\n\nCURRENT_SCENE:\n")
+                .append(limitFromStart(campaign.getCurrentScene(), 240));
+
+        appendOptionalBlock(
+                prompt,
+                "CHARACTER",
+                limitFromStart(campaign.getCharacter(), 170)
+        );
+
+        prompt.append("\n\nCHECK_RESULT:")
+                .append("\nATTRIBUTE: ").append(safe(attributeCode))
+                .append("\nREASON: ").append(limitFromStart(safe(reason), 180))
+                .append("\nDC: ").append(Math.max(1, Math.min(30, difficulty)))
+                .append("\nROLL_TOTAL: ").append(Math.max(-99, Math.min(99, roll)))
+                .append("\nOUTCOME: ").append(success ? "SUCCESS" : "FAILURE");
+
+        prompt.append("\n\nSTATE:");
+        appendStateLine(prompt, "LOCATION", state.getLocation());
+        appendStateLine(prompt, "HP", state.getHealth());
+
+        prompt.append("\n\nTASK: Выбери HP или DONE.");
+        return prompt.toString();
+    }
+
+
+    /**
+     * Successful checks skip the second Director pass entirely. The roll is
+     * already authoritative, so a tiny narrative-only prompt is both safer and
+     * much faster than giving the model another chance to mutate state.
+     */
+    public String buildFastDiceSuccessNarrativePrompt(
+            CampaignPromptState campaignState,
+            String attributeCode,
+            int difficulty,
+            String reason,
+            int roll
+    ) {
+        CampaignPromptState campaign = campaignState == null
+                ? CampaignPromptState.empty()
+                : campaignState;
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("SYSTEM:\nТы мастер RPG. Бросок уже завершён успешно.")
+                .append("\nОпиши только непосредственный результат 2-4 атмосферными предложениями.")
+                .append("\nНе пиши «Итог:», числа механики, новые изменения состояния и не решай следующий ход за игрока.");
+
+        prompt.append("\n\nCURRENT_SCENE:\n")
+                .append(limitFromStart(campaign.getCurrentScene(), 220));
+
+        appendOptionalBlock(
+                prompt,
+                "CHARACTER",
+                limitFromStart(campaign.getCharacter(), 140)
+        );
+
+        prompt.append("\n\nCHECK:")
+                .append("\nATTRIBUTE: ").append(safe(attributeCode))
+                .append("\nREASON: ").append(limitFromStart(safe(reason), 150))
+                .append("\nDC: ").append(Math.max(1, Math.min(30, difficulty)))
+                .append("\nROLL_TOTAL: ").append(Math.max(-99, Math.min(99, roll)))
+                .append("\nOUTCOME: SUCCESS")
+                .append("\n\nTASK: Продолжи сцену.");
+
+        return prompt.toString();
+    }
 
     /**
      * Tool-aware continuation after a resolved dice check.
@@ -547,6 +639,11 @@ public class PromptBuilder {
         StringBuilder builder = new StringBuilder();
 
         for (GameEvent event : memoryContext.getRecentEvents()) {
+            String eventText = sanitizeEventText(event.getText());
+            if (eventText.isEmpty()) {
+                continue;
+            }
+
             if (event.getSpeaker() == GameEvent.Speaker.PLAYER) {
                 builder.append("P: ");
 
@@ -560,11 +657,44 @@ public class PromptBuilder {
                 continue;
             }
 
-            builder.append(event.getText().trim());
+            builder.append(eventText);
             builder.append('\n');
         }
 
         return builder.toString().trim();
+    }
+
+
+    private String sanitizeEventText(String rawText) {
+        if (rawText == null || rawText.trim().isEmpty()) {
+            return "";
+        }
+
+        StringBuilder clean = new StringBuilder();
+        for (String line : rawText.split("\\r?\\n")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || isInternalProtocolLine(trimmed)) {
+                continue;
+            }
+            if (clean.length() > 0) {
+                clean.append('\n');
+            }
+            clean.append(trimmed);
+        }
+        return clean.toString().trim();
+    }
+
+
+    private boolean isInternalProtocolLine(String line) {
+        return line.contains("Есть ли ещё ОДНО прямое последствие именно этого PLAYER_ACTION?")
+                || line.startsWith("STATE BEFORE (REFERENCE ONLY")
+                || line.startsWith("CHECK_RESULT:")
+                || line.startsWith("PLAYER_ACTION:")
+                || line.startsWith("confirmed:")
+                || line.startsWith("narrative_rule:")
+                || line.contains("<|tool_call>")
+                || line.contains("<|tool_response>")
+                || line.contains("__MYDND_CHECK_PENDING__");
     }
 
 
@@ -588,6 +718,10 @@ public class PromptBuilder {
         return builder.toString().trim();
     }
 
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
 
     private String limitFromStart(
             String text,

@@ -15,7 +15,7 @@ public final class DirectorActionValidator {
     private static final Set<String> CHECK_STATS = setOf("STR", "DEX", "INT", "CHA");
     private static final Set<String> NPC_MEMORY_TONES = setOf("GOOD", "BAD", "NEUTRAL");
     private static final Set<String> NPC_STATUSES = setOf(
-            "ACTIVE", "KNOWN", "INACTIVE", "DEAD", "MISSING", "HOSTILE", "ALLY"
+            "ACTIVE", "KNOWN", "INACTIVE", "MISSING", "HOSTILE", "ALLY"
     );
     private static final Set<String> ABILITY_CATEGORIES = setOf(
             "SKILL", "SPELL", "TRAIT", "POWER"

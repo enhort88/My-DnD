@@ -28,14 +28,21 @@ public final class DirectorToolResponseBuilder {
 
         if (result.getStatus() == DirectorStatus.APPLIED) {
             response.append(forceDoneNext
-                    ? ",next:<|\"|>DONE_ONLY<|\"|>"
+                    ? ",next:<|\"|>NARRATE_NOW<|\"|>"
                     : ",next:<|\"|>DIRECT_OR_DONE<|\"|>");
         } else if (result.getStatus() == DirectorStatus.REJECTED) {
             response.append(",next:<|\"|>DIRECT_FIX_OR_DONE<|\"|>");
         }
 
-        if (result.getStatus() == DirectorStatus.NO_CHANGE
-                && result.getAction().getType() == DirectorActionType.NO_CHANGE) {
+        boolean finalForNarrative = (
+                result.getStatus() == DirectorStatus.NO_CHANGE
+                        && result.getAction().getType() == DirectorActionType.NO_CHANGE
+        ) || (
+                forceDoneNext
+                        && result.getStatus() == DirectorStatus.APPLIED
+        );
+
+        if (finalForNarrative) {
             String confirmed = safeConfirmed(confirmedChanges);
             response.append(",confirmed:<|\"|>")
                     .append(confirmed.isEmpty() ? "NONE" : confirmed)

@@ -7,7 +7,7 @@ package com.example.mydnd.director;
  */
 public enum DirectorMode {
     PLAYER_ACTION(5, 4),
-    CHECK_RESULT(3, 1),
+    CHECK_RESULT(2, 1),
     RANDOM_WORLD_EVENT(3, 2);
 
     private final int maxAttempts;
@@ -36,15 +36,8 @@ public enum DirectorMode {
         }
 
         if (this == CHECK_RESULT) {
-            switch (type) {
-                case NO_CHANGE:
-                case HEALTH_CHANGE:
-                case EFFECT_ADD:
-                case LOCATION_SET:
-                    return true;
-                default:
-                    return false;
-            }
+            return type == DirectorActionType.NO_CHANGE
+                    || type == DirectorActionType.HEALTH_CHANGE;
         }
 
         switch (type) {

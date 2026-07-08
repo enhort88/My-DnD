@@ -13,6 +13,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import com.example.mydnd.game.CharacterLifeRepository;
+import com.example.mydnd.game.CharacterLifeState;
 import com.example.mydnd.game.GameEvent;
 import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.game.InventoryActionHintResolver;
@@ -128,6 +130,7 @@ public class MainActivity extends ComponentActivity {
     private final InventoryActionHintResolver inventoryActionHintResolver =
             new InventoryActionHintResolver();
     private StateChangeRepository stateChangeRepository;
+    private CharacterLifeRepository characterLifeRepository;
     private CampaignPromptRepository campaignPromptRepository;
     private DirectorFlowController directorFlowController;
     private DirectorPromptStateRepository directorPromptStateRepository;
@@ -272,6 +275,10 @@ public class MainActivity extends ComponentActivity {
         campaignMemory = new CampaignMemory(database);
         inventoryRepository = new InventoryRepository(database);
         stateChangeRepository = new StateChangeRepository(database);
+        characterLifeRepository = new CharacterLifeRepository(
+                database,
+                stateChangeRepository
+        );
         campaignPromptRepository = new CampaignPromptRepository(database);
         directorPromptStateRepository = new DirectorPromptStateRepository(
                 database,
@@ -521,11 +528,17 @@ public class MainActivity extends ComponentActivity {
                         "Дверь приоткрыта, но внутри подозрительно тихо."
         );
 
+        inputEditText.setEnabled(true);
         sendButton.setEnabled(true);
         sendButton.setText("Отправить");
     }
 
     private void sendPlayerMessage() {
+        if (!inputEditText.isEnabled()) {
+            tryOpenDeathSaveFromLifeState();
+            return;
+        }
+
         String playerText = inputEditText.getText().toString().trim();
 
         if (playerText.isEmpty()) {
@@ -556,10 +569,7 @@ public class MainActivity extends ComponentActivity {
 
             showThinkingIndicator();
 
-            processDirectorAndGenerate(
-                    action
-            );
-
+            processDirectorAndGenerate(action);
             return;
         }
 
@@ -572,13 +582,75 @@ public class MainActivity extends ComponentActivity {
             inputEditText.setText("");
             hideKeyboard();
 
-            runInventoryToolTest(
-                    action
-            );
-
+            runInventoryToolTest(action);
             return;
         }
 
+        routePlayerActionByLifeState(playerText);
+    }
+
+    private void routePlayerActionByLifeState(String playerText) {
+        final long campaignId = currentCampaignId;
+
+        if (campaignId <= 0L) {
+            startNormalPlayerTurn(playerText);
+            return;
+        }
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Проверяю состояние...");
+
+        DbExecutor.execute(() -> {
+            CharacterEntity character =
+                    characterLifeRepository.getForCampaign(campaignId);
+
+            runOnUiThread(() -> {
+                if (currentCampaignId != campaignId) {
+                    refreshCharacterLifeUi();
+                    return;
+                }
+
+                if (character == null) {
+                    startNormalPlayerTurn(playerText);
+                    return;
+                }
+
+                CharacterLifeState state = CharacterLifeState.from(
+                        character.lifeState,
+                        character.hp
+                );
+
+                if (state == CharacterLifeState.ALIVE) {
+                    startNormalPlayerTurn(playerText);
+                    return;
+                }
+
+                if (state == CharacterLifeState.DOWNED) {
+                    showDeathSaveDialog(campaignId);
+                    return;
+                }
+
+                if (state == CharacterLifeState.STABLE) {
+                    Toast.makeText(
+                            this,
+                            "Персонаж стабилен, но без сознания. Нужна помощь или лечение.",
+                            Toast.LENGTH_LONG
+                    ).show();
+                    refreshCharacterLifeUi();
+                    return;
+                }
+
+                Toast.makeText(
+                        this,
+                        "Этот персонаж погиб. Обычные действия недоступны.",
+                        Toast.LENGTH_LONG
+                ).show();
+                refreshCharacterLifeUi();
+            });
+        });
+    }
+
+    private void startNormalPlayerTurn(String playerText) {
         generationCancelledByUser = false;
         generationInProgress = true;
         masterStreamingStarted = false;
@@ -593,12 +665,242 @@ public class MainActivity extends ComponentActivity {
         sendButton.setText("Стоп");
 
         showThinkingIndicator();
-
         processDirectorAndGenerate(playerText);
+    }
+
+    private void tryOpenDeathSaveFromLifeState() {
+        final long campaignId = currentCampaignId;
+        if (campaignId <= 0L || generationInProgress) {
+            return;
+        }
+
+        DbExecutor.execute(() -> {
+            CharacterEntity character =
+                    characterLifeRepository.getForCampaign(campaignId);
+
+            runOnUiThread(() -> {
+                if (currentCampaignId != campaignId) {
+                    return;
+                }
+
+                CharacterLifeState state = character == null
+                        ? CharacterLifeState.ALIVE
+                        : CharacterLifeState.from(
+                                character.lifeState,
+                                character.hp
+                        );
+
+                if (state == CharacterLifeState.DOWNED) {
+                    showDeathSaveDialog(campaignId);
+                } else {
+                    refreshCharacterLifeUi();
+                }
+            });
+        });
+    }
 
 
+    private void refreshCharacterLifeUi() {
+        if (generationInProgress) {
+            return;
+        }
 
+        final long campaignId = currentCampaignId;
+        if (campaignId <= 0L) {
+            inputEditText.setEnabled(true);
+            sendButton.setEnabled(true);
+            sendButton.setText("Отправить");
+            return;
+        }
 
+        DbExecutor.execute(() -> {
+            CharacterEntity character =
+                    characterLifeRepository.getForCampaign(campaignId);
+
+            runOnUiThread(() -> {
+                if (currentCampaignId != campaignId || generationInProgress) {
+                    return;
+                }
+
+                CharacterLifeState state = character == null
+                        ? CharacterLifeState.ALIVE
+                        : CharacterLifeState.from(
+                                character.lifeState,
+                                character.hp
+                        );
+
+                if (state == CharacterLifeState.ALIVE) {
+                    inputEditText.setEnabled(true);
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Отправить");
+                } else if (state == CharacterLifeState.DOWNED) {
+                    inputEditText.setEnabled(false);
+                    sendButton.setEnabled(true);
+                    sendButton.setText("Спасбросок смерти");
+                } else if (state == CharacterLifeState.STABLE) {
+                    inputEditText.setEnabled(false);
+                    sendButton.setEnabled(false);
+                    sendButton.setText("Стабилен без сознания");
+                } else {
+                    inputEditText.setEnabled(false);
+                    sendButton.setEnabled(false);
+                    sendButton.setText("Персонаж погиб");
+                }
+
+                Log.d(
+                        "MyDND_DEATH",
+                        "UI STATE | campaignId=" + campaignId
+                                + " | state=" + state
+                                + (character == null
+                                ? ""
+                                : " | hp=" + character.hp + "/" + character.maxHp
+                                + " | saves=" + character.deathSaveSuccesses
+                                + "/3," + character.deathSaveFailures + "/3")
+                );
+            });
+        });
+    }
+
+    private void showDeathSaveDialog(long campaignId) {
+        if (campaignId <= 0L
+                || currentCampaignId != campaignId
+                || generationInProgress) {
+            return;
+        }
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Бросок смерти...");
+
+        final DiceService.RollResult roll = diceService.roll(20, 0);
+
+        Dialog dialog = new Dialog(this);
+        dialog.setContentView(R.layout.dialog_dice_roll);
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setCancelable(false);
+
+        TextView titleText = dialog.findViewById(R.id.diceTitleText);
+        TextView valueText = dialog.findViewById(R.id.diceValueText);
+        TextView hintText = dialog.findViewById(R.id.diceHintText);
+        Button closeButton = dialog.findViewById(R.id.diceCloseButton);
+
+        titleText.setText("СПАСБРОСОК СМЕРТИ");
+        valueText.setText("—");
+        hintText.setText("Кубик катится...");
+        closeButton.setEnabled(false);
+
+        final long animationDurationMs = 1100L;
+        final long animationStartedAt = System.currentTimeMillis();
+        final Runnable[] animation = new Runnable[1];
+
+        animation[0] = () -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+
+            long elapsed = System.currentTimeMillis() - animationStartedAt;
+            if (elapsed < animationDurationMs) {
+                valueText.setText(String.valueOf(diceService.animationFace(20)));
+                uiHandler.postDelayed(animation[0], 70L);
+                return;
+            }
+
+            valueText.setText(String.valueOf(roll.getNatural()));
+            hintText.setText("Сохраняю результат...");
+
+            DbExecutor.execute(() -> {
+                CharacterLifeRepository.DeathSaveOutcome outcome =
+                        characterLifeRepository.resolveDeathSave(
+                                campaignId,
+                                roll.getNatural()
+                        );
+
+                StateChangeEntity change = outcome.getStateChangeId() > 0L
+                        ? stateChangeRepository.get(outcome.getStateChangeId())
+                        : null;
+
+                Log.d(
+                        "MyDND_DEATH",
+                        "DEATH SAVE | roll=" + roll.getNatural()
+                                + " | applied=" + outcome.isApplied()
+                                + " | code=" + outcome.getCode()
+                                + " | state=" + outcome.getState()
+                                + " | saves=" + outcome.getSuccesses()
+                                + "/3," + outcome.getFailures() + "/3"
+                );
+
+                runOnUiThread(() -> {
+                    if (!dialog.isShowing()) {
+                        return;
+                    }
+
+                    if (!outcome.isApplied()) {
+                        hintText.setText("Не удалось применить спасбросок: " + outcome.getCode());
+                        closeButton.setText("ЗАКРЫТЬ");
+                        closeButton.setEnabled(true);
+                        return;
+                    }
+
+                    if (currentCampaignId == campaignId && change != null) {
+                        appendStateChangeCard(change);
+                        updateChat();
+                    }
+
+                    hintText.setText(deathSaveHint(outcome));
+                    closeButton.setText(
+                            outcome.getState() == CharacterLifeState.ALIVE
+                                    ? "ПРОДОЛЖИТЬ"
+                                    : "ЗАКРЫТЬ"
+                    );
+                    closeButton.setEnabled(true);
+                });
+            });
+        };
+
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setOnShowListener(ignored -> {
+            configureFantasyDialogWindow(dialog, 0.80f, 0f);
+            uiHandler.post(animation[0]);
+        });
+
+        dialog.setOnDismissListener(ignored -> {
+            uiHandler.removeCallbacks(animation[0]);
+            refreshCharacterLifeUi();
+        });
+
+        dialog.show();
+    }
+
+    private String lifeStateLabel(CharacterLifeState state) {
+        if (state == CharacterLifeState.DOWNED) {
+            return "Без сознания";
+        }
+        if (state == CharacterLifeState.STABLE) {
+            return "Стабилен без сознания";
+        }
+        if (state == CharacterLifeState.DEAD) {
+            return "Погиб";
+        }
+        return "Жив";
+    }
+
+    private String deathSaveHint(
+            CharacterLifeRepository.DeathSaveOutcome outcome
+    ) {
+        if (outcome.getState() == CharacterLifeState.DEAD) {
+            return "СМЕРТЬ • 3/3 провалов";
+        }
+
+        if (outcome.getState() == CharacterLifeState.STABLE) {
+            return "СТАБИЛЕН • 3/3 успехов";
+        }
+
+        if (outcome.getState() == CharacterLifeState.ALIVE) {
+            return "НАТУРАЛЬНАЯ 20 • 1 HP";
+        }
+
+        return "Успехи " + outcome.getSuccesses() + "/3"
+                + " • Провалы " + outcome.getFailures() + "/3";
     }
 
     private void updateChat() {
@@ -999,8 +1301,17 @@ public class MainActivity extends ComponentActivity {
             return "✦";
         }
 
+        if (StateChangeRepository.TYPE_CHARACTER_DEAD.equals(type)) {
+            return "†";
+        }
+
         if (StateChangeRepository.TYPE_HEALTH_DAMAGE.equals(type)
-                || StateChangeRepository.TYPE_HEALTH_HEAL.equals(type)) {
+                || StateChangeRepository.TYPE_HEALTH_HEAL.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_DOWNED.equals(type)
+                || StateChangeRepository.TYPE_DEATH_SAVE_SUCCESS.equals(type)
+                || StateChangeRepository.TYPE_DEATH_SAVE_FAILURE.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_STABLE.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_REVIVED.equals(type)) {
             return "♥";
         }
 
@@ -1199,14 +1510,20 @@ public class MainActivity extends ComponentActivity {
         if (StateChangeRepository.TYPE_NPC_MEMORY_GOOD.equals(type)
                 || StateChangeRepository.TYPE_HEALTH_HEAL.equals(type)
                 || StateChangeRepository.TYPE_MONEY_GAIN.equals(type)
-                || StateChangeRepository.TYPE_QUEST_COMPLETE.equals(type)) {
+                || StateChangeRepository.TYPE_QUEST_COMPLETE.equals(type)
+                || StateChangeRepository.TYPE_DEATH_SAVE_SUCCESS.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_STABLE.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_REVIVED.equals(type)) {
             return COLOR_CARD_GOOD;
         }
 
         if (StateChangeRepository.TYPE_NPC_MEMORY_BAD.equals(type)
                 || StateChangeRepository.TYPE_HEALTH_DAMAGE.equals(type)
                 || StateChangeRepository.TYPE_MONEY_SPEND.equals(type)
-                || StateChangeRepository.TYPE_QUEST_FAIL.equals(type)) {
+                || StateChangeRepository.TYPE_QUEST_FAIL.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_DOWNED.equals(type)
+                || StateChangeRepository.TYPE_DEATH_SAVE_FAILURE.equals(type)
+                || StateChangeRepository.TYPE_CHARACTER_DEAD.equals(type)) {
             return COLOR_CARD_BAD;
         }
 
@@ -1603,6 +1920,7 @@ public class MainActivity extends ComponentActivity {
                 if ((savedEvents == null || savedEvents.isEmpty())
                         && (savedChanges == null || savedChanges.isEmpty())) {
                     startFirstScene();
+                    refreshCharacterLifeUi();
                     return;
                 }
 
@@ -1611,10 +1929,8 @@ public class MainActivity extends ComponentActivity {
                         savedChanges
                 );
 
-                sendButton.setEnabled(true);
-                sendButton.setText("Отправить");
-
                 updateChat();
+                refreshCharacterLifeUi();
             });
         });
     }
@@ -1960,9 +2276,13 @@ public class MainActivity extends ComponentActivity {
 
 
     private void continueAfterResolvedDiceCheck(
-            long campaignId
+            long campaignId,
+            StateChangeEntity resolvedCheck,
+            int roll,
+            boolean success
     ) {
         if (campaignId <= 0L
+                || resolvedCheck == null
                 || currentCampaignId != campaignId
                 || generationInProgress
                 || modelManager.isBusy()) {
@@ -1986,29 +2306,45 @@ public class MainActivity extends ComponentActivity {
         Log.d(
                 "MyDND_DICE_FLOW",
                 "CONTINUATION START | campaignId=" + campaignId
+                        + " | roll=" + roll
+                        + " | success=" + success
         );
 
         DbExecutor.execute(() -> {
             try {
-                MemoryContext memoryContext =
-                        campaignMemory.buildContext(campaignId, "");
-
                 CampaignPromptState campaignState =
                         campaignPromptRepository.build(campaignId);
 
-                DirectorPromptState directorState =
-                        directorPromptStateRepository.build(campaignId, "NONE");
+                final String prompt;
+                if (success) {
+                    prompt = promptBuilder.buildFastDiceSuccessNarrativePrompt(
+                            campaignState,
+                            resolvedCheck.subjectName,
+                            resolvedCheck.beforeNumber,
+                            resolvedCheck.description,
+                            roll
+                    );
+                } else {
+                    DirectorPromptState directorState =
+                            directorPromptStateRepository.build(campaignId, "NONE");
 
-                String prompt =
-                        promptBuilder.buildDiceContinuationDirectorPrompt(
-                                memoryContext,
-                                directorState,
-                                campaignState
-                        );
+                    prompt = promptBuilder.buildFastDiceContinuationDirectorPrompt(
+                            directorState,
+                            campaignState,
+                            resolvedCheck.subjectName,
+                            resolvedCheck.beforeNumber,
+                            resolvedCheck.description,
+                            roll,
+                            false
+                    );
+                }
 
                 Log.d(
                         "MyDND_DICE_FLOW",
-                        "CONTINUATION PROMPT | chars=" + prompt.length()
+                        (success
+                                ? "SUCCESS NARRATIVE PROMPT | chars="
+                                : "FAILURE DIRECTOR PROMPT | chars=")
+                                + prompt.length()
                 );
 
                 runOnUiThread(() -> {
@@ -2016,8 +2352,7 @@ public class MainActivity extends ComponentActivity {
                         generationInProgress = false;
                         diceContinuationTurnActive = false;
                         removeThinkingIndicator();
-                        sendButton.setEnabled(true);
-                        sendButton.setText("Отправить");
+                        refreshCharacterLifeUi();
                         return;
                     }
 
@@ -2025,15 +2360,20 @@ public class MainActivity extends ComponentActivity {
                             "MyDND_DICE_FLOW",
                             "CONTINUATION GENERATE | prepareMs="
                                     + (System.currentTimeMillis() - startedAt)
+                                    + " | success=" + success
                     );
 
-                    startDiceContinuationGeneration(prompt);
+                    if (success) {
+                        startDiceSuccessNarrativeGeneration(prompt);
+                    } else {
+                        startDiceContinuationGeneration(prompt);
+                    }
                 });
 
             } catch (Throwable throwable) {
                 Log.e(
                         "MyDND_DICE_FLOW",
-                        "Failed to build dice continuation",
+                        "Failed to build fast dice continuation",
                         throwable
                 );
 
@@ -2041,8 +2381,7 @@ public class MainActivity extends ComponentActivity {
                     generationInProgress = false;
                     diceContinuationTurnActive = false;
                     removeThinkingIndicator();
-                    sendButton.setEnabled(true);
-                    sendButton.setText("Отправить");
+                    refreshCharacterLifeUi();
                 });
             }
         });
@@ -2076,13 +2415,7 @@ public class MainActivity extends ComponentActivity {
             masterStreamingStarted =
                     false;
 
-            sendButton.setEnabled(
-                    true
-            );
-
-            sendButton.setText(
-                    "Отправить"
-            );
+            refreshCharacterLifeUi();
         });
     }
 
@@ -3772,11 +4105,27 @@ public class MainActivity extends ComponentActivity {
             text.append("\n\n");
         }
 
+        CharacterLifeState lifeState = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+
         text.append("HP: ")
                 .append(character.hp)
                 .append('/')
                 .append(character.maxHp)
-                .append("\nСила: ")
+                .append("\nСостояние: ")
+                .append(lifeStateLabel(lifeState));
+
+        if (lifeState == CharacterLifeState.DOWNED) {
+            text.append("\nСпасброски смерти: ")
+                    .append(character.deathSaveSuccesses)
+                    .append("/3 успехов, ")
+                    .append(character.deathSaveFailures)
+                    .append("/3 провалов");
+        }
+
+        text.append("\nСила: ")
                 .append(character.strength)
                 .append("  Ловкость: ")
                 .append(character.dexterity)
@@ -4392,6 +4741,7 @@ public class MainActivity extends ComponentActivity {
 
         final boolean[] checkResolved = {requestedCheck == null};
         final boolean[] continuationStarted = {false};
+        final boolean[] resolvedSuccess = {false};
 
         final long animationDurationMs = 1100L;
         final long animationStartedAt = System.currentTimeMillis();
@@ -4418,6 +4768,7 @@ public class MainActivity extends ComponentActivity {
                 } else {
                     boolean success =
                             result.getTotal() >= requestedCheck.beforeNumber;
+                    resolvedSuccess[0] = success;
 
                     hintText.setText(
                             (success ? "УСПЕХ" : "ПРОВАЛ")
@@ -4508,7 +4859,12 @@ public class MainActivity extends ComponentActivity {
             if (requestedCheck != null
                     && !continuationStarted[0]) {
                 continuationStarted[0] = true;
-                continueAfterResolvedDiceCheck(requestedCheck.campaignId);
+                continueAfterResolvedDiceCheck(
+                        requestedCheck.campaignId,
+                        requestedCheck,
+                        result.getTotal(),
+                        resolvedSuccess[0]
+                );
             }
         });
 
@@ -4888,6 +5244,29 @@ public class MainActivity extends ComponentActivity {
         });
     }
 
+    private void startDiceSuccessNarrativeGeneration(
+            String prompt
+    ) {
+        masterStreamingStartPosition = -1;
+        activeDirectorCampaignId = currentCampaignId;
+
+        String preparedPrompt = prepareMasterPrompt(prompt);
+
+        Log.d(
+                "MyDND_DICE_FLOW",
+                "SUCCESS DIRECT NARRATIVE START | promptChars="
+                        + preparedPrompt.length()
+        );
+
+        modelManager.generate(
+                ModelRole.MASTER,
+                preparedPrompt,
+                GenerationProfile.fast(),
+                createMasterGenerationCallback()
+        );
+    }
+
+
     private void startDiceContinuationGeneration(
             String prompt
     ) {
@@ -5080,13 +5459,7 @@ public class MainActivity extends ComponentActivity {
                                 -1;
 
 
-                        sendButton.setEnabled(
-                                true
-                        );
-
-                        sendButton.setText(
-                                "Отправить"
-                        );
+                        refreshCharacterLifeUi();
 
 
                         updateChat();
@@ -5168,28 +5541,24 @@ public class MainActivity extends ComponentActivity {
                     saveEventToDb(
                             masterEvent,
                             () -> {
-
-                                sendButton.setEnabled(
-                                        true
-                                );
-
-                                sendButton.setText(
-                                        "Отправить"
-                                );
-
                                 if (isDirectorTurn) {
                                     directorTurnActive = false;
                                     activeDirectorCampaignId = 0L;
                                     runWorldMaintenanceAfterMasterTurn();
+                                    refreshCharacterLifeUi();
                                 } else if (isDiceContinuationTurn) {
                                     diceContinuationTurnActive = false;
                                     activeDirectorCampaignId = 0L;
                                     runWorldMaintenanceAfterMasterTurn();
+                                    refreshCharacterLifeUi();
                                 } else {
                                     applyNarrativeDirectives(
                                             currentCampaignId,
                                             directiveResult.getDirectives(),
-                                            () -> runWorldMaintenanceAfterMasterTurn()
+                                            () -> {
+                                                runWorldMaintenanceAfterMasterTurn();
+                                                refreshCharacterLifeUi();
+                                            }
                                     );
                                 }
                             }
@@ -5211,8 +5580,7 @@ public class MainActivity extends ComponentActivity {
                     generationCancelledByUser = false;
                     masterStreamingStarted = false;
 
-                    sendButton.setEnabled(true);
-                    sendButton.setText("Отправить");
+                    refreshCharacterLifeUi();
 
                     Log.e(
                             "MyDND_LLM",

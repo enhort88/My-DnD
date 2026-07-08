@@ -126,6 +126,51 @@ static bool is_director_done_call(
 }
 
 
+static std::string extract_director_action_type(
+        const std::string & text
+) {
+    const std::string marker = "type:<|\"|>";
+    size_t start = text.find(marker);
+    if (start == std::string::npos) {
+        return "";
+    }
+    start += marker.size();
+
+    const std::string end_marker = "<|\"|>";
+    size_t end = text.find(end_marker, start);
+    if (end == std::string::npos || end <= start) {
+        return "";
+    }
+
+    return text.substr(start, end - start);
+}
+
+
+static std::string director_action_family(
+        const std::string & action_type
+) {
+    if (action_type == "INV_ADD" || action_type == "INV_REMOVE") return "inventory";
+    if (action_type == "HP") return "hp";
+    if (action_type == "MONEY") return "money";
+    if (action_type == "NPC_UPSERT" || action_type == "NPC_MEMORY" || action_type == "NPC_STATUS") return "npc";
+    if (action_type == "WORLD_ADD" || action_type == "WORLD_UPDATE" || action_type == "WORLD_RESOLVE") return "world";
+    if (action_type == "QUEST_START" || action_type == "QUEST_UPDATE" || action_type == "QUEST_COMPLETE" || action_type == "QUEST_FAIL") return "quest";
+    if (action_type == "ABILITY_ADD" || action_type == "ABILITY_UPDATE" || action_type == "ABILITY_REMOVE") return "ability";
+    if (action_type == "EFFECT_ADD" || action_type == "EFFECT_REMOVE") return "effect";
+    if (action_type == "LOCATION") return "location";
+    if (action_type == "CHECK") return "check";
+    return "";
+}
+
+
+static bool contains_string(
+        const std::vector<std::string> & values,
+        const std::string & target
+) {
+    return std::find(values.begin(), values.end(), target) != values.end();
+}
+
+
 static bool is_complete_tool_call(
         const std::string & text
 ) {
@@ -436,7 +481,10 @@ static std::string build_director_action_grammar(
         const llama_vocab * vocab,
         const std::string & prompt,
         const std::string & director_mode,
-        bool allow_world_update
+        bool allow_check,
+        bool allow_world_actions,
+        const std::string & retry_family,
+        const std::vector<std::string> & disabled_action_types
 ) {
     llama_token tool_call_open = 0;
     llama_token tool_call_close = 0;
@@ -473,46 +521,125 @@ static std::string build_director_action_grammar(
     const bool random_world_mode = director_mode == "RANDOM_WORLD_EVENT";
     const bool player_action_mode = !check_result_mode && !random_world_mode;
 
+    auto disabled = [&](const std::string & action_type) -> bool {
+        return contains_string(disabled_action_types, action_type);
+    };
+
     std::vector<std::string> branches;
     branches.push_back("done");
 
+    auto add_branch = [&](const std::string & branch,
+                          const std::string & action_type) {
+        if (!disabled(action_type)) {
+            branches.push_back(branch);
+        }
+    };
+
+    auto add_player_family = [&](const std::string & family) {
+        if (family == "check") {
+            if (allow_check) add_branch("check", "CHECK");
+            return;
+        }
+        if (family == "inventory") {
+            add_branch("inv-add", "INV_ADD");
+            if (!inventory.empty()) add_branch("inv-remove", "INV_REMOVE");
+            return;
+        }
+        if (family == "hp") {
+            add_branch("hp", "HP");
+            return;
+        }
+        if (family == "money") {
+            add_branch("money", "MONEY");
+            return;
+        }
+        if (family == "npc") {
+            add_branch("npc-upsert", "NPC_UPSERT");
+            if (!npcs.empty()) {
+                add_branch("npc-memory", "NPC_MEMORY");
+                add_branch("npc-status", "NPC_STATUS");
+            }
+            return;
+        }
+        if (family == "world") {
+            if (!allow_world_actions) return;
+            add_branch("world-add", "WORLD_ADD");
+            if (!world_events.empty()) {
+                add_branch("world-update", "WORLD_UPDATE");
+                add_branch("world-resolve", "WORLD_RESOLVE");
+            }
+            return;
+        }
+        if (family == "quest") {
+            add_branch("quest-start", "QUEST_START");
+            if (!quests.empty()) {
+                add_branch("quest-update", "QUEST_UPDATE");
+                add_branch("quest-complete", "QUEST_COMPLETE");
+                add_branch("quest-fail", "QUEST_FAIL");
+            }
+            return;
+        }
+        if (family == "ability") {
+            add_branch("ability-add", "ABILITY_ADD");
+            if (!abilities.empty()) {
+                add_branch("ability-update", "ABILITY_UPDATE");
+                add_branch("ability-remove", "ABILITY_REMOVE");
+            }
+            return;
+        }
+        if (family == "effect") {
+            add_branch("effect-add", "EFFECT_ADD");
+            if (!effects.empty()) add_branch("effect-remove", "EFFECT_REMOVE");
+            return;
+        }
+        if (family == "location") {
+            add_branch("location", "LOCATION");
+        }
+    };
+
     if (player_action_mode) {
-        branches.push_back("check");
-        branches.push_back("inv-add");
-        if (!inventory.empty()) branches.push_back("inv-remove");
-        branches.push_back("hp");
-        branches.push_back("money");
-        branches.push_back("npc-upsert");
-        if (!npcs.empty()) {
-            branches.push_back("npc-memory");
-            branches.push_back("npc-status");
+        if (!retry_family.empty()) {
+            add_player_family(retry_family);
+        } else {
+            if (allow_check) add_branch("check", "CHECK");
+            add_branch("inv-add", "INV_ADD");
+            if (!inventory.empty()) add_branch("inv-remove", "INV_REMOVE");
+            add_branch("hp", "HP");
+            add_branch("money", "MONEY");
+            add_branch("npc-upsert", "NPC_UPSERT");
+            if (!npcs.empty()) {
+                add_branch("npc-memory", "NPC_MEMORY");
+                add_branch("npc-status", "NPC_STATUS");
+            }
+            if (allow_world_actions) {
+                add_branch("world-add", "WORLD_ADD");
+                if (!world_events.empty()) {
+                    add_branch("world-update", "WORLD_UPDATE");
+                    add_branch("world-resolve", "WORLD_RESOLVE");
+                }
+            }
+            add_branch("quest-start", "QUEST_START");
+            if (!quests.empty()) {
+                add_branch("quest-update", "QUEST_UPDATE");
+                add_branch("quest-complete", "QUEST_COMPLETE");
+                add_branch("quest-fail", "QUEST_FAIL");
+            }
+            add_branch("ability-add", "ABILITY_ADD");
+            if (!abilities.empty()) {
+                add_branch("ability-update", "ABILITY_UPDATE");
+                add_branch("ability-remove", "ABILITY_REMOVE");
+            }
+            add_branch("effect-add", "EFFECT_ADD");
+            if (!effects.empty()) add_branch("effect-remove", "EFFECT_REMOVE");
+            add_branch("location", "LOCATION");
         }
-        branches.push_back("world-add");
-        if (allow_world_update && !world_events.empty()) branches.push_back("world-update");
-        if (!world_events.empty()) branches.push_back("world-resolve");
-        branches.push_back("quest-start");
-        if (!quests.empty()) {
-            branches.push_back("quest-update");
-            branches.push_back("quest-complete");
-            branches.push_back("quest-fail");
-        }
-        branches.push_back("ability-add");
-        if (!abilities.empty()) {
-            branches.push_back("ability-update");
-            branches.push_back("ability-remove");
-        }
-        branches.push_back("effect-add");
-        if (!effects.empty()) branches.push_back("effect-remove");
-        branches.push_back("location");
     } else if (check_result_mode) {
-        branches.push_back("hp");
-        branches.push_back("effect-add");
-        branches.push_back("location");
+        add_branch("hp", "HP");
     } else {
-        branches.push_back("world-add");
-        branches.push_back("npc-upsert");
-        branches.push_back("quest-start");
-        branches.push_back("effect-add");
+        add_branch("world-add", "WORLD_ADD");
+        add_branch("npc-upsert", "NPC_UPSERT");
+        add_branch("quest-start", "QUEST_START");
+        add_branch("effect-add", "EFFECT_ADD");
     }
 
     auto field = [&](const std::string & rule) -> std::string {
@@ -556,7 +683,12 @@ static std::string build_director_action_grammar(
     if (!inventory.empty()) {
         grammar += "inv-remove ::= " + action_rhs("INV_REMOVE", "inventory-name", "", "details-opt") + "\n";
     }
-    grammar += "hp ::= " + action_rhs("HP", "hp-target", "signed-int", "details-text") + "\n";
+    grammar += "hp ::= " + action_rhs(
+            "HP",
+            "hp-target",
+            check_result_mode ? "check-damage" : "signed-int",
+            "details-text"
+    ) + "\n";
     grammar += "money ::= " + action_rhs("MONEY", "player-target", "signed-int", "details-text") + "\n";
     grammar += "npc-upsert ::= " + action_rhs("NPC_UPSERT", "free-name", "", "details-text") + "\n";
     if (!npcs.empty()) {
@@ -564,10 +696,8 @@ static std::string build_director_action_grammar(
         grammar += "npc-status ::= " + action_rhs("NPC_STATUS", "npc-name", "npc-status-value", "details-opt") + "\n";
     }
     grammar += "world-add ::= " + action_rhs("WORLD_ADD", "free-name", "importance-opt", "details-text") + "\n";
-    if (allow_world_update && !world_events.empty()) {
-        grammar += "world-update ::= " + action_rhs("WORLD_UPDATE", "world-event-name", "importance-opt", "details-text") + "\n";
-    }
     if (!world_events.empty()) {
+        grammar += "world-update ::= " + action_rhs("WORLD_UPDATE", "world-event-name", "importance-opt", "details-text") + "\n";
         grammar += "world-resolve ::= " + action_rhs("WORLD_RESOLVE", "world-event-name", "", "details-opt") + "\n";
     }
     grammar += "quest-start ::= " + action_rhs("QUEST_START", "free-name", "", "details-text") + "\n";
@@ -591,11 +721,12 @@ static std::string build_director_action_grammar(
     grammar += "details-text ::= [^<>{}\\r\\n]{1,180}\n";
     grammar += "details-opt ::= [^<>{}\\r\\n]{0,180}\n";
     grammar += "signed-int ::= (\"+\" | \"-\") [0-9]{1,4}\n";
+    grammar += "check-damage ::= \"-1\" | \"-2\" | \"-3\" | \"-4\" | \"-5\" | \"-6\"\n";
     grammar += "check-stat ::= \"STR\" | \"DEX\" | \"INT\" | \"CHA\"\n";
     grammar += "check-dc ::= \"5\" | \"6\" | \"7\" | \"8\" | \"9\" | \"10\" | \"11\" | \"12\" | \"13\" | \"14\" | \"15\" | \"16\" | \"17\" | \"18\" | \"19\" | \"20\" | \"21\" | \"22\" | \"23\" | \"24\" | \"25\"\n";
     grammar += "player-target ::= \"PLAYER\"\n";
     grammar += "memory-tone ::= \"GOOD\" | \"BAD\" | \"NEUTRAL\"\n";
-    grammar += "npc-status-value ::= \"ACTIVE\" | \"KNOWN\" | \"INACTIVE\" | \"DEAD\" | \"MISSING\" | \"HOSTILE\" | \"ALLY\"\n";
+    grammar += "npc-status-value ::= \"ACTIVE\" | \"KNOWN\" | \"INACTIVE\" | \"MISSING\" | \"HOSTILE\" | \"ALLY\"\n";
     grammar += "ability-category ::= \"SKILL\" | \"SPELL\" | \"TRAIT\" | \"POWER\"\n";
     grammar += "importance-opt ::= \"\" | \"1\" | \"2\" | \"3\"\n";
 
@@ -608,15 +739,12 @@ static std::string build_director_action_grammar(
     append_literal_rule(grammar, "effect-name", effects);
 
     MYDND_LOGI(
-            "director strict grammar context: mode=%s inventory=%zu npcs=%zu quests=%zu world=%zu abilities=%zu effects=%zu worldUpdate=%s",
+            "director grammar: mode=%s toolCheck=%s world=%s retry=%s disabled=%zu",
             director_mode.c_str(),
-            inventory.size(),
-            npcs.size(),
-            quests.size(),
-            world_events.size(),
-            abilities.size(),
-            effects.size(),
-            allow_world_update ? "ON" : "OFF"
+            allow_check ? "ON" : "OFF",
+            allow_world_actions ? "ON" : "OFF",
+            retry_family.empty() ? "NONE" : retry_family.c_str(),
+            disabled_action_types.size()
     );
 
     MYDND_LOGI(
@@ -674,14 +802,20 @@ static llama_sampler * create_director_action_sampler(
         const llama_vocab * vocab,
         const std::string & prompt,
         const std::string & director_mode,
-        bool allow_world_update
+        bool allow_check,
+        bool allow_world_actions,
+        const std::string & retry_family,
+        const std::vector<std::string> & disabled_action_types
 ) {
     std::string grammar =
             build_director_action_grammar(
                     vocab,
                     prompt,
                     director_mode,
-                    allow_world_update
+                    allow_check,
+                    allow_world_actions,
+                    retry_family,
+                    disabled_action_types
             );
 
     if (grammar.empty()) {
@@ -2263,6 +2397,9 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             director_mode = "PLAYER_ACTION";
         }
 
+        const bool check_result_mode =
+                director_mode == "CHECK_RESULT";
+
         const bool should_run_world_event_phase =
                 runWorldEventPhase == JNI_TRUE;
 
@@ -2530,13 +2667,16 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
          */
         const int post_tool_narrative_reserve = narrative_min_reserve;
         const int max_director_actions_per_turn =
-                director_mode == "CHECK_RESULT" ? 3 : 5;
+                director_mode == "CHECK_RESULT" ? 2 : 5;
 
         auto generate_director_action =
                 [&](std::string & raw_tool_call,
                     int & generated_tokens,
                     bool force_done,
-                    bool allow_world_update) -> bool {
+                    bool allow_check,
+                    bool allow_world_actions,
+                    const std::string & retry_family,
+                    const std::vector<std::string> & disabled_action_types) -> bool {
 
             llama_sampler * decision_sampler =
                     force_done
@@ -2545,7 +2685,10 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                                     handle->vocab,
                                     prompt,
                                     director_mode,
-                                    allow_world_update
+                                    allow_check,
+                                    allow_world_actions,
+                                    retry_family,
+                                    disabled_action_types
                             );
 
             if (decision_sampler == nullptr) {
@@ -2630,11 +2773,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     int tool_number,
                     bool & confirmed_done,
                     bool & action_applied,
+                    bool & action_rejected,
                     bool & check_requested,
                     bool & force_done_next) -> bool {
 
             confirmed_done = false;
             action_applied = false;
+            action_rejected = false;
             check_requested = false;
             force_done_next = false;
 
@@ -2706,6 +2851,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                             "status:<|\"|>APPLIED<|\"|>"
                     ) != std::string::npos;
 
+            action_rejected =
+                    tool_response.find(
+                            "status:<|\"|>REJECTED<|\"|>"
+                    ) != std::string::npos;
+
             check_requested =
                     action_applied
                     && tool_response.find(
@@ -2714,6 +2864,9 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
             force_done_next =
                     tool_response.find(
+                            "next:<|\"|>NARRATE_NOW<|\"|>"
+                    ) != std::string::npos
+                    || tool_response.find(
                             "next:<|\"|>DONE_ONLY<|\"|>"
                     ) != std::string::npos;
 
@@ -2807,6 +2960,8 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
         bool director_protocol_ok = true;
         bool has_applied_action = false;
         bool force_done_next_action = false;
+        std::string retry_family;
+        std::vector<std::string> disabled_action_types;
         int director_action_count = 0;
 
         auto director_start = std::chrono::steady_clock::now();
@@ -2828,12 +2983,6 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
             const int remaining_context =
                     static_cast<int>(n_ctx) - context_tokens_used;
 
-            /*
-             * Do not start another free-form structural action unless there is
-             * room for that action, its Java response, the final DONE runway
-             * and a useful narrative. This prevents a small model from burning
-             * the last context on world/NPC churn and dying halfway through DONE.
-             */
             const int force_done_threshold =
                     post_tool_narrative_reserve
                     + tool_response_min_reserve
@@ -2855,22 +3004,37 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 );
             }
 
-            const bool allow_world_update =
-                    !has_applied_action;
+            const bool allow_check =
+                    director_mode == "PLAYER_ACTION"
+                    && tool_number == 1
+                    && retry_family.empty();
+
+            const bool allow_world_actions =
+                    director_mode == "PLAYER_ACTION"
+                    && tool_number == 1
+                    && retry_family.empty();
 
             if (!force_done) {
                 MYDND_LOGI(
-                        "nativeGenerateDirectorAwareStream: Director tool #%d WORLD_UPDATE=%s",
+                        "nativeGenerateDirectorAwareStream: Director tool #%d check=%s world=%s retry=%s disabled=%zu",
                         tool_number,
-                        allow_world_update ? "ON" : "OFF"
+                        allow_check ? "ON" : "OFF",
+                        allow_world_actions ? "ON" : "OFF",
+                        retry_family.empty() ? "NONE" : retry_family.c_str(),
+                        disabled_action_types.size()
                 );
             }
+
+            const bool was_family_retry = !retry_family.empty();
 
             if (!generate_director_action(
                     raw_tool_call,
                     action_tokens,
                     force_done,
-                    allow_world_update
+                    allow_check,
+                    allow_world_actions,
+                    retry_family,
+                    disabled_action_types
             )) {
                 MYDND_LOGE(
                         "nativeGenerateDirectorAwareStream: incomplete Director action #%d: %s",
@@ -2894,6 +3058,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
             bool confirmed_done = false;
             bool action_applied = false;
+            bool action_rejected = false;
             bool check_requested = false;
             bool force_done_after_response = false;
             if (!execute_and_decode_tool_response(
@@ -2901,6 +3066,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     tool_number,
                     confirmed_done,
                     action_applied,
+                    action_rejected,
                     check_requested,
                     force_done_after_response
             )) {
@@ -2908,14 +3074,63 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 break;
             }
 
+            const std::string action_type =
+                    extract_director_action_type(raw_tool_call);
+
+            bool rejection_forces_done = false;
+            bool repaired_rejection = false;
+
             if (action_applied) {
                 has_applied_action = true;
+                repaired_rejection = was_family_retry;
+                retry_family.clear();
+
+                if (!action_type.empty()
+                        && action_type != "DONE"
+                        && action_type != "CHECK"
+                        && !contains_string(disabled_action_types, action_type)) {
+                    /*
+                     * One applied action of each type per player turn. This is
+                     * intentionally stricter than the old duplicate validator:
+                     * the repeated branch disappears before the model can waste
+                     * another 10-15 seconds generating the same kind of action.
+                     */
+                    disabled_action_types.push_back(action_type);
+                }
+            } else if (action_rejected) {
+                const std::string family =
+                        director_action_family(action_type);
+
+                if (has_applied_action
+                        || director_mode == "CHECK_RESULT"
+                        || family.empty()
+                        || family == "check"
+                        || family == "world") {
+                    retry_family.clear();
+                    rejection_forces_done = true;
+                } else {
+                    retry_family = family;
+                }
             }
 
-            force_done_next_action = force_done_after_response;
+            force_done_next_action =
+                    force_done_after_response
+                    || rejection_forces_done
+                    || repaired_rejection;
 
             if (check_requested) {
                 director_check_pending = true;
+                break;
+            }
+
+            if (check_result_mode
+                    && action_applied
+                    && force_done_after_response) {
+                director_done = true;
+                MYDND_LOGI(
+                        "nativeGenerateDirectorAwareStream: CHECK_RESULT auto-finish after applied tool #%d",
+                        tool_number
+                );
                 break;
             }
 

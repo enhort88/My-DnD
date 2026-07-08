@@ -70,6 +70,16 @@ public class CharacterEntity {
     public int money;
 
     @NonNull
+    @ColumnInfo(name = "life_state", defaultValue = "'ALIVE'")
+    public String lifeState = "ALIVE";
+
+    @ColumnInfo(name = "death_save_successes", defaultValue = "0")
+    public int deathSaveSuccesses;
+
+    @ColumnInfo(name = "death_save_failures", defaultValue = "0")
+    public int deathSaveFailures;
+
+    @NonNull
     @ColumnInfo(name = "generation_prompt")
     public String generationPrompt = "";
 

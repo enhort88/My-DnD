@@ -52,7 +52,15 @@ public class ResponseCleaner {
                 || line.startsWith("Напомню:")
                 || line.startsWith("Ты должен")
                 || line.startsWith("В ответе")
-                || line.startsWith("Предлагается выбор");
+                || line.startsWith("Предлагается выбор")
+                || line.contains("Есть ли ещё ОДНО прямое последствие именно этого PLAYER_ACTION?")
+                || line.startsWith("STATE BEFORE (REFERENCE ONLY")
+                || line.startsWith("CHECK_RESULT:")
+                || line.startsWith("confirmed:")
+                || line.startsWith("narrative_rule:")
+                || line.contains("<|tool_call>")
+                || line.contains("<|tool_response>")
+                || line.contains("__MYDND_CHECK_PENDING__");
     }
     private String removeReasoningTail(String text) {
         if (text == null || text.trim().isEmpty()) {

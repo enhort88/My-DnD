@@ -88,7 +88,7 @@ public class CampaignPromptRepository {
                 buildWorld(world, timeline),
                 buildCharacter(character),
                 buildWorldEvents(worldEvents),
-                buildSituations(situations),
+                buildSituations(situations, campaign.currentSituationId),
                 buildNpcs(npcs)
         );
     }
@@ -150,11 +150,30 @@ public class CampaignPromptRepository {
                 .append(", ")
                 .append(character.className);
 
+        CharacterLifeState lifeState = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+
         text.append("; HP ")
                 .append(character.hp)
                 .append('/')
-                .append(character.maxHp)
-                .append("; СИЛ ")
+                .append(character.maxHp);
+
+        if (lifeState != CharacterLifeState.ALIVE) {
+            text.append("; СОСТОЯНИЕ ")
+                    .append(lifeState.name());
+
+            if (lifeState == CharacterLifeState.DOWNED) {
+                text.append("; спасброски ")
+                        .append(character.deathSaveSuccesses)
+                        .append("/3 успехов, ")
+                        .append(character.deathSaveFailures)
+                        .append("/3 провалов");
+            }
+        }
+
+        text.append("; СИЛ ")
                 .append(character.strength)
                 .append("; ЛОВ ")
                 .append(character.dexterity)
@@ -196,7 +215,10 @@ public class CampaignPromptRepository {
         return text.toString();
     }
 
-    private String buildSituations(List<SituationEntity> situations) {
+    private String buildSituations(
+            List<SituationEntity> situations,
+            long currentSituationId
+    ) {
         if (situations == null || situations.isEmpty()) {
             return "";
         }
@@ -204,6 +226,10 @@ public class CampaignPromptRepository {
         StringBuilder text = new StringBuilder();
 
         for (SituationEntity situation : situations) {
+            if (situation == null || situation.id == currentSituationId) {
+                continue;
+            }
+
             if (text.length() > 0) {
                 text.append('\n');
             }

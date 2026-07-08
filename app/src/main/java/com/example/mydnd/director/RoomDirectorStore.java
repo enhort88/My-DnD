@@ -10,6 +10,7 @@ import com.example.mydnd.db.entity.NpcEntity;
 import com.example.mydnd.db.entity.QuestEntity;
 import com.example.mydnd.db.entity.StateChangeEntity;
 import com.example.mydnd.db.entity.WorldEventEntity;
+import com.example.mydnd.game.CharacterLifeState;
 import com.example.mydnd.game.InventoryRepository;
 import com.example.mydnd.game.StateChangeRepository;
 
@@ -132,6 +133,10 @@ public final class RoomDirectorStore implements DirectorStore {
             DirectorAction action,
             String toolName
     ) {
+        if (isCharacterOrNpcName(campaignId, action.getName())) {
+            return rejected("ITEM_NAME_IS_ACTOR");
+        }
+
         InventoryRepository.ApplyResult result = inventoryRepository.applyToolCall(
                 campaignId,
                 toolName,
@@ -168,28 +173,122 @@ public final class RoomDirectorStore implements DirectorStore {
                 return rejected("CHARACTER_NOT_FOUND");
             }
 
-            int before = character.hp;
-            int after = clamp(before + delta, 0, Math.max(0, character.maxHp));
-            if (after == before) {
-                return DirectorStoreResult.rejected("HP_UNCHANGED", hpState(character));
+            CharacterLifeState beforeState = CharacterLifeState.from(
+                    character.lifeState,
+                    character.hp
+            );
+
+            if (beforeState == CharacterLifeState.DEAD) {
+                return DirectorStoreResult.rejected(
+                        "CHARACTER_DEAD",
+                        playerHealthState(character, beforeState)
+                );
             }
 
-            if (database.characterDao().updateHp(character.id, after) != 1) {
+            int before = character.hp;
+
+            /*
+             * Damage received while already at 0 HP does not lower HP below
+             * zero. It advances the Java-owned death track instead.
+             */
+            if (before <= 0 && delta < 0) {
+                int successes = beforeState == CharacterLifeState.STABLE
+                        ? 0
+                        : clamp(character.deathSaveSuccesses, 0, 3);
+                int failures = beforeState == CharacterLifeState.STABLE
+                        ? 1
+                        : clamp(character.deathSaveFailures + 1, 0, 3);
+                CharacterLifeState afterState = failures >= 3
+                        ? CharacterLifeState.DEAD
+                        : CharacterLifeState.DOWNED;
+
+                if (database.characterDao().updateHealthState(
+                        character.id,
+                        0,
+                        afterState.name(),
+                        successes,
+                        failures
+                ) != 1) {
+                    return rejected("DEATH_TRACK_UPDATE_FAILED");
+                }
+
+                String type = afterState == CharacterLifeState.DEAD
+                        ? StateChangeRepository.TYPE_CHARACTER_DEAD
+                        : StateChangeRepository.TYPE_DEATH_SAVE_FAILURE;
+                String title = afterState == CharacterLifeState.DEAD
+                        ? "ПЕРСОНАЖ ПОГИБ"
+                        : "СПАСБРОСОК СМЕРТИ: ПРОВАЛ";
+
+                StateChangeEntity change = record(
+                        campaignId,
+                        type,
+                        title,
+                        character.name + " · урон при 0 HP · провалы "
+                                + failures + "/3 · " + action.getDetails(),
+                        character.id,
+                        character.name,
+                        beforeState.name(),
+                        afterState.name(),
+                        character.deathSaveFailures,
+                        failures
+                );
+
+                return appliedWithCard(
+                        afterState == CharacterLifeState.DEAD
+                                ? "CHARACTER_DEAD"
+                                : "DEATH_SAVE_FAILURE",
+                        "PLAYER | 0/" + character.maxHp
+                                + " | " + afterState.name()
+                                + " | saves=" + successes + "/3," + failures + "/3",
+                        change
+                );
+            }
+
+            int after = clamp(before + delta, 0, Math.max(0, character.maxHp));
+            if (after == before) {
+                return DirectorStoreResult.rejected(
+                        "HP_UNCHANGED",
+                        playerHealthState(character, beforeState)
+                );
+            }
+
+            CharacterLifeState afterState = after > 0
+                    ? CharacterLifeState.ALIVE
+                    : CharacterLifeState.DOWNED;
+
+            if (database.characterDao().updateHealthState(
+                    character.id,
+                    after,
+                    afterState.name(),
+                    0,
+                    0
+            ) != 1) {
                 return rejected("HP_UPDATE_FAILED");
             }
 
-            StateChangeEntity change = healthCard(
+            StateChangeEntity change = playerHealthCard(
                     campaignId,
-                    character.id,
-                    character.name,
+                    character,
                     before,
                     after,
-                    character.maxHp,
+                    beforeState,
+                    afterState,
                     action.getDetails()
             );
+
+            String code;
+            if (before > 0 && after == 0) {
+                code = "CHARACTER_DOWNED";
+            } else if (before == 0 && after > 0) {
+                code = "CHARACTER_REVIVED";
+            } else {
+                code = "HP_CHANGED";
+            }
+
             return appliedWithCard(
-                    "HP_CHANGED",
-                    "PLAYER | " + after + "/" + character.maxHp,
+                    code,
+                    "PLAYER | " + after + "/" + character.maxHp
+                            + " | " + afterState.name(),
                     change
             );
         }
@@ -197,6 +296,13 @@ public final class RoomDirectorStore implements DirectorStore {
         NpcEntity npc = database.npcDao().findByName(campaignId, action.getName());
         if (npc == null) {
             return rejected("NPC_NOT_FOUND");
+        }
+
+        if ("DEAD".equalsIgnoreCase(clean(npc.status))) {
+            return DirectorStoreResult.rejected(
+                    "NPC_DEAD",
+                    npc.name + " | 0/" + npc.maxHp + " | DEAD"
+            );
         }
 
         int before = npc.hp;
@@ -208,27 +314,104 @@ public final class RoomDirectorStore implements DirectorStore {
             );
         }
 
+        long now = System.currentTimeMillis();
         if (database.npcDao().updateHp(
                 npc.id,
                 after,
-                System.currentTimeMillis()
+                now
         ) != 1) {
             return rejected("NPC_HP_UPDATE_FAILED");
         }
 
-        StateChangeEntity change = healthCard(
+        boolean died = before > 0 && after == 0;
+        StateChangeEntity change;
+        String code;
+        String stateAfter;
+
+        if (died) {
+            String summary = clean(action.getDetails());
+            if (database.npcDao().updateStatus(
+                    npc.id,
+                    "DEAD",
+                    false,
+                    summary,
+                    now
+            ) != 1) {
+                return rejected("NPC_DEATH_STATUS_UPDATE_FAILED");
+            }
+
+            change = record(
+                    campaignId,
+                    StateChangeRepository.TYPE_NPC_STATUS,
+                    "NPC ПОГИБ",
+                    npc.name + " · 0/" + npc.maxHp + " HP"
+                            + suffixReason(action.getDetails()),
+                    npc.id,
+                    npc.name,
+                    clean(npc.status),
+                    "DEAD",
+                    before,
+                    0
+            );
+            code = "NPC_DEAD";
+            stateAfter = npc.name + " | 0/" + npc.maxHp + " | DEAD";
+        } else {
+            change = healthCard(
+                    campaignId,
+                    npc.id,
+                    npc.name,
+                    before,
+                    after,
+                    npc.maxHp,
+                    action.getDetails()
+            );
+            code = "NPC_HP_CHANGED";
+            stateAfter = npc.name + " | " + after + "/" + npc.maxHp;
+        }
+
+        return appliedWithCard(code, stateAfter, change);
+    }
+
+    private StateChangeEntity playerHealthCard(
+            long campaignId,
+            CharacterEntity character,
+            int before,
+            int after,
+            CharacterLifeState beforeState,
+            CharacterLifeState afterState,
+            String reason
+    ) {
+        String type;
+        String title;
+
+        if (before > 0 && after == 0) {
+            type = StateChangeRepository.TYPE_CHARACTER_DOWNED;
+            title = "ПЕРСОНАЖ ПОВЕРЖЕН";
+        } else if (before == 0 && after > 0) {
+            type = StateChangeRepository.TYPE_CHARACTER_REVIVED;
+            title = "ПЕРСОНАЖ ПРИШЁЛ В СЕБЯ";
+        } else {
+            type = after < before
+                    ? StateChangeRepository.TYPE_HEALTH_DAMAGE
+                    : StateChangeRepository.TYPE_HEALTH_HEAL;
+            title = after < before
+                    ? "ПОЛУЧЕН УРОН"
+                    : "ЗДОРОВЬЕ ВОССТАНОВЛЕНО";
+        }
+
+        return record(
                 campaignId,
-                npc.id,
-                npc.name,
+                type,
+                title,
+                character.name + " · " + signed(after - before) + " HP · " + reason
+                        + " · " + after + "/" + character.maxHp
+                        + " · " + afterState.name(),
+                character.id,
+                character.name,
+                beforeState.name(),
+                afterState.name(),
                 before,
-                after,
-                npc.maxHp,
-                action.getDetails()
-        );
-        return appliedWithCard(
-                "NPC_HP_CHANGED",
-                npc.name + " | " + after + "/" + npc.maxHp,
-                change
+                after
         );
     }
 
@@ -420,13 +603,16 @@ public final class RoomDirectorStore implements DirectorStore {
 
         String before = clean(npc.status);
         String status = action.getValue().toUpperCase(Locale.ROOT);
+        if ("DEAD".equals(status)) {
+            return rejected("NPC_DEATH_REQUIRES_HP_ZERO");
+        }
         boolean active = !("INACTIVE".equals(status)
                 || "DEAD".equals(status)
                 || "MISSING".equals(status));
         String summary = clean(action.getDetails()).isEmpty()
                 ? npc.stateSummary
                 : action.getDetails();
-        if (before.equals(status) && npc.active == active && clean(action.getDetails()).isEmpty()) {
+        if (before.equals(status)) {
             return DirectorStoreResult.rejected("NPC_STATUS_UNCHANGED", before);
         }
 
@@ -460,6 +646,11 @@ public final class RoomDirectorStore implements DirectorStore {
         CampaignEntity campaign = campaign(campaignId);
         if (campaign == null || campaign.worldTimelineId <= 0L) {
             return rejected("WORLD_TIMELINE_NOT_FOUND");
+        }
+
+        if (!clean(campaign.title).isEmpty()
+                && clean(campaign.title).equalsIgnoreCase(clean(action.getName()))) {
+            return rejected("WORLD_EVENT_NAME_IS_CAMPAIGN");
         }
 
         String key = key(action.getName());
@@ -828,6 +1019,10 @@ public final class RoomDirectorStore implements DirectorStore {
 
     private DirectorStoreResult effectAdd(long campaignId, DirectorAction action) {
         String name = clean(action.getName());
+        if (isCharacterOrNpcName(campaignId, name)) {
+            return rejected("EFFECT_NAME_IS_ACTOR");
+        }
+
         String key = key(name);
         EffectEntity effect = database.effectDao().findByNameKey(campaignId, key);
         long now = System.currentTimeMillis();
@@ -998,6 +1193,23 @@ public final class RoomDirectorStore implements DirectorStore {
         return database.characterDao().getCharacter(campaign.characterId);
     }
 
+    private boolean isCharacterOrNpcName(long campaignId, String candidate) {
+        String name = clean(candidate);
+        if (name.isEmpty()) {
+            return false;
+        }
+
+        CampaignEntity campaign = campaign(campaignId);
+        CharacterEntity character = character(campaign);
+        if (character != null
+                && name.equalsIgnoreCase(clean(character.name))) {
+            return true;
+        }
+
+        return database.npcDao().findByName(campaignId, name) != null;
+    }
+
+
     private WorldEventEntity activeWorldEvent(CampaignEntity campaign, String name) {
         if (campaign == null || campaign.worldTimelineId <= 0L) {
             return null;
@@ -1020,7 +1232,21 @@ public final class RoomDirectorStore implements DirectorStore {
     }
 
     private String hpState(CharacterEntity character) {
-        return character.hp + "/" + character.maxHp;
+        CharacterLifeState state = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+        return playerHealthState(character, state);
+    }
+
+    private String playerHealthState(
+            CharacterEntity character,
+            CharacterLifeState state
+    ) {
+        return character.hp + "/" + character.maxHp
+                + " | " + state.name()
+                + " | saves=" + clamp(character.deathSaveSuccesses, 0, 3)
+                + "/3," + clamp(character.deathSaveFailures, 0, 3) + "/3";
     }
 
     private String worldState(WorldEventEntity event) {

@@ -34,6 +34,12 @@ public class StateChangeRepository {
     public static final String TYPE_EFFECT_ADD = "EFFECT_ADD";
     public static final String TYPE_EFFECT_REMOVE = "EFFECT_REMOVE";
     public static final String TYPE_LOCATION = "LOCATION";
+    public static final String TYPE_CHARACTER_DOWNED = "CHARACTER_DOWNED";
+    public static final String TYPE_DEATH_SAVE_SUCCESS = "DEATH_SAVE_SUCCESS";
+    public static final String TYPE_DEATH_SAVE_FAILURE = "DEATH_SAVE_FAILURE";
+    public static final String TYPE_CHARACTER_STABLE = "CHARACTER_STABLE";
+    public static final String TYPE_CHARACTER_DEAD = "CHARACTER_DEAD";
+    public static final String TYPE_CHARACTER_REVIVED = "CHARACTER_REVIVED";
 
     public static final String STATUS_APPLIED = "APPLIED";
     public static final String STATUS_REVERTED = "REVERTED";
@@ -178,6 +184,33 @@ public class StateChangeRepository {
      * New Director actions are intentionally non-undoable until a safe per-type rollback exists.
      */
     public StateChangeEntity recordDirectorChange(
+            long campaignId,
+            String type,
+            String title,
+            String description,
+            long subjectId,
+            String subjectName,
+            String beforeText,
+            String afterText,
+            int beforeNumber,
+            int afterNumber
+    ) {
+        return recordSystemChange(
+                campaignId,
+                type,
+                title,
+                description,
+                subjectId,
+                subjectName,
+                beforeText,
+                afterText,
+                beforeNumber,
+                afterNumber
+        );
+    }
+
+    /** Records an authoritative Java-owned state change card. */
+    public StateChangeEntity recordSystemChange(
             long campaignId,
             String type,
             String title,

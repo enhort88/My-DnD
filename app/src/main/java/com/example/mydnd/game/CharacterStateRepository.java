@@ -22,8 +22,27 @@ public class CharacterStateRepository {
             return false;
         }
 
+        CharacterLifeState state = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+
+        if (state == CharacterLifeState.DEAD) {
+            return false;
+        }
+
         int newHp = Math.max(0, character.hp - damage);
-        return database.characterDao().updateHp(characterId, newHp) > 0;
+        CharacterLifeState newState = newHp > 0
+                ? CharacterLifeState.ALIVE
+                : CharacterLifeState.DOWNED;
+
+        return database.characterDao().updateHealthState(
+                characterId,
+                newHp,
+                newState.name(),
+                0,
+                0
+        ) > 0;
     }
 
     public boolean heal(long characterId, int amount) {
@@ -33,12 +52,31 @@ public class CharacterStateRepository {
             return false;
         }
 
+        CharacterLifeState state = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+
+        if (state == CharacterLifeState.DEAD) {
+            return false;
+        }
+
         int newHp = Math.min(
                 character.maxHp,
                 character.hp + amount
         );
 
-        return database.characterDao().updateHp(characterId, newHp) > 0;
+        CharacterLifeState newState = newHp > 0
+                ? CharacterLifeState.ALIVE
+                : state;
+
+        return database.characterDao().updateHealthState(
+                characterId,
+                newHp,
+                newState.name(),
+                newHp > 0 ? 0 : character.deathSaveSuccesses,
+                newHp > 0 ? 0 : character.deathSaveFailures
+        ) > 0;
     }
 
     public boolean updateBaseStats(
@@ -58,7 +96,11 @@ public class CharacterStateRepository {
     }
 
     public boolean isDead(CharacterEntity character) {
-        return character != null && character.hp <= 0;
+        return character != null
+                && CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        ) == CharacterLifeState.DEAD;
     }
 
     private int clampStat(int value) {

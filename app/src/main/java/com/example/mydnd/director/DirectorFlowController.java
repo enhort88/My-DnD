@@ -72,6 +72,19 @@ public final class DirectorFlowController {
 
         DirectorResult result;
 
+        if (mode == DirectorMode.PLAYER_ACTION
+                && action.getType() == DirectorActionType.CHECK_REQUEST
+                && actionCount > 1) {
+            result = executor.reject(
+                    campaignId,
+                    action,
+                    "CHECK_MUST_BE_FIRST",
+                    ""
+            );
+            dispatch(result);
+            return buildResponse(result);
+        }
+
         if (!mode.allows(action.getType())) {
             result = executor.reject(
                     campaignId,
@@ -122,14 +135,17 @@ public final class DirectorFlowController {
 
 
     private String buildResponse(DirectorResult result) {
-        String confirmed = result != null
+        boolean autoFinishCheckResult = shouldForceDoneNext(result);
+        boolean acceptedDone = result != null
                 && result.getStatus() == DirectorStatus.NO_CHANGE
-                && result.getAction().getType() == DirectorActionType.NO_CHANGE
+                && result.getAction().getType() == DirectorActionType.NO_CHANGE;
+        String confirmed = acceptedDone || autoFinishCheckResult
                 ? String.join(" ; ", confirmedChanges)
                 : "";
+
         return responseBuilder.build(
                 result,
-                shouldForceDoneNext(result),
+                autoFinishCheckResult,
                 confirmed
         );
     }

@@ -8,16 +8,17 @@ public final class DirectorToolSpec {
 
     public static String declaration() {
         return "<|tool>declaration:director_action{"
-                + "description:<|\"|>One RPG state action.<|\"|>,"
+                + "description:<|\"|>One state action.<|\"|>,"
                 + "parameters:{properties:{"
-                + "type:{description:<|\"|>Action code. Direct numeric damage or healing must use HP.<|\"|>,type:<|\"|>STRING<|\"|>},"
-                + "name:{description:<|\"|>Exact target/item/entity required by the chosen type.<|\"|>,type:<|\"|>STRING<|\"|>},"
-                + "value:{description:<|\"|>Type-specific value only; otherwise empty. Never embed another action here.<|\"|>,type:<|\"|>STRING<|\"|>},"
-                + "details:{description:<|\"|>Short cause or fact only. Never embed another action.<|\"|>,type:<|\"|>STRING<|\"|>}"
+                + "type:{description:<|\"|>Action code; numeric damage/heal=HP.<|\"|>,type:<|\"|>STRING<|\"|>},"
+                + "name:{description:<|\"|>Exact target/item/entity.<|\"|>,type:<|\"|>STRING<|\"|>},"
+                + "value:{description:<|\"|>Type value only; no nested action.<|\"|>,type:<|\"|>STRING<|\"|>},"
+                + "details:{description:<|\"|>Short cause/fact; no nested action.<|\"|>,type:<|\"|>STRING<|\"|>}"
                 + "},required:[<|\"|>type<|\"|>,<|\"|>name<|\"|>,<|\"|>value<|\"|>,<|\"|>details<|\"|>],"
                 + "type:<|\"|>OBJECT<|\"|>}"
                 + "}<tool|>";
     }
+
 
     public static String compactRules() {
         return compactRules(DirectorMode.PLAYER_ACTION);
@@ -40,34 +41,26 @@ public final class DirectorToolSpec {
     }
 
     private static String playerActionRules() {
-        return "\nТы мастер DnD. Сначала обрабатывай ТОЛЬКО прямые последствия PLAYER_ACTION через director_action."
-                + "\nSTATE BEFORE — справочник, НЕ список задач. Не создавай action только потому, что факт уже есть в STATE BEFORE."
-                + "\nНе пересохраняй атмосферу, существующих NPC, известные события, эффекты или квесты без нового изменения от PLAYER_ACTION."
-                + "\nПосле каждого response внутренне проверь: есть ли ещё ОДНО прямое последствие именно этого PLAYER_ACTION? Нет → немедленно DONE.Никогда не выводи эту проверку пользователю"
-                + "\nМаксимум 4 реальных изменения за ход. Случайные события мира здесь запрещены."
-                + "\nКоды: INV_ADD/INV_REMOVE name=предмет; HP name=PLAYER или точный NPC value=+N/-N; MONEY name=PLAYER value=+N/-N."
-                + "\nЧисловой урон или лечение ВСЕГДА оформляй отдельным HP. Если PLAYER_ACTION прямо говорит о N урона — HP name=PLAYER value=-N. Никогда не прячь HP внутри name/value/details другого action."
-                + "\nНе используй EFFECT_ADD вместо изменения HP. EFFECT_ADD — только отдельное длительное состояние, не числовой урон."
-                + "\nNPC_UPSERT/NPC_STATUS/NPC_MEMORY name=NPC; MEMORY value=GOOD/BAD/NEUTRAL."
-                + "\nWORLD_ADD/WORLD_RESOLVE только если PLAYER_ACTION прямо изменил мир. WORLD_UPDATE — редкий: только для уже существующего WORLD_EVENTS с точным name; если нужен вместе с другими изменениями, вызывай первым. value=важность 1-3 или пусто."
-                + "\nQUEST_START/QUEST_UPDATE/QUEST_COMPLETE/QUEST_FAIL; ABILITY_ADD/UPDATE/REMOVE value=SKILL/SPELL/TRAIT/POWER."
-                + "\nEFFECT_ADD/EFFECT_REMOVE; LOCATION name=локация."
-                + "\nCHECK name=STR/DEX/INT/CHA value=5-25 details=причина; до броска исход не описывай."
-                + "\nDONE: name/value/details пустые; может быть первым. Не печатай [CHECK], [NPC_MEMORY] или плашки текстом."
-                + "\nВ DONE-response поле confirmed — единственный источник реально применённых изменений. narrative_rule=CONFIRMED_ONLY: не утверждай изменение HP, денег, инвентаря, статуса, эффектов или других данных, если его нет в confirmed. confirmed=NONE означает, что состояние не изменилось."
-                + "\nПосле подтверждённого DONE продолжи сцену по-русски кратко и атмосферно. Кубики не бросай. За игрока не решай.";
+        return "\nТы мастер DnD. СНАЧАЛА зафиксируй только прямые новые последствия PLAYER_ACTION через director_action."
+                + "\nSTATE BEFORE — справочник, не задачи. Не пересохраняй старые факты и не создавай случайные события."
+                + "\nПосле response: есть ещё одно прямое последствие? Нет → DONE. Максимум 4 изменения."
+                + "\nCHECK только при реальном риске и отдельном значимом последствии провала; ожидание, осмотр и обычное безопасное движение → DONE."
+                + "\nHP: PLAYER или точный NPC, value=+N/-N. Числовой урон/лечение — только HP."
+                + "\nINV_*: точный предмет. MONEY: PLAYER +N/-N. NPC_*: точный NPC; MEMORY=GOOD/BAD/NEUTRAL."
+                + "\nWORLD_* только для нового долгого изменения мира; обычное действие или шум не событие."
+                + "\nQUEST_*, ABILITY_*, EFFECT_*, LOCATION — только при реальном новом изменении."
+                + "\nCHECK: STR/DEX/INT/CHA, DC 5-25, details=только причина; до броска не пиши исход."
+                + "\nDONE: пустые поля. confirmed в DONE-response — единственная истина об изменениях."
+                + "\nПосле DONE продолжи сцену 2-4 атмосферными предложениями; не технический отчёт, не решай за игрока.";
     }
 
+
     private static String checkResultRules() {
-        return "\nРежим CHECK_RESULT. Проверка уже завершена; RECENT_EVENTS содержит PLAYER_ACTION и SYSTEM-результат броска."
-                + "\nПеред рассказом зафиксируй максимум ОДНО непосредственное механическое последствие результата."
-                + "\nРазрешены только HP, EFFECT_ADD, LOCATION и DONE. CHECK запрещён."
-                + "\nЕсли ПРОВАЛ прямо привёл к физической травме, падению или удару — используй HP name=PLAYER value=-N, обычно 1-6. Не заменяй числовой урон EFFECT_ADD."
-                + "\nНе снимай HP за социальный, умственный или безвредный провал без прямой физической травмы."
-                + "\nЕсли механического последствия нет — сразу DONE. После одного APPLIED действия следующий action обязан быть DONE."
-                + "\nВ DONE-response поле confirmed — единственный источник реально применённых изменений; не утверждай HP/эффект/локацию вне confirmed."
-                + "\nПосле DONE кратко опиши непосредственный итог проверки по-русски и остановись перед новым выбором игрока.";
+        return "\nРежим CHECK_RESULT. Бросок ниже уже завершён; OUTCOME — абсолютная истина."
+                + "\nВыбери ровно одно: HP при прямой физической травме, иначе DONE. Другие действия и CHECK запрещены."
+                + "\nПосле tool опиши результат 2-4 атмосферными предложениями без слова «Итог:» и без новых механических изменений.";
     }
+
 
     private static String randomWorldEventRules() {
         return "\nРежим RANDOM_WORLD_EVENT. Создай одно НОВОЕ редкое автономное событие мира."

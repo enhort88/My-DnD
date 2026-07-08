@@ -65,7 +65,7 @@ import com.example.mydnd.db.entity.WorldRaceEntity;
                 EffectEntity.class,
                 DirectorActionAuditEntity.class
         },
-        version = 8,
+        version = 9,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
@@ -692,6 +692,28 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+    private static final Migration MIGRATION_8_9 =
+            new Migration(8, 9) {
+                @Override
+                public void migrate(@NonNull SupportSQLiteDatabase database) {
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN life_state TEXT NOT NULL DEFAULT 'ALIVE'"
+                    );
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN death_save_successes INTEGER NOT NULL DEFAULT 0"
+                    );
+                    database.execSQL(
+                            "ALTER TABLE characters ADD COLUMN death_save_failures INTEGER NOT NULL DEFAULT 0"
+                    );
+
+                    database.execSQL(
+                            "UPDATE characters SET life_state = 'DOWNED', "
+                                    + "death_save_successes = 0, death_save_failures = 0 "
+                                    + "WHERE hp <= 0"
+                    );
+                }
+            };
+
     public static AppDatabase getInstance(Context context) {
         if (instance == null) {
             synchronized (AppDatabase.class) {
@@ -708,7 +730,8 @@ public abstract class AppDatabase extends RoomDatabase {
                                     MIGRATION_4_5,
                                     MIGRATION_5_6,
                                     MIGRATION_6_7,
-                                    MIGRATION_7_8
+                                    MIGRATION_7_8,
+                                    MIGRATION_8_9
                             )
                             .build();
                 }

@@ -36,6 +36,20 @@ public interface CharacterDao {
     int updateMoney(long characterId, int money);
 
     @Query(
+            "UPDATE characters SET hp = :hp, life_state = :lifeState, "
+                    + "death_save_successes = :deathSaveSuccesses, "
+                    + "death_save_failures = :deathSaveFailures "
+                    + "WHERE id = :characterId"
+    )
+    int updateHealthState(
+            long characterId,
+            int hp,
+            String lifeState,
+            int deathSaveSuccesses,
+            int deathSaveFailures
+    );
+
+    @Query(
             "UPDATE characters SET strength = :strength, dexterity = :dexterity, "
                     + "intelligence = :intelligence, charisma = :charisma "
                     + "WHERE id = :characterId"

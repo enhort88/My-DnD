@@ -8,6 +8,7 @@ import com.example.mydnd.db.entity.EffectEntity;
 import com.example.mydnd.db.entity.NpcEntity;
 import com.example.mydnd.db.entity.QuestEntity;
 import com.example.mydnd.db.entity.WorldEventEntity;
+import com.example.mydnd.game.CharacterLifeState;
 import com.example.mydnd.game.InventoryRepository;
 
 import java.util.ArrayList;
@@ -52,18 +53,45 @@ public final class DirectorPromptStateRepository {
                 ? safeList(database.worldEventDao().getActive(campaign.worldTimelineId, WORLD_LIMIT))
                 : Collections.emptyList();
 
+        List<String> inventory = inventoryRepository.getItemNames(campaignId);
+
         return DirectorPromptState.builder()
                 .location(clean(campaign.currentLocation))
-                .health(character == null ? "UNKNOWN" : character.hp + "/" + character.maxHp)
+                .health(character == null ? "UNKNOWN" : formatHealth(character))
                 .money(character == null ? "UNKNOWN" : String.valueOf(character.money))
-                .inventory(inventoryRepository.getItemNames(campaignId))
+                .inventory(inventory)
                 .activeNpcs(formatNpcs(npcs))
                 .activeQuests(formatQuests(quests))
-                .worldEvents(formatWorldEvents(worldEvents))
+                .worldEvents(formatWorldEvents(worldEvents, campaign.title))
                 .abilities(formatAbilities(abilities))
-                .effects(formatEffects(effects))
+                .effects(formatEffects(effects, character, npcs))
                 .hint(hint)
                 .build();
+    }
+
+
+    private String formatHealth(CharacterEntity character) {
+        CharacterLifeState state = CharacterLifeState.from(
+                character.lifeState,
+                character.hp
+        );
+
+        StringBuilder result = new StringBuilder()
+                .append(character.hp)
+                .append('/')
+                .append(character.maxHp)
+                .append(" | ")
+                .append(state.name());
+
+        if (state == CharacterLifeState.DOWNED) {
+            result.append(" | saves=")
+                    .append(character.deathSaveSuccesses)
+                    .append("/3,")
+                    .append(character.deathSaveFailures)
+                    .append("/3");
+        }
+
+        return result.toString();
     }
 
     private List<String> formatNpcs(List<NpcEntity> values) {
@@ -84,7 +112,7 @@ public final class DirectorPromptStateRepository {
             }
             String summary = firstNonBlank(npc.stateSummary, npc.description, npc.knowledgeSummary);
             if (!summary.isEmpty()) {
-                line.append(" | ").append(limit(summary, 160));
+                line.append(" | ").append(limit(summary, 90));
             }
             result.add(line.toString());
         }
@@ -104,14 +132,19 @@ public final class DirectorPromptStateRepository {
         return result;
     }
 
-    private List<String> formatWorldEvents(List<WorldEventEntity> values) {
+    private List<String> formatWorldEvents(
+            List<WorldEventEntity> values,
+            String campaignTitle
+    ) {
         List<String> result = new ArrayList<>();
+        String title = clean(campaignTitle);
+
         for (WorldEventEntity event : values) {
             if (event == null) {
                 continue;
             }
             String name = clean(event.name).isEmpty() ? clean(event.text) : clean(event.name);
-            if (name.isEmpty()) {
+            if (name.isEmpty() || (!title.isEmpty() && name.equalsIgnoreCase(title))) {
                 continue;
             }
             String details = clean(event.details);
@@ -132,16 +165,45 @@ public final class DirectorPromptStateRepository {
         return result;
     }
 
-    private List<String> formatEffects(List<EffectEntity> values) {
+    private List<String> formatEffects(
+            List<EffectEntity> values,
+            CharacterEntity character,
+            List<NpcEntity> npcs
+    ) {
         List<String> result = new ArrayList<>();
         for (EffectEntity effect : values) {
             if (effect == null) {
                 continue;
             }
-            result.add(effect.name
-                    + (clean(effect.details).isEmpty() ? "" : " | " + limit(effect.details, 160)));
+
+            String name = clean(effect.name);
+            if (name.isEmpty() || isActorName(name, character, npcs)) {
+                continue;
+            }
+
+            result.add(name
+                    + (clean(effect.details).isEmpty() ? "" : " | " + limit(effect.details, 100)));
         }
         return result;
+    }
+
+    private boolean isActorName(
+            String name,
+            CharacterEntity character,
+            List<NpcEntity> npcs
+    ) {
+        if (character != null
+                && name.equalsIgnoreCase(clean(character.name))) {
+            return true;
+        }
+
+        for (NpcEntity npc : npcs) {
+            if (npc != null
+                    && name.equalsIgnoreCase(clean(npc.name))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String firstNonBlank(String... values) {
