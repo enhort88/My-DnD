@@ -1639,6 +1639,26 @@ public class MainActivity extends ComponentActivity {
                     + "Текущее состояние ACTIVE_NPCS является истиной.";
         }
 
+        if (StateChangeRepository.TYPE_HEALTH_DAMAGE.equals(change.type)
+                || StateChangeRepository.TYPE_HEALTH_HEAL.equals(change.type)) {
+            return "Исправление состояния: изменение HP у «"
+                    + subject
+                    + "» отменено пользователем. HP восстановлено к значению до этого изменения. "
+                    + "STATE BEFORE является истиной.";
+        }
+
+        if (StateChangeRepository.TYPE_LOCATION.equals(change.type)) {
+            String previousLocation = change.beforeText == null
+                    ? ""
+                    : change.beforeText.trim();
+
+            return "Исправление состояния: смена локации на «"
+                    + subject
+                    + "» отменена пользователем. Текущая локация снова «"
+                    + previousLocation
+                    + "». STATE BEFORE является истиной.";
+        }
+
         return "";
     }
 

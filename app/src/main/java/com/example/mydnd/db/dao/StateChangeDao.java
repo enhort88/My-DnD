@@ -49,6 +49,12 @@ public interface StateChangeDao {
             long updatedAt
     );
 
+    @Query("UPDATE state_changes SET can_undo = :canUndo WHERE id = :changeId")
+    int updateCanUndo(
+            long changeId,
+            boolean canUndo
+    );
+
     @Query(
             "UPDATE state_changes SET status = :status, "
                     + "after_number = :result, after_text = :resultText, "

@@ -1,6 +1,8 @@
 package com.example.mydnd.game;
 
 import com.example.mydnd.db.AppDatabase;
+import com.example.mydnd.db.entity.CampaignEntity;
+import com.example.mydnd.db.entity.CharacterEntity;
 import com.example.mydnd.db.entity.NpcEntity;
 import com.example.mydnd.db.entity.StateChangeEntity;
 
@@ -181,7 +183,10 @@ public class StateChangeRepository {
 
     /**
      * Records a Director-owned state card after canonical Room state has changed.
-     * New Director actions are intentionally non-undoable until a safe per-type rollback exists.
+     * Most Director actions are intentionally non-undoable until a safe per-type
+     * rollback exists; HP and LOCATION have one (see {@link #undo(long)}) because
+     * they are the two types most exposed to model over-triggering and have a
+     * simple, single-field, invertible canonical value.
      */
     public StateChangeEntity recordDirectorChange(
             long campaignId,
@@ -195,7 +200,7 @@ public class StateChangeRepository {
             int beforeNumber,
             int afterNumber
     ) {
-        return recordSystemChange(
+        StateChangeEntity change = recordSystemChange(
                 campaignId,
                 type,
                 title,
@@ -207,6 +212,13 @@ public class StateChangeRepository {
                 beforeNumber,
                 afterNumber
         );
+
+        if (change != null && isUndoableDirectorType(change.type)) {
+            change.canUndo = true;
+            database.stateChangeDao().updateCanUndo(change.id, true);
+        }
+
+        return change;
     }
 
     /** Records an authoritative Java-owned state change card. */
@@ -238,6 +250,14 @@ public class StateChangeRepository {
         change.afterNumber = afterNumber;
         change.canUndo = false;
         return insertAndReload(change);
+    }
+
+    private boolean isUndoableDirectorType(String type) {
+        return isHealthChange(type) || TYPE_LOCATION.equals(type);
+    }
+
+    private boolean isHealthChange(String type) {
+        return TYPE_HEALTH_DAMAGE.equals(type) || TYPE_HEALTH_HEAL.equals(type);
     }
 
     public UndoResult undo(long changeId) {
@@ -306,6 +326,70 @@ public class StateChangeRepository {
                     change.subjectId,
                     change.beforeText,
                     change.beforeNumber,
+                    System.currentTimeMillis()
+            ) == 1;
+
+        } else if (isHealthChange(change.type)) {
+            /*
+             * beforeText carries the CharacterLifeState name only for the
+             * player's own health card (see RoomDirectorStore#playerHealthCard);
+             * NPC health cards leave it empty. That already-present distinction
+             * is reused here instead of adding a new column.
+             */
+            boolean isPlayer = !safe(change.beforeText).isEmpty();
+
+            if (isPlayer) {
+                CharacterEntity character =
+                        database.characterDao().getCharacter(change.subjectId);
+
+                if (character == null || character.hp != change.afterNumber) {
+                    return UndoResult.failed(
+                            "Персонаж уже изменился дальше — старый откат небезопасен."
+                    );
+                }
+
+                reverted = database.characterDao().updateHealthState(
+                        change.subjectId,
+                        change.beforeNumber,
+                        change.beforeText,
+                        0,
+                        0
+                ) == 1;
+            } else {
+                NpcEntity npc = database.npcDao().getById(change.subjectId);
+
+                if (npc == null || npc.hp != change.afterNumber) {
+                    return UndoResult.failed(
+                            "NPC уже изменился дальше — старый откат небезопасен."
+                    );
+                }
+
+                reverted = database.npcDao().updateHp(
+                        change.subjectId,
+                        change.beforeNumber,
+                        System.currentTimeMillis()
+                ) == 1;
+            }
+
+        } else if (TYPE_LOCATION.equals(change.type)) {
+            /*
+             * subjectName here is the destination name, which changes every
+             * time, so the generic countLaterAppliedForSubject guard above
+             * cannot detect a later move to a different location. Compare the
+             * campaign's current location directly instead.
+             */
+            CampaignEntity campaign = database.campaignDao().getById(change.campaignId);
+
+            if (campaign == null
+                    || !safe(campaign.currentLocation).equalsIgnoreCase(safe(change.afterText))) {
+                return UndoResult.failed(
+                        "Локация уже изменилась дальше — старый откат небезопасен."
+                );
+            }
+
+            reverted = database.campaignDao().updateCurrentLocation(
+                    change.campaignId,
+                    change.beforeText,
                     System.currentTimeMillis()
             ) == 1;
 
