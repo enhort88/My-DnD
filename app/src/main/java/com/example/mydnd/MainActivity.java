@@ -215,6 +215,10 @@ public class MainActivity extends ComponentActivity {
     private int COLOR_CARD_REVERTED_BG;
     private int COLOR_CARD_REVERTED_TEXT;
 
+    private int COLOR_INPUT_TEXT;
+    private int COLOR_INPUT_HINT;
+    private int COLOR_INPUT_TINT;
+
     private boolean thinkingIndicatorVisible = false;
     private int thinkingIndicatorStart = -1;
     private int thinkingFrameIndex = 0;
@@ -264,7 +268,6 @@ public class MainActivity extends ComponentActivity {
         gameBackground =
                 findViewById(R.id.gameBackground);
 
-        applyGamePalette();
 
         GameBackgroundManager.apply(
                 this,
@@ -344,6 +347,8 @@ public class MainActivity extends ComponentActivity {
         journalButton = findViewById(R.id.journalButton);
         diceButton = findViewById(R.id.diceButton);
         gameSettingsButton = findViewById(R.id.gameSettingsButton);
+
+        applyGamePalette();
 
         chatTextView.setMovementMethod(LinkMovementMethod.getInstance());
         chatTextView.setHighlightColor(Color.TRANSPARENT);
@@ -6531,9 +6536,12 @@ public class MainActivity extends ComponentActivity {
         String backgroundName =
                 GameBackgroundManager.getSelectedBackgroundName(this);
 
-        if ("game_bg2".equals(backgroundName)) {
+        boolean lightTheme =
+                "game_bg2".equals(backgroundName);
 
-            // Светлый фон — тёмные чернила и светлые плашки.
+        if (lightTheme) {
+
+            // Светлый фон — тёмные чернила.
             COLOR_MASTER =
                     Color.rgb(48, 36, 25);
 
@@ -6542,7 +6550,6 @@ public class MainActivity extends ComponentActivity {
 
             COLOR_SYSTEM =
                     Color.rgb(100, 91, 80);
-
 
             COLOR_CARD_BG =
                     Color.argb(
@@ -6564,7 +6571,6 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_NEUTRAL =
                     Color.rgb(112, 79, 42);
 
-
             COLOR_CARD_REVERTED_BG =
                     Color.argb(
                             205,
@@ -6576,51 +6582,82 @@ public class MainActivity extends ComponentActivity {
             COLOR_CARD_REVERTED_TEXT =
                     Color.rgb(100, 96, 90);
 
-            return;
+            COLOR_INPUT_TEXT =
+                    Color.rgb(48, 36, 25);
+
+            COLOR_INPUT_HINT =
+                    Color.rgb(115, 100, 84);
+
+            COLOR_INPUT_TINT =
+                    Color.rgb(112, 79, 42);
+
+        } else {
+
+            // Исходный тёмный фон.
+            COLOR_MASTER =
+                    Color.rgb(232, 224, 208);
+
+            COLOR_PLAYER =
+                    Color.rgb(150, 190, 255);
+
+            COLOR_SYSTEM =
+                    Color.rgb(120, 120, 120);
+
+            COLOR_CARD_BG =
+                    Color.argb(
+                            178,
+                            30,
+                            27,
+                            22
+                    );
+
+            COLOR_CARD_BORDER =
+                    Color.rgb(199, 166, 106);
+
+            COLOR_CARD_GOOD =
+                    Color.rgb(132, 176, 125);
+
+            COLOR_CARD_BAD =
+                    Color.rgb(190, 124, 112);
+
+            COLOR_CARD_NEUTRAL =
+                    Color.rgb(199, 166, 106);
+
+            COLOR_CARD_REVERTED_BG =
+                    Color.argb(
+                            150,
+                            48,
+                            48,
+                            48
+                    );
+
+            COLOR_CARD_REVERTED_TEXT =
+                    Color.rgb(145, 145, 145);
+
+            COLOR_INPUT_TEXT =
+                    Color.WHITE;
+
+            COLOR_INPUT_HINT =
+                    Color.rgb(119, 119, 119);
+
+            COLOR_INPUT_TINT =
+                    Color.rgb(169, 138, 85);
         }
 
+        if (inputEditText != null) {
+            inputEditText.setTextColor(
+                    COLOR_INPUT_TEXT
+            );
 
-        // game_bg — исходная тёмная палитра.
-        COLOR_MASTER =
-                Color.rgb(232, 224, 208);
+            inputEditText.setHintTextColor(
+                    COLOR_INPUT_HINT
+            );
 
-        COLOR_PLAYER =
-                Color.rgb(150, 190, 255);
-
-        COLOR_SYSTEM =
-                Color.rgb(120, 120, 120);
-
-
-        COLOR_CARD_BG =
-                Color.argb(
-                        178,
-                        30,
-                        27,
-                        22
-                );
-
-        COLOR_CARD_BORDER =
-                Color.rgb(199, 166, 106);
-
-        COLOR_CARD_GOOD =
-                Color.rgb(132, 176, 125);
-
-        COLOR_CARD_BAD =
-                Color.rgb(190, 124, 112);
-
-        COLOR_CARD_NEUTRAL =
-                Color.rgb(199, 166, 106);
-
-
-        COLOR_CARD_REVERTED_BG =
-                Color.argb(
-                        150,
-                        48,
-                        48,
-                        48
-                );
-
-        COLOR_CARD_REVERTED_TEXT =
-                Color.rgb(145, 145, 145);
+            inputEditText.setBackgroundTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            COLOR_INPUT_TINT
+                    )
+            );
+        }
     }
 }
