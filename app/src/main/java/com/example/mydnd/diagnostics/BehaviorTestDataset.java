@@ -51,10 +51,11 @@ public final class BehaviorTestDataset {
                 "INV_ADD",
                 DirectorMode.PLAYER_ACTION,
                 "Я беру с земли *камень* и кладу в карман.",
-                base,
+                baseStateWithHint("EXPLICIT_ADD: *камень*"),
                 emptyMemory,
                 Collections.singletonList("INV_ADD"),
                 Collections.emptyList(),
+                Arrays.asList("INV_REMOVE", "MONEY", "QUEST_START", "EFFECT_ADD", "WORLD_ADD"),
                 false
         ));
 
@@ -66,6 +67,31 @@ public final class BehaviorTestDataset {
                 emptyMemory,
                 Collections.singletonList("INV_REMOVE"),
                 Collections.emptyList(),
+                Arrays.asList("INV_ADD", "MONEY", "QUEST_START", "EFFECT_ADD", "WORLD_ADD"),
+                false
+        ));
+
+        cases.add(new BehaviorTestCase(
+                "INV_ADD_COIN_NO_MONEY",
+                DirectorMode.PLAYER_ACTION,
+                "I pick up *bronze coin* and put it in my inventory.",
+                baseStateWithHint("EXPLICIT_ADD: *bronze coin*"),
+                emptyMemory,
+                Collections.singletonList("INV_ADD"),
+                Collections.emptyList(),
+                Arrays.asList("INV_REMOVE", "MONEY", "QUEST_START", "EFFECT_ADD", "WORLD_ADD"),
+                false
+        ));
+
+        cases.add(new BehaviorTestCase(
+                "INV_REMOVE_COIN_ONLY",
+                DirectorMode.PLAYER_ACTION,
+                "I throw away *bronze coin*.",
+                baseStateWithCoin(),
+                emptyMemory,
+                Collections.singletonList("INV_REMOVE"),
+                Collections.emptyList(),
+                Arrays.asList("INV_ADD", "MONEY", "QUEST_START", "EFFECT_ADD", "WORLD_ADD"),
                 false
         ));
 
@@ -172,6 +198,36 @@ public final class BehaviorTestDataset {
                         "Страж | ACTIVE | HP 10/10 | Старая застава | Спокойно наблюдает за дорогой."
                 ))
                 .hint("NONE")
+                .build();
+    }
+
+    private static DirectorPromptState baseStateWithCoin() {
+        List<String> inventory = new ArrayList<>();
+        inventory.add("Фляга");
+        inventory.add("bronze coin");
+
+        return DirectorPromptState.builder()
+                .location("Старая застава")
+                .health("10/10")
+                .money("0")
+                .inventory(inventory)
+                .activeNpcs(Collections.singletonList(
+                        "Страж | ACTIVE | HP 10/10 | Старая застава | Спокойно наблюдает за дорогой."
+                ))
+                .hint("EXPLICIT_REMOVE: *bronze coin*")
+                .build();
+    }
+
+    private static DirectorPromptState baseStateWithHint(String hint) {
+        return DirectorPromptState.builder()
+                .location("Старая застава")
+                .health("10/10")
+                .money("0")
+                .inventory(Collections.singletonList("Фляга"))
+                .activeNpcs(Collections.singletonList(
+                        "Страж | ACTIVE | HP 10/10 | Старая застава | Спокойно наблюдает за дорогой."
+                ))
+                .hint(hint)
                 .build();
     }
 

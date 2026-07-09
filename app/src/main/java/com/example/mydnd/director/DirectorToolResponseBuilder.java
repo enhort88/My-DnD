@@ -31,7 +31,9 @@ public final class DirectorToolResponseBuilder {
                     ? ",next:<|\"|>NARRATE_NOW<|\"|>"
                     : ",next:<|\"|>DIRECT_OR_DONE<|\"|>");
         } else if (result.getStatus() == DirectorStatus.REJECTED) {
-            response.append(",next:<|\"|>DIRECT_FIX_OR_DONE<|\"|>");
+            response.append(forceDoneNext
+                    ? ",next:<|\"|>DONE_ONLY<|\"|>"
+                    : ",next:<|\"|>DIRECT_FIX_OR_DONE<|\"|>");
         }
 
         boolean finalForNarrative = (

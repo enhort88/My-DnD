@@ -10,62 +10,21 @@ import java.util.regex.Pattern;
  * Gives the LLM a strong but safe hint for an obvious action
  * involving exactly one item explicitly marked by the player as *item*.
  *
- * Java does not modify the inventory here.
- * The final tool call is still decided by the existing LLM flow.
- * This resolver only reduces ambiguity for the small model.
+ * Java does not modify the inventory here and does not try to parse verbs.
+ * Verb/intent understanding is the LLM's job (natural language is
+ * multilingual); Java only supplies the one fact it alone owns: whether the
+ * starred item is currently present in the canonical Room inventory.
+ *
+ * A single starred item that the player does not yet own can only become an
+ * ADD; a single starred item already in the inventory can only become a
+ * REMOVE (or NO_CHANGE, which the model is free to choose instead). This
+ * keeps the hint language-agnostic: it works the same for "Я беру *stone*",
+ * "I take *stone*" or any other language, because it never inspects the verb.
  */
 public final class InventoryActionHintResolver {
 
     private static final Pattern STARRED_ITEM_PATTERN =
             Pattern.compile("\\*([^*\\r\\n]{1,80})\\*");
-
-    private static final Pattern ADD_VERB_PATTERN =
-            Pattern.compile(
-                    "\\b("
-                            + "take|takes|took|taking"
-                            + "|grab|grabs|grabbed|grabbing"
-                            + "|pick\\s+up|picks\\s+up|picked\\s+up|picking\\s+up"
-                            + "|collect|collects|collected|collecting"
-                            + ")\\b",
-                    Pattern.CASE_INSENSITIVE
-            );
-
-    private static final Pattern REMOVE_VERB_PATTERN =
-            Pattern.compile(
-                    "\\b("
-                            + "drop|drops|dropped|dropping"
-                            + "|discard|discards|discarded|discarding"
-                            + "|throw\\s+away|throws\\s+away|threw\\s+away|throwing\\s+away"
-                            + "|give|gives|gave|giving"
-                            + "|leave|leaves|left|leaving"
-                            + ")\\b",
-                    Pattern.CASE_INSENSITIVE
-            );
-
-    private static final Pattern NEGATED_ACTION_PATTERN =
-            Pattern.compile(
-                    "\\b("
-                            + "do\\s+not|don't"
-                            + "|does\\s+not|doesn't"
-                            + "|did\\s+not|didn't"
-                            + "|will\\s+not|won't"
-                            + "|not"
-                            + ")\\s+("
-                            + "take|grab|pick\\s+up|collect"
-                            + "|drop|discard|throw\\s+away|give|leave"
-                            + ")\\b",
-                    Pattern.CASE_INSENSITIVE
-            );
-
-    private static final Pattern INVENTORY_PLACEMENT_PATTERN =
-            Pattern.compile(
-                    "\\b("
-                            + "put|puts|placed?|placing"
-                            + ")\\b.*\\b(in|into)\\s+"
-                            + "(?:(?:my|the)\\s+)?"
-                            + "(pocket|inventory|backpack|bag)\\b",
-                    Pattern.CASE_INSENSITIVE
-            );
 
     public Result resolve(
             String playerText,
@@ -95,62 +54,23 @@ public final class InventoryActionHintResolver {
             return Result.none("MULTIPLE_STARRED_ITEMS");
         }
 
-        String normalizedText = normalize(safeText);
-
-        if (NEGATED_ACTION_PATTERN.matcher(normalizedText).find()) {
-            return Result.none("NEGATED_ACTION");
-        }
-
-        boolean explicitAdd =
-                ADD_VERB_PATTERN.matcher(normalizedText).find()
-                        || containsInventoryPlacement(normalizedText);
-
-        boolean explicitRemove =
-                REMOVE_VERB_PATTERN.matcher(normalizedText).find();
-
-        // "I leave it with me" does not mean losing the item.
-        if (explicitRemove
-                && normalizedText.contains("leave")
-                && (normalizedText.contains("with me")
-                || normalizedText.contains("for myself"))) {
-            explicitRemove = false;
-        }
-
-        if (explicitAdd && explicitRemove) {
-            return Result.none("CONFLICTING_ACTIONS");
-        }
-
-        if (!explicitAdd && !explicitRemove) {
-            return Result.none("NO_EXPLICIT_ACTION");
-        }
-
-        String matchingInventoryItem = findMatchingInventoryItem(
+        MatchOutcome outcome = findMatchingInventoryItem(
                 safeInventory,
                 itemName
         );
 
-        if (explicitAdd) {
-            if (matchingInventoryItem != null) {
-                return Result.none("ITEM_ALREADY_PRESENT");
-            }
+        if (outcome.ambiguous) {
+            return Result.none("AMBIGUOUS_INVENTORY_MATCH");
+        }
 
+        if (outcome.match == null) {
             return Result.explicitAdd(itemName);
         }
 
-        if (matchingInventoryItem == null) {
-            return Result.none("ITEM_NOT_PRESENT_FOR_REMOVE");
-        }
-
-        return Result.explicitRemove(matchingInventoryItem);
+        return Result.explicitRemove(outcome.match);
     }
 
-    private boolean containsInventoryPlacement(String normalizedText) {
-        return INVENTORY_PLACEMENT_PATTERN
-                .matcher(normalizedText)
-                .find();
-    }
-
-    private String findMatchingInventoryItem(
+    private MatchOutcome findMatchingInventoryItem(
             List<String> inventory,
             String itemName
     ) {
@@ -165,13 +85,32 @@ public final class InventoryActionHintResolver {
             }
 
             if (found != null) {
-                return null;
+                return MatchOutcome.ambiguous();
             }
 
             found = inventoryItem;
         }
 
-        return found;
+        return MatchOutcome.of(found);
+    }
+
+    private static final class MatchOutcome {
+
+        private final String match;
+        private final boolean ambiguous;
+
+        private MatchOutcome(String match, boolean ambiguous) {
+            this.match = match;
+            this.ambiguous = ambiguous;
+        }
+
+        static MatchOutcome of(String match) {
+            return new MatchOutcome(match, false);
+        }
+
+        static MatchOutcome ambiguous() {
+            return new MatchOutcome(null, true);
+        }
     }
 
     private String normalize(String value) {

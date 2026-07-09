@@ -49,3 +49,6 @@ Thumbs.db
 *.keystore
 *.pem
 *.key
+
+.claude
+CODEX_PROJECT_NOTES.md

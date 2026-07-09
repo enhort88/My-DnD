@@ -2119,7 +2119,9 @@ public class MainActivity extends ComponentActivity {
                         preparedPrompt,
                         campaignId,
                         runWorldEventPhase,
-                        worldEventBatchText
+                        worldEventBatchText,
+                        actionHint.getPromptValue(),
+                        playerText
                 );
 
             } catch (Throwable throwable) {
@@ -2133,14 +2135,20 @@ public class MainActivity extends ComponentActivity {
             String preparedPrompt,
             long campaignId,
             boolean runWorldEventPhase,
-            String worldEventBatchText
+            String worldEventBatchText,
+            String actionHint,
+            String playerText
     ) {
         masterStreamingStartPosition = -1;
         pendingDirectorCheckId = 0L;
         pendingDirectorCheckCampaignId = 0L;
         activeDirectorCampaignId = campaignId;
         directorTurnActive = true;
-        directorFlowController.startTurn(DirectorMode.PLAYER_ACTION);
+        directorFlowController.startTurn(
+                DirectorMode.PLAYER_ACTION,
+                actionHint,
+                playerText
+        );
 
         modelManager.generateDirectorAware(
                 ModelRole.MASTER,
@@ -3699,6 +3707,12 @@ public class MainActivity extends ComponentActivity {
                 }
             }
             if (!anyFound) {
+                return false;
+            }
+        }
+
+        for (String forbidden : testCase.getForbiddenAny()) {
+            if (safeActions.contains(forbidden)) {
                 return false;
             }
         }

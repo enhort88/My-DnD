@@ -5,6 +5,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Keeps Director orchestration out of MainActivity.
@@ -25,6 +27,7 @@ public final class DirectorFlowController {
     private final List<String> confirmedChanges = new ArrayList<>();
 
     private DirectorMode mode = DirectorMode.PLAYER_ACTION;
+    private TurnPolicy turnPolicy = TurnPolicy.none();
     private int actionCount;
     private int appliedActionCount;
 
@@ -43,9 +46,33 @@ public final class DirectorFlowController {
     }
 
     public synchronized void startTurn(DirectorMode mode) {
+        startTurn(mode, "");
+    }
+
+    public synchronized void startTurn(
+            DirectorMode mode,
+            String actionHint
+    ) {
+        startTurn(
+                mode,
+                actionHint,
+                ""
+        );
+    }
+
+    public synchronized void startTurn(
+            DirectorMode mode,
+            String actionHint,
+            String playerText
+    ) {
         this.mode = mode == null
                 ? DirectorMode.PLAYER_ACTION
                 : mode;
+        this.turnPolicy = TurnPolicy.fromHint(
+                this.mode,
+                actionHint,
+                playerText
+        );
         actionCount = 0;
         appliedActionCount = 0;
         appliedActionFingerprints.clear();
@@ -96,6 +123,21 @@ public final class DirectorFlowController {
             return buildResponse(result);
         }
 
+        String policyRejection = turnPolicy.rejectReason(
+                action,
+                appliedActionCount
+        );
+        if (!policyRejection.isEmpty()) {
+            result = executor.reject(
+                    campaignId,
+                    action,
+                    policyRejection,
+                    turnPolicy.describe()
+            );
+            dispatch(result);
+            return buildResponse(result);
+        }
+
         if (action.getType() != DirectorActionType.NO_CHANGE
                 && appliedActionCount >= mode.getMaxAppliedActions()) {
             result = executor.reject(
@@ -125,6 +167,7 @@ public final class DirectorFlowController {
                 appliedActionFingerprints.add(fingerprint);
                 appliedActionCount++;
                 confirmedChanges.add(confirmedChange(result));
+                turnPolicy.recordApplied(action);
             }
         }
 
@@ -173,9 +216,26 @@ public final class DirectorFlowController {
     }
 
     private boolean shouldForceDoneNext(DirectorResult result) {
-        return mode == DirectorMode.CHECK_RESULT
-                && result != null
-                && result.getStatus() == DirectorStatus.APPLIED;
+        if (result == null) {
+            return false;
+        }
+
+        if (mode == DirectorMode.CHECK_RESULT
+                && result.getStatus() == DirectorStatus.APPLIED) {
+            return true;
+        }
+
+        if (result.getStatus() != DirectorStatus.REJECTED) {
+            return false;
+        }
+
+        String code = result.getCode();
+        return "ACTION_HINT_REQUIRES_DONE".equals(code)
+                || "ACTION_HINT_TYPE_MISMATCH".equals(code)
+                || "ACTION_HINT_TARGET_MISMATCH".equals(code)
+                || "ACTION_SEMANTICALLY_INVALID".equals(code)
+                || "HP_ALREADY_APPLIED_THIS_TURN".equals(code)
+                || "MONEY_ALREADY_APPLIED_THIS_TURN".equals(code);
     }
 
     public synchronized DirectorMode getMode() {
@@ -224,6 +284,188 @@ public final class DirectorFlowController {
     private void dispatch(DirectorResult result) {
         if (listener != null) {
             listener.onDirectorResult(result);
+        }
+    }
+
+    private static final class TurnPolicy {
+
+        private static final Pattern EXPLICIT_HINT_PATTERN = Pattern.compile(
+                "^EXPLICIT_(ADD|REMOVE):\\s*\\*([^*\\r\\n]{1,120})\\*\\s*$",
+                Pattern.CASE_INSENSITIVE
+        );
+
+        private final DirectorActionType requiredFirstType;
+        private final String requiredFirstName;
+        private final boolean singleAppliedAction;
+        private final String description;
+
+        private boolean healthChangeApplied;
+        private boolean moneyChangeApplied;
+
+        private TurnPolicy(
+                DirectorActionType requiredFirstType,
+                String requiredFirstName,
+                boolean singleAppliedAction,
+                String description
+        ) {
+            this.requiredFirstType = requiredFirstType;
+            this.requiredFirstName = canonical(requiredFirstName);
+            this.singleAppliedAction = singleAppliedAction;
+            this.description = description == null ? "" : description;
+        }
+
+        static TurnPolicy none() {
+            return new TurnPolicy(
+                    null,
+                    "",
+                    false,
+                    ""
+            );
+        }
+
+        /**
+         * playerText is intentionally unused for policy decisions: guessing
+         * intent from free natural-language text would require a per-language
+         * keyword dictionary, which does not scale to a multilingual game.
+         * Java only enforces structural, language-agnostic limits here; the
+         * LLM (which already owns natural-language understanding) decides
+         * intent, and the prompt tells it to call DONE when nothing changes.
+         */
+        static TurnPolicy fromHint(
+                DirectorMode mode,
+                String actionHint,
+                String playerText
+        ) {
+            if (mode != DirectorMode.PLAYER_ACTION || actionHint == null) {
+                return new TurnPolicy(
+                        null,
+                        "",
+                        false,
+                        ""
+                );
+            }
+
+            Matcher matcher = EXPLICIT_HINT_PATTERN.matcher(actionHint.trim());
+            if (!matcher.matches()) {
+                return new TurnPolicy(
+                        null,
+                        "",
+                        false,
+                        ""
+                );
+            }
+
+            DirectorActionType type = "ADD".equalsIgnoreCase(matcher.group(1))
+                    ? DirectorActionType.INVENTORY_ADD
+                    : DirectorActionType.INVENTORY_REMOVE;
+
+            return new TurnPolicy(
+                    type,
+                    matcher.group(2),
+                    true,
+                    actionHint.trim()
+            );
+        }
+
+        void recordApplied(DirectorAction action) {
+            if (action == null) {
+                return;
+            }
+
+            if (action.getType() == DirectorActionType.HEALTH_CHANGE) {
+                healthChangeApplied = true;
+            } else if (action.getType() == DirectorActionType.MONEY_CHANGE) {
+                moneyChangeApplied = true;
+            }
+        }
+
+        String rejectReason(
+                DirectorAction action,
+                int appliedActionCount
+        ) {
+            if (action == null) {
+                return "ACTION_NULL";
+            }
+
+            if (action.getType() == DirectorActionType.NO_CHANGE) {
+                return "";
+            }
+
+            if (isAlwaysSuspicious(action)) {
+                return "ACTION_SEMANTICALLY_INVALID";
+            }
+
+            if (action.getType() == DirectorActionType.HEALTH_CHANGE
+                    && healthChangeApplied) {
+                return "HP_ALREADY_APPLIED_THIS_TURN";
+            }
+
+            if (action.getType() == DirectorActionType.MONEY_CHANGE
+                    && moneyChangeApplied) {
+                return "MONEY_ALREADY_APPLIED_THIS_TURN";
+            }
+
+            if (requiredFirstType == null) {
+                return "";
+            }
+
+            if (singleAppliedAction && appliedActionCount > 0) {
+                return "ACTION_HINT_REQUIRES_DONE";
+            }
+
+            if (appliedActionCount == 0
+                    && action.getType() != requiredFirstType) {
+                return "ACTION_HINT_TYPE_MISMATCH";
+            }
+
+            if (appliedActionCount == 0
+                    && !requiredFirstName.isEmpty()
+                    && !requiredFirstName.equals(canonical(action.getName()))) {
+                return "ACTION_HINT_TARGET_MISMATCH";
+            }
+
+            return "";
+        }
+
+        String describe() {
+            return description;
+        }
+
+        private static boolean isAlwaysSuspicious(DirectorAction action) {
+            DirectorActionType type = action.getType();
+            String name = canonical(action.getName());
+
+            if (type == DirectorActionType.QUEST_START
+                    && (name.isEmpty()
+                    || "none".equals(name)
+                    || "quest_none".equals(name)
+                    || "no quest".equals(name)
+                    || "нет".equals(name)
+                    || "n/a".equals(name))) {
+                return true;
+            }
+
+            if (type == DirectorActionType.EFFECT_ADD
+                    && (name.isEmpty()
+                    || "player".equals(name)
+                    || "hero".equals(name)
+                    || "world_events".equals(name)
+                    || "state before".equals(name)
+                    || "state_before".equals(name)
+                    || "персонаж".equals(name)
+                    || "герой".equals(name))) {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static String canonical(String value) {
+            return value == null
+                    ? ""
+                    : value.trim()
+                    .replaceAll("\\s+", " ")
+                    .toLowerCase(Locale.ROOT);
         }
     }
 }
