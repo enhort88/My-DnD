@@ -5,12 +5,15 @@
 #include <stdexcept>
 
 #include "llama.h"
+#include "ggml-cpu.h"
 #include <android/log.h>
 #include <atomic>
 #include <ctime>
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
+#include <unistd.h>
 
 #define MYDND_LOG_TAG "MyDND_NATIVE"
 #define MYDND_LOGI(...) __android_log_print(ANDROID_LOG_INFO, MYDND_LOG_TAG, __VA_ARGS__)
@@ -75,9 +78,90 @@ struct MyDndLlamaHandle {
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
     const llama_vocab * vocab = nullptr;
+    ggml_threadpool * threadpool = nullptr;
     std::mutex mutex;
     std::atomic_bool cancel_requested{false};
 };
+
+/*
+ * Phones ship big.LITTLE (or big.MID.LITTLE) SoCs. Without an explicit
+ * cpuset, Android's power-aware scheduler tends to park default-priority
+ * background compute threads on the weak LITTLE cluster, which quietly
+ * tanks decode speed (observed ~5.5 tok/s on a chip whose big cores can
+ * do several times that). We rank cores by their own reported max
+ * frequency and keep only the fastest tier(s), so this generalizes across
+ * devices instead of hardcoding one phone's core indices.
+ */
+static int detect_performance_core_mask(bool mask[GGML_MAX_N_THREADS]) {
+    for (int i = 0; i < GGML_MAX_N_THREADS; i++) {
+        mask[i] = false;
+    }
+
+    long nproc = sysconf(_SC_NPROCESSORS_CONF);
+    if (nproc <= 0) {
+        return 0;
+    }
+    if (nproc > GGML_MAX_N_THREADS) {
+        nproc = GGML_MAX_N_THREADS;
+    }
+
+    std::vector<long> max_freq_khz(static_cast<size_t>(nproc), -1);
+    long highest = -1;
+
+    for (int i = 0; i < nproc; i++) {
+        char path[128];
+        snprintf(
+                path,
+                sizeof(path),
+                "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq",
+                i
+        );
+
+        FILE * file = fopen(path, "r");
+        if (file == nullptr) {
+            continue;
+        }
+
+        long freq = -1;
+        if (fscanf(file, "%ld", &freq) != 1) {
+            freq = -1;
+        }
+        fclose(file);
+
+        max_freq_khz[i] = freq;
+        if (freq > highest) {
+            highest = freq;
+        }
+    }
+
+    if (highest <= 0) {
+        // Couldn't read cpufreq (permissions or unsupported layout).
+        // Caller falls back to default OS affinity.
+        return 0;
+    }
+
+    long lowest = highest;
+    for (long freq : max_freq_khz) {
+        if (freq > 0 && freq < lowest) {
+            lowest = freq;
+        }
+    }
+
+    // Single frequency tier (homogeneous CPU) -> nothing to exclude, use all.
+    // Otherwise drop only the slowest tier (the LITTLE cluster) and keep
+    // every core that reported a strictly faster max frequency.
+    int selected = 0;
+    for (int i = 0; i < nproc; i++) {
+        bool keep = max_freq_khz[i] > 0
+                    && (lowest == highest || max_freq_khz[i] > lowest);
+        mask[i] = keep;
+        if (keep) {
+            selected++;
+        }
+    }
+
+    return selected;
+}
 
 static bool ends_with_sentence_mark(const std::string & text) {
     if (text.empty()) {
@@ -1314,14 +1398,29 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
             return 0;
         }
 
+        bool performance_cpu_mask[GGML_MAX_N_THREADS];
+        int performance_core_count =
+                detect_performance_core_mask(performance_cpu_mask);
+
+        const int n_threads =
+                performance_core_count > 0
+                        ? performance_core_count
+                        : 4;
+
+        MYDND_LOGI(
+                "nativeLoadModel: performance cores detected = %d, n_threads = %d",
+                performance_core_count,
+                n_threads
+        );
+
         llama_context_params ctx_params = llama_context_default_params();
 
         // Для телефона сначала скромный контекст.
         ctx_params.n_ctx = 2048;
         ctx_params.n_batch = 512;
         ctx_params.n_ubatch = 128;
-        ctx_params.n_threads = 4;
-        ctx_params.n_threads_batch = 4;
+        ctx_params.n_threads = n_threads;
+        ctx_params.n_threads_batch = n_threads;
         ctx_params.no_perf = true;
 
         llama_context * ctx = llama_init_from_model(model, ctx_params);
@@ -1331,10 +1430,36 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeLoadModel(
             return 0;
         }
 
+        ggml_threadpool * threadpool = nullptr;
+
+        if (performance_core_count > 0) {
+            ggml_threadpool_params tpp;
+            ggml_threadpool_params_init(&tpp, n_threads);
+            std::memcpy(tpp.cpumask, performance_cpu_mask, sizeof(tpp.cpumask));
+            tpp.strict_cpu = true;
+            tpp.prio = GGML_SCHED_PRIO_HIGH;
+            tpp.poll = 50;
+
+            threadpool = ggml_threadpool_new(&tpp);
+
+            if (threadpool != nullptr) {
+                llama_attach_threadpool(ctx, threadpool, threadpool);
+                MYDND_LOGI(
+                        "nativeLoadModel: pinned threadpool attached, threads=%d",
+                        n_threads
+                );
+            } else {
+                MYDND_LOGE(
+                        "nativeLoadModel: ggml_threadpool_new failed, falling back to default affinity"
+                );
+            }
+        }
+
         MyDndLlamaHandle * handle = new MyDndLlamaHandle();
         handle->model = model;
         handle->ctx = ctx;
         handle->vocab = llama_model_get_vocab(model);
+        handle->threadpool = threadpool;
 
         return reinterpret_cast<jlong>(handle);
     } catch (...) {
@@ -2570,8 +2695,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 tokenized
         );
 
+        // Matches ctx_params.n_ubatch (128): larger prefill batches let the
+        // pinned worker threads split more work per llama_decode call
+        // instead of paying per-call sync overhead every 16 tokens.
         const int prompt_chunk_size =
-                16;
+                128;
 
         auto prompt_decode_start =
                 std::chrono::steady_clock::now();
@@ -3649,6 +3777,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeRelease(
     std::lock_guard<std::mutex> lock(handle->mutex);
 
     if (handle->ctx != nullptr) {
+        llama_detach_threadpool(handle->ctx);
         llama_free(handle->ctx);
         handle->ctx = nullptr;
     }
@@ -3656,6 +3785,11 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeRelease(
     if (handle->model != nullptr) {
         llama_model_free(handle->model);
         handle->model = nullptr;
+    }
+
+    if (handle->threadpool != nullptr) {
+        ggml_threadpool_free(handle->threadpool);
+        handle->threadpool = nullptr;
     }
 
     delete handle;
