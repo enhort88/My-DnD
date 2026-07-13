@@ -24,6 +24,7 @@ public final class DirectorFlowController {
     private final Listener listener;
 
     private final Set<String> appliedActionFingerprints = new HashSet<>();
+    private final Set<String> appliedContentFingerprints = new HashSet<>();
     private final List<String> confirmedChanges = new ArrayList<>();
 
     private DirectorMode mode = DirectorMode.PLAYER_ACTION;
@@ -76,6 +77,7 @@ public final class DirectorFlowController {
         actionCount = 0;
         appliedActionCount = 0;
         appliedActionFingerprints.clear();
+        appliedContentFingerprints.clear();
         confirmedChanges.clear();
     }
 
@@ -151,13 +153,23 @@ public final class DirectorFlowController {
         }
 
         String fingerprint = fingerprint(action);
+        String contentFingerprint = contentFingerprint(action);
 
-        if (action.getType() != DirectorActionType.NO_CHANGE
-                && appliedActionFingerprints.contains(fingerprint)) {
+        boolean sameTypeDuplicate = action.getType() != DirectorActionType.NO_CHANGE
+                && appliedActionFingerprints.contains(fingerprint);
+
+        boolean sameFactDifferentType = action.getType() != DirectorActionType.NO_CHANGE
+                && !canonical(action.getName()).isEmpty()
+                && !canonical(action.getDetails()).isEmpty()
+                && appliedContentFingerprints.contains(contentFingerprint);
+
+        if (sameTypeDuplicate || sameFactDifferentType) {
             result = executor.reject(
                     campaignId,
                     action,
-                    "DUPLICATE_ACTION_IN_TURN",
+                    sameTypeDuplicate
+                            ? "DUPLICATE_ACTION_IN_TURN"
+                            : "DUPLICATE_FACT_DIFFERENT_TYPE",
                     ""
             );
         } else {
@@ -165,6 +177,7 @@ public final class DirectorFlowController {
 
             if (result.getStatus() == DirectorStatus.APPLIED) {
                 appliedActionFingerprints.add(fingerprint);
+                appliedContentFingerprints.add(contentFingerprint);
                 appliedActionCount++;
                 confirmedChanges.add(confirmedChange(result));
                 turnPolicy.recordApplied(action);
@@ -235,7 +248,8 @@ public final class DirectorFlowController {
                 || "ACTION_HINT_TARGET_MISMATCH".equals(code)
                 || "ACTION_SEMANTICALLY_INVALID".equals(code)
                 || "HP_ALREADY_APPLIED_THIS_TURN".equals(code)
-                || "MONEY_ALREADY_APPLIED_THIS_TURN".equals(code);
+                || "MONEY_ALREADY_APPLIED_THIS_TURN".equals(code)
+                || "DUPLICATE_FACT_DIFFERENT_TYPE".equals(code);
     }
 
     public synchronized DirectorMode getMode() {
@@ -254,6 +268,17 @@ public final class DirectorFlowController {
         return action.getType().getToolCode()
                 + '\u001F' + canonical(action.getName())
                 + '\u001F' + canonical(action.getValue())
+                + '\u001F' + canonical(action.getDetails());
+    }
+
+    /**
+     * Unlike {@link #fingerprint}, deliberately omits the action type: catches the
+     * same narrated fact re-applied as a different director_action type (e.g. one
+     * city observation re-encoded as INV_ADD, then LOCATION, then QUEST_START,
+     * then EFFECT_ADD in the same turn).
+     */
+    private String contentFingerprint(DirectorAction action) {
+        return canonical(action.getName())
                 + '\u001F' + canonical(action.getDetails());
     }
 

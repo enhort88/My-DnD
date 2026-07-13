@@ -85,6 +85,74 @@ public class DirectorFlowControllerTest {
     }
 
     @Test
+    public void sameFactAppliedAsDifferentTypeInSameTurnIsRejected() {
+        DirectorFlowController controller = new DirectorFlowController(
+                new RecordingStore(),
+                result -> { }
+        );
+
+        controller.startTurn(
+                DirectorMode.PLAYER_ACTION,
+                "NONE",
+                "Ich schaue mich um, sehe ich eine Stadt?"
+        );
+
+        String firstResponse = controller.onToolCall(
+                1L,
+                invAddCall("Stadt", "Du siehst in der Ferne die Umrisse einer Stadt.")
+        );
+        assertTrue(
+                "first observation, encoded as INV_ADD, must apply",
+                firstResponse.contains("APPLIED")
+        );
+
+        String secondResponse = controller.onToolCall(
+                1L,
+                locationCall("Stadt", "Du siehst in der Ferne die Umrisse einer Stadt.")
+        );
+        assertTrue(
+                "the same fact re-encoded as a different action type must be rejected",
+                secondResponse.contains("DUPLICATE_FACT_DIFFERENT_TYPE")
+        );
+        assertTrue(
+                "the rejection must force the turn to end instead of allowing more retries",
+                secondResponse.contains("DONE_ONLY")
+        );
+    }
+
+    @Test
+    public void distinctActionsInSameTurnStillBothApply() {
+        DirectorFlowController controller = new DirectorFlowController(
+                new RecordingStore(),
+                result -> { }
+        );
+
+        controller.startTurn(
+                DirectorMode.PLAYER_ACTION,
+                "NONE",
+                "Ich schaue mich um und hebe einen Stein auf."
+        );
+
+        String firstResponse = controller.onToolCall(
+                1L,
+                invAddCall("Stein", "Du hebst einen Stein vom Boden auf.")
+        );
+        assertTrue(
+                "picking up the rock must apply",
+                firstResponse.contains("APPLIED")
+        );
+
+        String secondResponse = controller.onToolCall(
+                1L,
+                locationCall("Lichtung", "Du siehst eine Lichtung vor dir.")
+        );
+        assertTrue(
+                "a genuinely different fact (different name and details) must still apply",
+                secondResponse.contains("APPLIED")
+        );
+    }
+
+    @Test
     public void explicitAddHintCapsTurnToTheHintedItemOnlyForAnyLanguage() {
         DirectorFlowController controller = new DirectorFlowController(
                 new RecordingStore(),
@@ -127,7 +195,16 @@ public class DirectorFlowControllerTest {
     }
 
     private static String invAddCall(String name) {
+        return invAddCall(name, "picked up");
+    }
+
+    private static String invAddCall(String name, String details) {
         return "call:director_action{type:\"INV_ADD\",name:\""
-                + name + "\",value:\"\",details:\"picked up\"}";
+                + name + "\",value:\"\",details:\"" + details + "\"}";
+    }
+
+    private static String locationCall(String name, String details) {
+        return "call:director_action{type:\"LOCATION\",name:\""
+                + name + "\",value:\"\",details:\"" + details + "\"}";
     }
 }
