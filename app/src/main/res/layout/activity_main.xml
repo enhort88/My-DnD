@@ -183,6 +183,21 @@
         <!--            android:textSize="12sp"-->
         <!--            android:fontFamily="@font/philosopher_bold" />-->
 
+
+        <!-- Метка версии -->
+
+        <TextView
+            android:id="@+id/versionBadgeTextView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:paddingBottom="10dp"
+            android:text="РАННИЙ ДОСТУП · v0.9 ALPHA"
+            android:textColor="#887D70"
+            android:textSize="11sp"
+            android:letterSpacing="0.05"
+            android:fontFamily="@font/philosopher_bold" />
+
     </LinearLayout>
 
 
