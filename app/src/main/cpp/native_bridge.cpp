@@ -424,6 +424,109 @@ static bool get_single_special_token(
 }
 
 
+/*
+ * Tokenizes plain literal text as a mid-generation continuation (no BOS,
+ * no special-token parsing - the caller supplies special tokens like
+ * <|tool_call> separately by ID). Returns an empty vector on failure or
+ * for empty input.
+ */
+static std::vector<llama_token> tokenize_plain_text(
+        const llama_vocab * vocab,
+        const std::string & text
+) {
+    if (text.empty()) {
+        return {};
+    }
+
+    int needed = -llama_tokenize(
+            vocab,
+            text.c_str(),
+            static_cast<int32_t>(text.size()),
+            nullptr,
+            0,
+            false,
+            false
+    );
+
+    if (needed <= 0) {
+        return {};
+    }
+
+    std::vector<llama_token> tokens(static_cast<size_t>(needed));
+
+    int written = llama_tokenize(
+            vocab,
+            text.c_str(),
+            static_cast<int32_t>(text.size()),
+            tokens.data(),
+            needed,
+            false,
+            false
+    );
+
+    if (written != needed) {
+        return {};
+    }
+
+    return tokens;
+}
+
+
+/*
+ * Decodes a span of already-known tokens (a GBNF-forced literal the grammar
+ * would have produced one token at a time anyway) in a single llama_decode
+ * batch call instead of one llama_decode per token. Appends their text to
+ * raw_tool_call and advances context_tokens_used/generated_tokens exactly as
+ * the per-token loop in generate_director_action() would have. Used only for
+ * spans with zero real model choice - never for a field the model actually
+ * picks (type/name/value/details content).
+ */
+static bool decode_forced_token_span(
+        MyDndLlamaHandle * handle,
+        const std::vector<llama_token> & tokens,
+        std::string & raw_tool_call,
+        int & context_tokens_used,
+        int & generated_tokens
+) {
+    if (tokens.empty()) {
+        return true;
+    }
+
+    llama_batch batch = llama_batch_get_one(
+            const_cast<llama_token *>(tokens.data()),
+            static_cast<int32_t>(tokens.size())
+    );
+
+    if (llama_decode(handle->ctx, batch) != 0) {
+        MYDND_LOGE(
+                "decode_forced_token_span: llama_decode failed, count=%d",
+                static_cast<int>(tokens.size())
+        );
+        return false;
+    }
+
+    for (llama_token token : tokens) {
+        char buffer[256];
+        int piece_length = llama_token_to_piece(
+                handle->vocab,
+                token,
+                buffer,
+                sizeof(buffer),
+                0,
+                true
+        );
+
+        if (piece_length > 0) {
+            raw_tool_call.append(buffer, piece_length);
+        }
+    }
+
+    context_tokens_used += static_cast<int>(tokens.size());
+    generated_tokens += static_cast<int>(tokens.size());
+    return true;
+}
+
+
 static std::string trim_copy(std::string value) {
     const char * whitespace = " \t\r\n";
     size_t start = value.find_first_not_of(whitespace);
@@ -580,7 +683,10 @@ static std::string build_director_action_grammar(
         return "";
     }
 
-    const std::string open = "<[" + std::to_string(tool_call_open) + "]>";
+    // tool_call_open is validated above but no longer embedded in this grammar's
+    // text - the "<|tool_call>call:director_action{type:\"" prefix (identical
+    // across every branch) is decoded once as a forced batch before this
+    // grammar is consulted; see action_rhs() below and generate_director_action().
     const std::string close = "<[" + std::to_string(tool_call_close) + "]>";
     const std::string quote = "<[" + std::to_string(tool_string_quote) + "]>";
 
@@ -733,15 +839,20 @@ static std::string build_director_action_grammar(
         return quote + " " + rule + " " + quote;
     };
 
+    /*
+     * The "<|tool_call>call:director_action{type:\"" prefix is identical for
+     * every single branch below - it is decoded once as a forced batch in
+     * generate_director_action() (native_bridge.cpp) before this grammar's
+     * root rule is ever consulted, instead of being generated here one token
+     * at a time. This rule intentionally starts right after that prefix
+     * (at the TYPE literal), not at "root ::= <[open]> ...".
+     */
     auto action_rhs = [&](const std::string & type,
                           const std::string & name_rule,
                           const std::string & value_rule,
                           const std::string & details_rule) -> std::string {
         std::string rhs;
-        rhs += open;
-        rhs += " \"call:director_action{type:\" ";
-        rhs += quote;
-        rhs += " \"" + type + "\" ";
+        rhs += "\"" + type + "\" ";
         rhs += quote;
         rhs += " \",name:\" ";
         rhs += field(name_rule);
@@ -2806,18 +2917,116 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                     const std::string & retry_family,
                     const std::vector<std::string> & disabled_action_types) -> bool {
 
+            llama_token tool_call_open = 0;
+            llama_token tool_call_close = 0;
+            llama_token tool_string_quote = 0;
+
+            if (!get_single_special_token(handle->vocab, "<|tool_call>", tool_call_open)
+                || !get_single_special_token(handle->vocab, "<tool_call|>", tool_call_close)
+                || !get_single_special_token(handle->vocab, "<|\"|>", tool_string_quote)) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: director special tokens not found"
+                );
+                return false;
+            }
+
+            raw_tool_call.clear();
+            generated_tokens = 0;
+
+            const int context_guard_reserve =
+                    tool_response_min_reserve + post_tool_narrative_reserve;
+
+            /*
+             * DONE has zero real model choice anywhere - name/value/details are
+             * always empty. Decode the entire fixed tool-call in one batch
+             * instead of sampling ~20 forced tokens one llama_decode at a time.
+             */
+            if (force_done) {
+                std::vector<llama_token> done_tokens;
+                done_tokens.push_back(tool_call_open);
+                for (llama_token t : tokenize_plain_text(handle->vocab, "call:director_action{type:")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_string_quote);
+                for (llama_token t : tokenize_plain_text(handle->vocab, "DONE")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_string_quote);
+                for (llama_token t : tokenize_plain_text(handle->vocab, ",name:")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_string_quote);
+                done_tokens.push_back(tool_string_quote);
+                for (llama_token t : tokenize_plain_text(handle->vocab, ",value:")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_string_quote);
+                done_tokens.push_back(tool_string_quote);
+                for (llama_token t : tokenize_plain_text(handle->vocab, ",details:")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_string_quote);
+                done_tokens.push_back(tool_string_quote);
+                for (llama_token t : tokenize_plain_text(handle->vocab, "}")) done_tokens.push_back(t);
+                done_tokens.push_back(tool_call_close);
+
+                if (context_tokens_used
+                        + static_cast<int>(done_tokens.size())
+                        + context_guard_reserve
+                    >= static_cast<int>(n_ctx)) {
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: director action stopped at context boundary"
+                    );
+                    return false;
+                }
+
+                if (!decode_forced_token_span(
+                        handle,
+                        done_tokens,
+                        raw_tool_call,
+                        context_tokens_used,
+                        generated_tokens
+                )) {
+                    return false;
+                }
+
+                return is_complete_tool_call(raw_tool_call);
+            }
+
+            /*
+             * Real action path: "<|tool_call>call:director_action{type:\"" is
+             * identical regardless of which branch the model ends up choosing
+             * (verified against every rule build_director_action_grammar emits),
+             * so decode it once as a batch before the grammar sampler - which
+             * now starts its root rule right after this prefix - is even
+             * created. Real choices (type/name/value/details) still go through
+             * the per-token grammar-constrained loop below, unchanged.
+             */
+            std::vector<llama_token> prefix_tokens;
+            prefix_tokens.push_back(tool_call_open);
+            for (llama_token t : tokenize_plain_text(handle->vocab, "call:director_action{type:")) prefix_tokens.push_back(t);
+            prefix_tokens.push_back(tool_string_quote);
+
+            if (context_tokens_used
+                    + static_cast<int>(prefix_tokens.size())
+                    + context_guard_reserve
+                >= static_cast<int>(n_ctx)) {
+                MYDND_LOGE(
+                        "nativeGenerateDirectorAwareStream: director action stopped at context boundary"
+                );
+                return false;
+            }
+
+            if (!decode_forced_token_span(
+                    handle,
+                    prefix_tokens,
+                    raw_tool_call,
+                    context_tokens_used,
+                    generated_tokens
+            )) {
+                return false;
+            }
+
             llama_sampler * decision_sampler =
-                    force_done
-                            ? create_director_done_sampler(handle->vocab)
-                            : create_director_action_sampler(
-                                    handle->vocab,
-                                    prompt,
-                                    director_mode,
-                                    allow_check,
-                                    allow_world_actions,
-                                    retry_family,
-                                    disabled_action_types
-                            );
+                    create_director_action_sampler(
+                            handle->vocab,
+                            prompt,
+                            director_mode,
+                            allow_check,
+                            allow_world_actions,
+                            retry_family,
+                            disabled_action_types
+                    );
 
             if (decision_sampler == nullptr) {
                 MYDND_LOGE(
@@ -2826,8 +3035,6 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 return false;
             }
 
-            raw_tool_call.clear();
-            generated_tokens = 0;
             bool complete = false;
 
             for (int i = 0; i < decision_max_tokens; i++) {
