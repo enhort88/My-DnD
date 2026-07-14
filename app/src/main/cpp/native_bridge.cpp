@@ -81,7 +81,31 @@ struct MyDndLlamaHandle {
     ggml_threadpool * threadpool = nullptr;
     std::mutex mutex;
     std::atomic_bool cancel_requested{false};
+
+    /*
+     * Text of the static Director system-block prefix ("SYSTEM:" + rules +
+     * tool declaration - see DirectorToolSpec.java, byte-identical for a
+     * given mode across every turn) currently resident in this context's
+     * KV-cache, or empty if nothing is cached. Must be invalidated (cleared)
+     * by every code path that clears this handle's memory - see
+     * mydnd_clear_memory().
+     */
+    std::string cached_static_prefix;
+    int cached_static_prefix_tokens = 0;
 };
+
+/*
+ * The ONLY way this context's KV-cache may be wiped. Every call site that
+ * used to call llama_memory_clear() directly now goes through this instead,
+ * so cached_static_prefix can never describe stale/wiped KV-cache content -
+ * whichever native entrypoint clears the cache next, the prefix cache is
+ * invalidated along with it.
+ */
+static void mydnd_clear_memory(MyDndLlamaHandle * handle) {
+    llama_memory_clear(llama_get_memory(handle->ctx), true);
+    handle->cached_static_prefix.clear();
+    handle->cached_static_prefix_tokens = 0;
+}
 
 /*
  * Phones ship big.LITTLE (or big.MID.LITTLE) SoCs. Without an explicit
@@ -424,15 +448,11 @@ static bool get_single_special_token(
 }
 
 
-/*
- * Tokenizes plain literal text as a mid-generation continuation (no BOS,
- * no special-token parsing - the caller supplies special tokens like
- * <|tool_call> separately by ID). Returns an empty vector on failure or
- * for empty input.
- */
-static std::vector<llama_token> tokenize_plain_text(
+static std::vector<llama_token> tokenize_text_impl(
         const llama_vocab * vocab,
-        const std::string & text
+        const std::string & text,
+        bool add_special,
+        bool parse_special
 ) {
     if (text.empty()) {
         return {};
@@ -444,8 +464,8 @@ static std::vector<llama_token> tokenize_plain_text(
             static_cast<int32_t>(text.size()),
             nullptr,
             0,
-            false,
-            false
+            add_special,
+            parse_special
     );
 
     if (needed <= 0) {
@@ -460,8 +480,8 @@ static std::vector<llama_token> tokenize_plain_text(
             static_cast<int32_t>(text.size()),
             tokens.data(),
             needed,
-            false,
-            false
+            add_special,
+            parse_special
     );
 
     if (written != needed) {
@@ -469,6 +489,45 @@ static std::vector<llama_token> tokenize_plain_text(
     }
 
     return tokens;
+}
+
+
+/*
+ * Tokenizes plain literal text as a mid-generation continuation (no BOS,
+ * no special-token parsing - the caller supplies special tokens like
+ * <|tool_call> separately by ID). Returns an empty vector on failure or
+ * for empty input.
+ */
+static std::vector<llama_token> tokenize_plain_text(
+        const llama_vocab * vocab,
+        const std::string & text
+) {
+    return tokenize_text_impl(vocab, text, false, false);
+}
+
+
+/*
+ * Tokenizes a text span that continues an already-started sequence (no BOS,
+ * but WITH special-token markup parsing, e.g. embedded "<|\"|>" quote
+ * markers) - matches how the whole prompt used to be tokenized, minus BOS.
+ */
+static std::vector<llama_token> tokenize_continuation_text(
+        const llama_vocab * vocab,
+        const std::string & text
+) {
+    return tokenize_text_impl(vocab, text, false, true);
+}
+
+
+/*
+ * Tokenizes text as the start of a brand new sequence (BOS + special-token
+ * markup parsing) - matches the original whole-prompt tokenization exactly.
+ */
+static std::vector<llama_token> tokenize_new_sequence_text(
+        const llama_vocab * vocab,
+        const std::string & text
+) {
+    return tokenize_text_impl(vocab, text, true, true);
 }
 
 
@@ -1627,7 +1686,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerate(
         const int n_predict = maxTokens > 0 ? maxTokens : 160;
 
         // Очищаем память контекста перед новым запросом.
-        llama_memory_clear(llama_get_memory(handle->ctx), true);
+        mydnd_clear_memory(handle);
 
         // Считаем число токенов промпта.
 //        MYDND_LOGI("nativeGenerate: before count tokenize");
@@ -1824,7 +1883,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
 
         const int hard_max_tokens = n_predict + 60;
 
-        llama_memory_clear(llama_get_memory(handle->ctx), true);
+        mydnd_clear_memory(handle);
 
         int n_prompt = -llama_tokenize(
                 handle->vocab,
@@ -2188,10 +2247,7 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateStream(
                     "nativeGenerateStream: isolated metadata START"
             );
 
-            llama_memory_clear(
-                    llama_get_memory(handle->ctx),
-                    true
-            );
+            mydnd_clear_memory(handle);
 
             int metadata_prompt_count =
                     -llama_tokenize(
@@ -2706,13 +2762,6 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                         ? repeatPenalty
                         : 1.12f;
 
-        llama_memory_clear(
-                llama_get_memory(
-                        handle->ctx
-                ),
-                true
-        );
-
         int n_prompt =
                 -llama_tokenize(
                         handle->vocab,
@@ -2775,94 +2824,202 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 n_ctx
         );
 
-        std::vector<llama_token> prompt_tokens(
-                n_prompt
-        );
-
-        int tokenized =
-                llama_tokenize(
-                        handle->vocab,
-                        prompt.c_str(),
-                        static_cast<int32_t>(
-                                prompt.size()
-                        ),
-                        prompt_tokens.data(),
-                        static_cast<int32_t>(
-                                prompt_tokens.size()
-                        ),
-                        true,
-                        true
-                );
-
-        if (tokenized < 0) {
-            return string_to_jstring(
-                    env,
-                    "Ошибка: tokenizer вернул отрицательный результат."
-            );
-        }
-
-        MYDND_LOGI(
-                "nativeGenerateDirectorAwareStream: prompt tokenized = %d",
-                tokenized
-        );
-
         // Matches ctx_params.n_ubatch (128): larger prefill batches let the
         // pinned worker threads split more work per llama_decode call
         // instead of paying per-call sync overhead every 16 tokens.
         const int prompt_chunk_size =
                 128;
 
-        auto prompt_decode_start =
-                std::chrono::steady_clock::now();
+        auto decode_prompt_tokens =
+                [&](const std::vector<llama_token> & tokens) -> bool {
+            for (int pos = 0;
+                    pos < static_cast<int>(tokens.size());
+                    pos += prompt_chunk_size) {
 
-        for (
-                int pos = 0;
-                pos < tokenized;
-                pos += prompt_chunk_size
-                ) {
-
-            if (handle->cancel_requested.load()) {
-                MYDND_LOGI(
-                        "nativeGenerateDirectorAwareStream: cancelled during prompt decode, pos=%d",
-                        pos
-                );
-
-                return string_to_jstring(
-                        env,
-                        ""
-                );
-            }
-
-            int chunk_size =
-                    prompt_chunk_size;
-
-            if (pos + chunk_size > tokenized) {
-                chunk_size =
-                        tokenized - pos;
-            }
-
-            llama_batch batch =
-                    llama_batch_get_one(
-                            prompt_tokens.data() + pos,
-                            chunk_size
+                if (handle->cancel_requested.load()) {
+                    MYDND_LOGI(
+                            "nativeGenerateDirectorAwareStream: cancelled during prompt decode, pos=%d",
+                            pos
                     );
+                    return false;
+                }
 
-            if (llama_decode(
-                    handle->ctx,
-                    batch
-            ) != 0) {
+                int chunk_size = prompt_chunk_size;
+                if (pos + chunk_size > static_cast<int>(tokens.size())) {
+                    chunk_size = static_cast<int>(tokens.size()) - pos;
+                }
 
-                MYDND_LOGE(
-                        "nativeGenerateDirectorAwareStream: prompt decode failed, pos=%d, chunk=%d",
-                        pos,
+                llama_batch batch = llama_batch_get_one(
+                        const_cast<llama_token *>(tokens.data()) + pos,
                         chunk_size
                 );
 
+                if (llama_decode(handle->ctx, batch) != 0) {
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: prompt decode failed, pos=%d, chunk=%d",
+                            pos,
+                            chunk_size
+                    );
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        /*
+         * The Director system-block prefix ("SYSTEM:" + DirectorToolSpec
+         * rules/declaration - see PromptBuilder.java) is byte-identical for a
+         * given director_mode across every single turn. If this context's
+         * KV-cache still holds exactly that prefix (nothing else has cleared
+         * it since - see mydnd_clear_memory()), skip re-decoding it and only
+         * decode the dynamic tail (current state + player action).
+         */
+        /*
+         * MainActivity.prepareMasterPrompt() re-wraps PromptBuilder's raw
+         * "SYSTEM: ... \n\nCURRENT_SCENE: ..." output into chat-turn markup
+         * ("<|turn>system\n...<turn|>\n<|turn>user\nCURRENT_SCENE:...") before
+         * this native function ever sees it, trimming away the original
+         * "\n\n" lead-in. Match the literal marker as it actually arrives
+         * here, not PromptBuilder's pre-wrap text.
+         */
+        static const std::string kScenePromptMarker = "CURRENT_SCENE:";
+        const size_t scene_marker_pos = prompt.find(kScenePromptMarker);
+
+        int context_tokens_used = 0;
+        bool prefix_cache_used = false;
+
+        auto prompt_decode_start =
+                std::chrono::steady_clock::now();
+
+        if (scene_marker_pos != std::string::npos) {
+            const std::string static_prefix = prompt.substr(0, scene_marker_pos);
+            const std::string dynamic_tail = prompt.substr(scene_marker_pos);
+
+            if (!handle->cached_static_prefix.empty()
+                    && handle->cached_static_prefix == static_prefix) {
+
+                /*
+                 * The KV-cache still holds everything the PREVIOUS turn
+                 * decoded past the static prefix too - director tool-calls,
+                 * tool responses, the full narrative. llama_decode's implicit
+                 * position tracking (llama_batch_get_one, pos=nullptr) keeps
+                 * advancing from wherever that left off, not from
+                 * cached_static_prefix_tokens. Roll the cache back to exactly
+                 * the cached prefix boundary before decoding this turn's
+                 * fresh tail, or the new tokens land on top of - and the
+                 * position counter overflows past - last turn's leftovers.
+                 */
+                llama_memory_seq_rm(
+                        llama_get_memory(handle->ctx),
+                        0,
+                        handle->cached_static_prefix_tokens,
+                        -1
+                );
+
+                std::vector<llama_token> tail_tokens =
+                        tokenize_continuation_text(handle->vocab, dynamic_tail);
+
+                bool tail_decode_ok = !tail_tokens.empty() && decode_prompt_tokens(tail_tokens);
+
+                if (tail_decode_ok) {
+                    context_tokens_used =
+                            handle->cached_static_prefix_tokens
+                            + static_cast<int>(tail_tokens.size());
+                    prefix_cache_used = true;
+
+                    MYDND_LOGI(
+                            "nativeGenerateDirectorAwareStream: prefix cache HIT, cachedPrefixTokens=%d, tailTokens=%d",
+                            handle->cached_static_prefix_tokens,
+                            static_cast<int>(tail_tokens.size())
+                    );
+                } else if (handle->cancel_requested.load()) {
+                    return string_to_jstring(env, "");
+                }
+            }
+
+            if (!prefix_cache_used) {
+                mydnd_clear_memory(handle);
+
+                std::vector<llama_token> prefix_tokens =
+                        tokenize_new_sequence_text(handle->vocab, static_prefix);
+                std::vector<llama_token> tail_tokens =
+                        tokenize_continuation_text(handle->vocab, dynamic_tail);
+
+                if (prefix_tokens.empty() || tail_tokens.empty()
+                        || static_cast<int>(prefix_tokens.size() + tail_tokens.size()) != n_prompt) {
+                    /*
+                     * Tokenizing the two halves separately did not reproduce
+                     * the whole-prompt token count - a tokenizer boundary
+                     * artifact at the split point. Never risk caching a
+                     * mismatched prefix: fall back to decoding the untouched
+                     * original prompt as a single unsplit sequence.
+                     */
+                    MYDND_LOGE(
+                            "nativeGenerateDirectorAwareStream: prefix/tail split mismatch (prefix=%d, tail=%d, whole=%d) - falling back, caching disabled this call",
+                            static_cast<int>(prefix_tokens.size()),
+                            static_cast<int>(tail_tokens.size()),
+                            n_prompt
+                    );
+
+                    std::vector<llama_token> whole_tokens =
+                            tokenize_new_sequence_text(handle->vocab, prompt);
+
+                    if (whole_tokens.empty() || !decode_prompt_tokens(whole_tokens)) {
+                        if (handle->cancel_requested.load()) {
+                            return string_to_jstring(env, "");
+                        }
+                        return string_to_jstring(
+                                env,
+                                "Ошибка: llama_decode не смог обработать tool-aware prompt."
+                        );
+                    }
+
+                    context_tokens_used = static_cast<int>(whole_tokens.size());
+                } else {
+                    if (!decode_prompt_tokens(prefix_tokens)) {
+                        if (handle->cancel_requested.load()) {
+                            return string_to_jstring(env, "");
+                        }
+                        return string_to_jstring(
+                                env,
+                                "Ошибка: llama_decode не смог обработать часть tool-aware prompt."
+                        );
+                    }
+
+                    if (!decode_prompt_tokens(tail_tokens)) {
+                        if (handle->cancel_requested.load()) {
+                            return string_to_jstring(env, "");
+                        }
+                        return string_to_jstring(
+                                env,
+                                "Ошибка: llama_decode не смог обработать часть tool-aware prompt."
+                        );
+                    }
+
+                    handle->cached_static_prefix = static_prefix;
+                    handle->cached_static_prefix_tokens = static_cast<int>(prefix_tokens.size());
+                    context_tokens_used = static_cast<int>(prefix_tokens.size() + tail_tokens.size());
+                }
+            }
+        } else {
+            // No known split point (should not happen - every Director prompt
+            // builder inserts this marker) - safest fallback, no caching.
+            mydnd_clear_memory(handle);
+
+            std::vector<llama_token> whole_tokens =
+                    tokenize_new_sequence_text(handle->vocab, prompt);
+
+            if (whole_tokens.empty() || !decode_prompt_tokens(whole_tokens)) {
+                if (handle->cancel_requested.load()) {
+                    return string_to_jstring(env, "");
+                }
                 return string_to_jstring(
                         env,
-                        "Ошибка: llama_decode не смог обработать часть tool-aware prompt."
+                        "Ошибка: llama_decode не смог обработать tool-aware prompt."
                 );
             }
+
+            context_tokens_used = static_cast<int>(whole_tokens.size());
         }
 
         auto prompt_decode_end =
@@ -2877,10 +3034,13 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
                 ).count();
 
         MYDND_LOGI(
-                "nativeGenerateDirectorAwareStream: ONE PASS prompt decode = %lld ms",
+                "nativeGenerateDirectorAwareStream: ONE PASS prompt decode = %lld ms, cacheHit=%s, tokensDecoded=%d",
                 static_cast<long long>(
                         prompt_decode_ms
-                )
+                ),
+                prefix_cache_used ? "YES" : "NO",
+                context_tokens_used
+                        - (prefix_cache_used ? handle->cached_static_prefix_tokens : 0)
         );
 
         if (handle->cancel_requested.load()) {
@@ -2892,12 +3052,12 @@ Java_com_example_mydnd_llm_NativeLlmBridge_nativeGenerateDirectorAwareStream(
 
         /*
          * DIRECTOR PHASE.
-         * The prompt is decoded once. Every structural action is then forced by
-         * the universal grammar, executed synchronously in Java/Room, and its
-         * tool response is decoded back into the SAME llama_context.
-         * Nothing is streamed until DONE has been executed.
+         * The prompt is decoded once (partly from cache when possible). Every
+         * structural action is then forced by the universal grammar, executed
+         * synchronously in Java/Room, and its tool response is decoded back
+         * into the SAME llama_context. Nothing is streamed until DONE has
+         * been executed.
          */
-        int context_tokens_used = tokenized;
 
         /*
          * Keep enough room for a useful answer after Director. Do not reserve
