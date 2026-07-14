@@ -187,7 +187,7 @@ public class MainActivity extends ComponentActivity {
     private static final int CHAT_BOTTOM_THRESHOLD_DP = 72;
 
     private static final String MASTER_MODEL_FILE =
-            "gemma-4-E2B_q4_0-it.gguf";
+            "gemma-4-E4B_q4_0-it.gguf";
 
 
     private View welcomeLayout;
