@@ -40,7 +40,7 @@ import java.util.List;
 public class NewGameActivity extends ComponentActivity {
 
     private static final String MASTER_MODEL_FILE =
-            "gemma-4-E2B_q4_0-it.gguf";
+            "gemma-4-E4B_q4_0-it.gguf";
 
     private static final String SERVICE_MODEL_FILE =
             "gemma-3-1b-it-q4_0.gguf";
