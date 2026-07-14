@@ -2131,10 +2131,27 @@ public class MainActivity extends ComponentActivity {
                                 inventoryBefore
                         );
 
+                /*
+                 * "?" is punctuation, not a language-specific keyword, so this
+                 * stays within the language-agnostic principle already
+                 * documented on TurnPolicy.fromHint() - unlike a verb/keyword
+                 * dictionary it works the same regardless of language. Purely
+                 * a prompt-visible nudge: TurnPolicy's regex only recognizes
+                 * EXPLICIT_ADD/REMOVE, so this value enforces nothing in Java
+                 * and never overrides a real explicit-item hint.
+                 */
+                String promptHintValue = actionHint.getPromptValue();
+                if ("NONE".equals(promptHintValue)
+                        && playerText != null
+                        && playerText.trim().endsWith("?")) {
+                    promptHintValue = "Реплика игрока - вопрос, не описание нового"
+                            + " действия; если нет явного нового изменения, сразу DONE.";
+                }
+
                 DirectorPromptState directorState =
                         directorPromptStateRepository.build(
                                 campaignId,
-                                actionHint.getPromptValue()
+                                promptHintValue
                         );
 
                 int masterEventCount =
