@@ -30,15 +30,28 @@ public final class DirectorToolSpec {
                 : mode;
 
         if (safeMode == DirectorMode.RANDOM_WORLD_EVENT) {
-            return randomWorldEventRules();
+            return randomWorldEventRules() + SETTING_CONSISTENCY_RULE;
         }
 
         if (safeMode == DirectorMode.CHECK_RESULT) {
-            return checkResultRules();
+            return checkResultRules() + SETTING_CONSISTENCY_RULE;
         }
 
-        return playerActionRules();
+        return playerActionRules() + SETTING_CONSISTENCY_RULE;
     }
+
+    /**
+     * Universal narrative-consistency guardrail, appended to every mode's
+     * rules once here rather than duplicated in each. Not specific to any
+     * one detail (weather, terrain, lighting, etc.) - the model tends to
+     * reach for genre-stock phrasing (e.g. snow/cold imagery for any injury
+     * narrative) that can contradict CURRENT_SCENE/WORLD regardless of what
+     * kind of detail it is.
+     */
+    private static final String SETTING_CONSISTENCY_RULE =
+            "\nНикакая деталь нарратива (погода, климат, освещение, ландшафт, время суток,"
+                    + " звуки, окружение) не должна противоречить CURRENT_SCENE/WORLD;"
+                    + " при сомнении не упоминай её вовсе, а не выдумывай жанровый штамп.";
 
     private static String playerActionRules() {
         return "\nТы мастер DnD. СНАЧАЛА зафиксируй только прямые новые последствия PLAYER_ACTION через director_action."
